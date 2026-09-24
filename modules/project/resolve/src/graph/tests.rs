@@ -45,6 +45,7 @@ fn manifest(name: &str, dependencies: Vec<DependencySpec>) -> Manifest {
         target: "skyrim-se".into(),
         profile: "dev".into(),
         debug_info: true,
+        experimental_pex_dependencies: false,
         emit: vec!["pex".into()],
         dependencies,
     }
@@ -279,6 +280,49 @@ fn psc_directory_declarations_share_normal_provider_precedence() {
             .source_path
             .as_deref(),
         Some("Actor.psc")
+    );
+}
+
+#[test]
+fn pex_directory_is_a_normal_declaration_provider() {
+    let mut binary = sdk("skyrim-se", "bytes");
+    binary.source_key = "binary".into();
+    binary.source_id = SourceId::BinaryPex {
+        path: "../Binary/Scripts".into(),
+        digest: "bytes".into(),
+    };
+    if let LoadedCarrier::Declarations { kind, sdk } = &mut binary.carrier {
+        *kind = DependencyKind::Pex;
+        sdk.name = "binary".into();
+        sdk.scripts.push(folio_project_model::DeclaredScript {
+            name: "Actor".into(),
+            location: folio_project_model::DeclarationLocation {
+                carrier_path: "../Binary/Scripts/Actor.pex".into(),
+                script_index: 0,
+                source_path: None,
+                line: None,
+                column: None,
+            },
+        });
+    }
+    let packages = vec![
+        package(
+            "root",
+            vec![edge("root", "binary", DependencyKind::Pex)],
+            &[],
+        ),
+        binary,
+    ];
+    let resolved = resolve("root", &packages).unwrap();
+    assert_eq!(resolved.scripts[0].selected.package.name, "binary");
+    assert_eq!(
+        resolved.scripts[0]
+            .selected
+            .declaration
+            .as_ref()
+            .unwrap()
+            .carrier_path,
+        "../Binary/Scripts/Actor.pex"
     );
 }
 

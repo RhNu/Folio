@@ -233,6 +233,7 @@ mod tests {
             target: "skyrim-se".into(),
             profile: "dev".into(),
             debug_info: true,
+            experimental_pex_dependencies: false,
             emit: vec!["pex".into()],
             dependencies: vec![],
         };

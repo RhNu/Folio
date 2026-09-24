@@ -355,6 +355,7 @@ fn member(
         flags,
         initial_literal,
         parameters,
+        unknown_defaults: false,
     })
 }
 

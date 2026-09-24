@@ -5,7 +5,7 @@ use folio_project_resolve::LoadedProject;
 use serde::Serialize;
 
 /// Bump when key inputs or cache representation change.
-pub const CACHE_SCHEMA: u32 = 3;
+pub const CACHE_SCHEMA: u32 = 4;
 
 #[derive(Serialize)]
 struct SourceContent<'a> {
@@ -29,6 +29,7 @@ struct ManifestSettings<'a> {
     target: &'a str,
     profile: &'a str,
     debug_info: bool,
+    experimental_pex_dependencies: bool,
     emit: &'a [String],
     dependencies: Vec<(&'a str, DependencyKind, &'a str)>,
 }
@@ -79,6 +80,7 @@ pub fn command_fingerprint(
                 target: &manifest.target,
                 profile: &manifest.profile,
                 debug_info: manifest.debug_info,
+                experimental_pex_dependencies: manifest.experimental_pex_dependencies,
                 emit: &manifest.emit,
                 dependencies: manifest
                     .dependencies

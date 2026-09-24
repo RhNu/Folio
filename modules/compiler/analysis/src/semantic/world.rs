@@ -20,10 +20,16 @@ pub(super) fn script_from_external(external: &ExternalScript) -> ScriptInfo {
             members.get(&name).map(|prior: &MemberInfo| prior.kind),
             item.kind,
         ) {
-            (Some(MemberKind::Property), MemberKind::Function | MemberKind::Event) => {
+            (
+                Some(MemberKind::Property),
+                MemberKind::Function | MemberKind::Event | MemberKind::UnknownCallable,
+            ) => {
                 callable_overloads.insert(name, info);
             }
-            (Some(MemberKind::Function | MemberKind::Event), MemberKind::Property) => {
+            (
+                Some(MemberKind::Function | MemberKind::Event | MemberKind::UnknownCallable),
+                MemberKind::Property,
+            ) => {
                 callable_overloads.insert(name.clone(), members.insert(name, info).unwrap());
             }
             _ => {
@@ -73,6 +79,7 @@ fn member_from_external(member: &folio_format_declarations::Member) -> MemberInf
                 )
             })
             .collect(),
+        unknown_defaults: member.unknown_defaults,
         global: member.is_global,
         auto: member.is_auto,
         read_only: member.is_read_only,
@@ -158,6 +165,7 @@ pub(super) fn member_from_source(
         ty,
         kind,
         parameters,
+        unknown_defaults: false,
         global,
         auto: matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "auto" || flag == "autoreadonly")),
         read_only: matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "autoreadonly")),
@@ -394,7 +402,10 @@ pub(super) fn lookup_callable_member<'a>(
             .callable_overloads
             .get(&key(name))
             .or_else(|| owner.members.get(&key(name)))
-            && matches!(member.kind, MemberKind::Function | MemberKind::Event)
+            && matches!(
+                member.kind,
+                MemberKind::Function | MemberKind::Event | MemberKind::UnknownCallable
+            )
         {
             return Some((owner, member));
         }

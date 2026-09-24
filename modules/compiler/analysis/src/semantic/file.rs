@@ -159,6 +159,7 @@ pub(super) fn analyze_file(
                 ty,
                 kind: MemberKind::Function,
                 parameters,
+                unknown_defaults: false,
                 global: false,
                 auto: false,
                 read_only: false,

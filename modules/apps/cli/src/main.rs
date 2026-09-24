@@ -204,6 +204,8 @@ impl CliError {
                 LoadError::Manifest(_)
                 | LoadError::Declaration { .. }
                 | LoadError::SourceDeclarations { .. }
+                | LoadError::PexDeclarations { .. }
+                | LoadError::ExperimentalDependency { .. }
                 | LoadError::Builtin { .. }
                 | LoadError::SdkNaming { .. }
                 | LoadError::Resolve(_)
@@ -260,6 +262,8 @@ fn project_error_code(error: &LoadError) -> &'static str {
         },
         LoadError::Declaration { .. } => "SDK001",
         LoadError::SourceDeclarations { .. } => "PSC001",
+        LoadError::PexDeclarations { .. } => "PEX001",
+        LoadError::ExperimentalDependency { .. } => "PEX002",
         LoadError::Builtin { .. } => "SDK004",
         LoadError::SdkNaming { .. } => "SDK002",
         LoadError::Resolve(resolve) => match &resolve.kind {

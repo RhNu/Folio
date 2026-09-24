@@ -15,7 +15,11 @@ use folio_project_model::{
 };
 use tracing::{debug, info, instrument};
 
-use crate::{graph, manifest};
+use crate::{graph, manifest, pex_declarations};
+
+mod scan;
+pub use scan::relative_portable;
+use scan::{canonical_file, collect_pex_files, collect_sources, io, path_key};
 
 pub const MANIFEST_FILE: &str = "folio.toml";
 
@@ -86,6 +90,13 @@ pub enum LoadError {
         path: PathBuf,
         reason: String,
     },
+    PexDeclarations {
+        path: PathBuf,
+        reason: String,
+    },
+    ExperimentalDependency {
+        name: String,
+    },
     Builtin {
         name: String,
         reason: String,
@@ -114,6 +125,11 @@ impl std::fmt::Display for LoadError {
             Self::Manifest(cause) => write!(f, "{cause}"),
             Self::Declaration { path, cause } => write!(f, "{}: {cause}", path.display()),
             Self::SourceDeclarations { path, reason } => write!(f, "{}: {reason}", path.display()),
+            Self::PexDeclarations { path, reason } => write!(f, "{}: {reason}", path.display()),
+            Self::ExperimentalDependency { name } => write!(
+                f,
+                "PEX dependency {name} requires [experimental] pex-dependencies = true"
+            ),
             Self::Builtin { name, reason } => write!(f, "built-in {name}: {reason}"),
             Self::SdkNaming {
                 path,
@@ -205,6 +221,7 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
     let mut packages = BTreeMap::new();
     let mut bundles = BTreeMap::new();
     let mut source_inputs = Vec::new();
+    let mut pex_enabled = false;
     while let Some((key, (path, kind, declared_name))) = pending.pop_first() {
         if packages.contains_key(&key) {
             continue;
@@ -219,6 +236,9 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                 let input =
                     fs::read_to_string(&path).map_err(|cause| io("read manifest", &path, cause))?;
                 let manifest = manifest::parse(&portable, &input).map_err(LoadError::Manifest)?;
+                if key == root_key {
+                    pex_enabled = manifest.experimental_pex_dependencies;
+                }
                 let base = path.parent().expect("canonical manifest has parent");
                 validate_workspace_directory(base, &manifest.source_path.value, true)?;
                 validate_workspace_directory(base, &manifest.output_path.value, false)?;
@@ -231,6 +251,11 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                 source_inputs.append(&mut inputs);
                 let mut links = Vec::new();
                 for (index, dependency) in manifest.dependencies.iter().enumerate() {
+                    if dependency.kind == DependencyKind::Pex && !pex_enabled {
+                        return Err(LoadError::ExperimentalDependency {
+                            name: dependency.name.value.clone(),
+                        });
+                    }
                     if dependency.kind == DependencyKind::Builtin {
                         let id = dependency.path.value.clone();
                         let target_key = format!("builtin:{id}");
@@ -285,8 +310,11 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                     },
                 );
             }
-            DependencyKind::Sdk | DependencyKind::Builtin | DependencyKind::Psc => {
-                let (bundle, digest) = if kind == DependencyKind::Builtin {
+            DependencyKind::Sdk
+            | DependencyKind::Builtin
+            | DependencyKind::Psc
+            | DependencyKind::Pex => {
+                let (bundle, digest, pex_paths) = if kind == DependencyKind::Builtin {
                     let name = path.to_string_lossy().to_string();
                     let bundle = builtin(&name)
                         .map_err(|reason| LoadError::Builtin {
@@ -302,7 +330,7 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                         reason: cause.to_string(),
                     })?;
                     let digest = blake3::hash(&bytes).to_hex().to_string();
-                    (bundle, digest)
+                    (bundle, digest, None)
                 } else if kind == DependencyKind::Psc {
                     if !path.is_dir() {
                         return Err(LoadError::InvalidPath {
@@ -329,7 +357,37 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                         .source_digest
                         .clone()
                         .expect("generator hashes sources");
-                    (bundle, digest)
+                    (bundle, digest, None)
+                } else if kind == DependencyKind::Pex {
+                    if !path.is_dir() {
+                        return Err(LoadError::InvalidPath {
+                            path,
+                            reason: "PEX dependency is not a directory",
+                        });
+                    }
+                    let name = declared_name.expect("PEX dependency has a name");
+                    let files = collect_pex_files(&path)?;
+                    let inputs = files
+                        .iter()
+                        .map(|(relative, bytes)| pex_declarations::PexInput {
+                            path: relative,
+                            bytes,
+                        })
+                        .collect::<Vec<_>>();
+                    let extracted =
+                        pex_declarations::extract(&name, &inputs).map_err(|reason| {
+                            LoadError::PexDeclarations {
+                                path: path.clone(),
+                                reason,
+                            }
+                        })?;
+                    let digest = extracted
+                        .bundle
+                        .package
+                        .source_digest
+                        .clone()
+                        .expect("PEX extractor hashes binaries");
+                    (extracted.bundle, digest, Some(extracted.paths))
                 } else {
                     let bytes =
                         fs::read(&path).map_err(|cause| io("read declaration", &path, cause))?;
@@ -338,7 +396,7 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                         path: path.clone(),
                         cause,
                     })?;
-                    (bundle, digest)
+                    (bundle, digest, None)
                 };
                 if bundle.naming.language != "papyrus" || bundle.naming.case_sensitive {
                     return Err(LoadError::SdkNaming {
@@ -354,7 +412,10 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                     .map(|(script_index, script)| DeclaredScript {
                         name: script.name.clone(),
                         location: DeclarationLocation {
-                            carrier_path: portable.clone(),
+                            carrier_path: pex_paths.as_ref().map_or_else(
+                                || portable.clone(),
+                                |paths| format!("{portable}/{}", paths[script_index]),
+                            ),
                             script_index,
                             source_path: script.source.as_ref().map(|source| source.path.clone()),
                             line: script.source.as_ref().map(|source| source.line),
@@ -369,15 +430,18 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                     abi: bundle.compatibility.abi.clone(),
                     scripts,
                 };
-                let source_id = if kind == DependencyKind::Psc {
-                    SourceId::Local {
+                let source_id = match kind {
+                    DependencyKind::Psc => SourceId::Local {
                         path: portable.clone(),
-                    }
-                } else {
-                    SourceId::DeclarationSdk {
+                    },
+                    DependencyKind::Pex => SourceId::BinaryPex {
                         path: portable.clone(),
                         digest,
-                    }
+                    },
+                    _ => SourceId::DeclarationSdk {
+                        path: portable.clone(),
+                        digest,
+                    },
                 };
                 debug!(package_id = %sdk.name, ?kind, script_count = sdk.scripts.len(), "loaded dependency declarations");
                 packages.insert(
@@ -427,6 +491,7 @@ fn psc_declarations(
     )
 }
 
+/// Read a binary dependency tree in stable relative-path order.
 /// Reject links and non-directory components before using a workspace path.
 fn validate_workspace_directory(
     base: &Path,
@@ -470,175 +535,6 @@ pub fn load_and_resolve(
             Err(LoadError::Resolve(Box::new(cause)))
         }
     }
-}
-
-fn collect_sources(
-    base: &Path,
-    root: &str,
-    extensions: &[String],
-    package_key: &str,
-) -> Result<(Vec<SourceFile>, Vec<LoadedSourceInput>), LoadError> {
-    let mut files = BTreeMap::<String, (SourceFile, PathBuf)>::new();
-    {
-        let declared = base.join(root);
-        let actual = canonical_file(&declared)?;
-        if !actual.is_dir() {
-            return Err(LoadError::InvalidPath {
-                path: actual,
-                reason: "source root is not a directory",
-            });
-        }
-        let mut pending = BTreeMap::from([(root.to_owned(), actual)]);
-        let mut visited = BTreeSet::new();
-        while let Some((display_directory, directory)) = pending.pop_first() {
-            let directory = canonical_file(&directory)?;
-            if !visited.insert(directory.clone()) {
-                continue;
-            }
-            let entries = fs::read_dir(&directory)
-                .map_err(|cause| io("read source directory", &directory, cause))?;
-            let mut entries = entries
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|cause| io("read source entry", &directory, cause))?;
-            entries.sort_by_key(|entry| entry.file_name());
-            for entry in entries {
-                let display_path = PathBuf::from(&display_directory).join(entry.file_name());
-                let path = canonical_file(&entry.path())?;
-                if path.is_dir() {
-                    let display = display_path
-                        .to_str()
-                        .ok_or_else(|| LoadError::InvalidPath {
-                            path: display_path.clone(),
-                            reason: "source display path is not UTF-8",
-                        })?
-                        .replace('\\', "/");
-                    pending.insert(display, path);
-                } else if path.is_file()
-                    && display_path.extension().is_some_and(|extension| {
-                        extensions
-                            .iter()
-                            .any(|item| extension.eq_ignore_ascii_case(item))
-                    })
-                {
-                    let candidate = display_path
-                        .file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .ok_or_else(|| LoadError::InvalidPath {
-                            path: display_path.clone(),
-                            reason: "source file name is not UTF-8",
-                        })?;
-                    let portable = relative_portable(base, &path)?;
-                    let display = display_path
-                        .to_str()
-                        .ok_or_else(|| LoadError::InvalidPath {
-                            path: display_path.clone(),
-                            reason: "source display path is not UTF-8",
-                        })?
-                        .replace('\\', "/");
-                    let candidate_file = SourceFile {
-                        path: portable,
-                        display_path: display.clone(),
-                        script_candidate: candidate.into(),
-                    };
-                    match files.entry(path_key(&path)?) {
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            entry.insert((candidate_file, path));
-                        }
-                        std::collections::btree_map::Entry::Occupied(mut entry)
-                            if display < entry.get().0.display_path =>
-                        {
-                            entry.insert((candidate_file, path));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-    let mut source_files = Vec::new();
-    let mut inputs = Vec::new();
-    for (file, path) in files.into_values() {
-        let text =
-            fs::read_to_string(&path).map_err(|cause| io("read source file", &path, cause))?;
-        inputs.push(LoadedSourceInput {
-            package_key: package_key.into(),
-            canonical_path: path,
-            display_path: file.display_path.clone(),
-            script_candidate: file.script_candidate.clone(),
-            text: Arc::from(text),
-        });
-        source_files.push(file);
-    }
-    Ok((source_files, inputs))
-}
-
-fn canonical_file(path: &Path) -> Result<PathBuf, LoadError> {
-    fs::canonicalize(path).map_err(|cause| io("resolve path", path, cause))
-}
-
-fn path_key(path: &Path) -> Result<String, LoadError> {
-    path.to_str()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| LoadError::InvalidPath {
-            path: path.to_owned(),
-            reason: "canonical path is not UTF-8",
-        })
-}
-
-fn io(operation: &'static str, path: &Path, cause: std::io::Error) -> LoadError {
-    LoadError::Io {
-        operation,
-        path: path.to_owned(),
-        cause,
-    }
-}
-
-/// Compute a portable relative identity after the host has canonicalized aliases.
-pub fn relative_portable(base: &Path, target: &Path) -> Result<String, LoadError> {
-    let base: Vec<_> = base.components().collect();
-    let target_components: Vec<_> = target.components().collect();
-    if base.first() != target_components.first() {
-        return Err(LoadError::InvalidPath {
-            path: target.to_owned(),
-            reason: "path is on another filesystem root",
-        });
-    }
-    let shared = base
-        .iter()
-        .zip(&target_components)
-        .take_while(|(left, right)| left == right)
-        .count();
-    let mut parts = Vec::new();
-    for component in &base[shared..] {
-        if matches!(component, Component::Normal(_)) {
-            parts.push("..".to_owned());
-        }
-    }
-    for component in &target_components[shared..] {
-        match component {
-            Component::Normal(value) => parts.push(
-                value
-                    .to_str()
-                    .ok_or_else(|| LoadError::InvalidPath {
-                        path: target.to_owned(),
-                        reason: "path component is not UTF-8",
-                    })?
-                    .to_owned(),
-            ),
-            Component::CurDir => {}
-            _ => {
-                return Err(LoadError::InvalidPath {
-                    path: target.to_owned(),
-                    reason: "path has incompatible root",
-                });
-            }
-        }
-    }
-    Ok(if parts.is_empty() {
-        ".".into()
-    } else {
-        parts.join("/")
-    })
 }
 
 #[cfg(test)]

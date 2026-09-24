@@ -128,6 +128,9 @@ pub struct Member {
     pub initial_literal: Option<String>,
     #[serde(default)]
     pub parameters: Vec<Parameter>,
+    /// Runtime-only marker for PEX signatures, which cannot retain parameter defaults.
+    #[serde(skip)]
+    pub unknown_defaults: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -137,6 +140,8 @@ pub enum MemberKind {
     Property,
     Event,
     Variable,
+    /// A PEX callable whose original event/function distinction is unavailable.
+    UnknownCallable,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -327,7 +332,18 @@ fn validate_members(
                 reason: "duplicate member identity",
             });
         }
-        if member.is_global && member.kind != MemberKind::Function {
+        if member.kind == MemberKind::UnknownCallable && !member.unknown_defaults {
+            return Err(DecodeError::Invalid {
+                field,
+                reason: "unknown callable kind is reserved for in-memory PEX extraction",
+            });
+        }
+        if member.is_global
+            && !matches!(
+                member.kind,
+                MemberKind::Function | MemberKind::UnknownCallable
+            )
+        {
             return Err(DecodeError::Invalid {
                 field,
                 reason: "only a function can be global",

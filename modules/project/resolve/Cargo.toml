@@ -9,6 +9,7 @@ publish.workspace = true
 folio-project-model = { path = "../model" }
 folio-format-declarations = { path = "../../formats/declarations" }
 folio-declaration-tools = { path = "../../tooling/declarations" }
+folio-format-pex = { path = "../../formats/pex" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 toml.workspace = true

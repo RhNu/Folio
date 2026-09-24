@@ -37,7 +37,7 @@ debug-info = true
 
 ## 本地依赖与声明
 
-`[[dependencies]]` 按清单顺序声明。`kind = "package"` 指向本地包目录或清单；`kind = "psc"` 指向无需清单的 PSC 源码目录；`kind = "sdk"` 指向声明 JSON；`kind = "builtin"` 使用内置声明 ID：
+`[[dependencies]]` 按清单顺序声明。`kind = "package"` 指向本地包目录或清单；`kind = "psc"` 指向无需清单的 PSC 源码目录；`kind = "pex"` 指向编译后的 PEX 目录；`kind = "sdk"` 指向声明 JSON；`kind = "builtin"` 使用内置声明 ID：
 
 ```toml
 [[dependencies]]
@@ -57,6 +57,20 @@ path = "../OtherMod/Source/Scripts"
 ```
 
 本地源码包、PSC 目录与 SDK 只参加名称和类型分析；`build` 仅为最终选中的根工作区脚本生成 PEX。PSC 目录递归读取 UTF-8 `.psc`，在内存中提取 API 声明，不写 JSON、不编译依赖脚本；空目录、重名脚本或无效声明会报错。其依赖身份由 `name` 指定，版本在元数据中标记为 `local`，不具有传递依赖。API 可见不意味着 Folio 部署相应运行时。Folio 不从网络获取依赖、不进行版本求解，也不建立用户级包 registry。
+
+PEX 目录依赖尚属实验性，只在根项目显式开启后可用：
+
+```toml
+[experimental]
+pex-dependencies = true
+
+[[dependencies]]
+name = "compiled-mod"
+kind = "pex"
+path = "../CompiledMod/Scripts"
+```
+
+Folio 递归读取目录内的 Skyrim PEX 3.1/3.2，为脚本、继承、变量、属性、状态和可调用成员提取 API；不执行或部署这些 PEX。PEX 不保存参数默认值，也不标明可调用成员原本是事件还是函数。传齐参数的调用可用；省略参数会报出无法确定默认值的诊断，即使开启 `fill-missing-arguments` 也不会猜测；源码覆盖继承自 PEX 的此类成员会报错。损坏或当前 codec 不支持的 PEX 明确拒绝。PEX 来源没有 PSC 定义位置。`folio tree` 和 `folio metadata` 会显示它与其他来源共同参与的整脚本选择。
 
 同名脚本按整脚本选择：后列依赖优先，包自身源码优先于其依赖，根项目源码最高。传递依赖按声明顺序展开；同一来源多次出现时，最后一次决定优先级。目录扫描顺序不参与选择。包内部的大小写不敏感重名和依赖环会报错。`folio tree` 与 `folio metadata` 展示提供者、选中来源和外部运行要求。
 

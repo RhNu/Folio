@@ -70,6 +70,8 @@ kind = "psc"
 path = "../OtherMod/Source/Scripts"
 ```
 
+实验性的 PEX 目录依赖需在根项目显式开启 `[experimental] pex-dependencies = true`。PEX 只提供二进制中可还原的 API，具体限制见[项目与构建](docs/architecture/project-model.md)。
+
 Folio 当前接受的语言构造及 Skyrim 行为见[Papyrus 规范](docs/papyrus.md)。格式化、lint 和编辑器功能见[工具与编辑器](docs/architecture/tooling.md)。
 
 ## 开发指南

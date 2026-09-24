@@ -36,6 +36,7 @@ struct MemberInfo {
     ty: Type,
     kind: MemberKind,
     parameters: Vec<(String, Type, Option<String>)>,
+    unknown_defaults: bool,
     global: bool,
     auto: bool,
     read_only: bool,
@@ -498,6 +499,8 @@ pub(super) fn analyze_with_cancel(
     for (&file, script_key) in &file_scripts {
         let mut inherited = Vec::new();
         let mut seen = HashSet::new();
+        let mut uncertain_overrides = HashSet::new();
+        let mut override_diagnostics = Vec::new();
         let mut current = world
             .scripts
             .get(script_key)
@@ -510,6 +513,40 @@ pub(super) fn analyze_with_cancel(
             let Some(parent) = world.scripts.get(&parent_key) else {
                 break;
             };
+            for member in &analysis.files[&file].script.members {
+                if !matches!(member.kind, HirMemberKind::Function { .. }) {
+                    continue;
+                }
+                let (identity, inherited_member) = match &member.symbol {
+                    Symbol::Member { name, .. } => (
+                        key(name),
+                        parent
+                            .members
+                            .get(&key(name))
+                            .or_else(|| parent.callable_overloads.get(&key(name))),
+                    ),
+                    Symbol::StateMember { state, name, .. } => (
+                        format!("{}:{}", key(state), key(name)),
+                        parent
+                            .states
+                            .get(&key(state))
+                            .and_then(|members| members.get(&key(name))),
+                    ),
+                    _ => continue,
+                };
+                if inherited_member.is_some_and(|item| item.kind == MemberKind::UnknownCallable)
+                    && uncertain_overrides.insert(identity)
+                {
+                    override_diagnostics.push(
+                        Diagnostic::new(
+                            "semantic.pex-override-ambiguous",
+                            Severity::Error,
+                            "cannot override a PEX callable whose event/function kind is unknown",
+                        )
+                        .at(member.span),
+                    );
+                }
+            }
             if let Some((&parent_file, _)) =
                 file_scripts.iter().find(|(_, key)| **key == parent_key)
             {
@@ -541,13 +578,15 @@ pub(super) fn analyze_with_cancel(
                                     auto: member.auto,
                                     read_only: member.read_only,
                                 },
-                                MemberKind::Function | MemberKind::Event => {
-                                    HirMemberKind::Function {
-                                        event: member.kind == MemberKind::Event,
-                                        global: member.global,
-                                        native: true,
-                                    }
-                                }
+                                MemberKind::Function
+                                | MemberKind::Event
+                                // Calls share one opcode; overriding an unknown PEX kind was
+                                // rejected before this lowering fact is assembled.
+                                | MemberKind::UnknownCallable => HirMemberKind::Function {
+                                    event: member.kind == MemberKind::Event,
+                                    global: member.global,
+                                    native: true,
+                                },
                             },
                             ty: member.ty.clone(),
                             parameters: member
@@ -574,6 +613,12 @@ pub(super) fn analyze_with_cancel(
             .unwrap()
             .script
             .external_members = inherited;
+        analysis
+            .files
+            .get_mut(&file)
+            .unwrap()
+            .diagnostics
+            .extend(override_diagnostics);
     }
     if cancelled() {
         return Err(AnalysisCancelled);
@@ -664,13 +709,13 @@ pub(super) fn analyze_with_cancel(
                                     auto: member.auto,
                                     read_only: member.read_only,
                                 },
-                                MemberKind::Function | MemberKind::Event => {
-                                    HirMemberKind::Function {
-                                        event: member.kind == MemberKind::Event,
-                                        global: member.global,
-                                        native: true,
-                                    }
-                                }
+                                MemberKind::Function
+                                | MemberKind::Event
+                                | MemberKind::UnknownCallable => HirMemberKind::Function {
+                                    event: member.kind == MemberKind::Event,
+                                    global: member.global,
+                                    native: true,
+                                },
                             },
                             ty: member.ty.clone(),
                             parameters: member

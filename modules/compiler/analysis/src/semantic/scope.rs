@@ -867,14 +867,26 @@ impl<'a> Scope<'a> {
             owner.binding.as_ref().map(|binding| &binding.symbol),
             Some(Symbol::Script(_))
         ) && !matches!(&owner.kind, ExpressionKind::Reference(reference) if reference.text.eq_ignore_ascii_case("self") || reference.text.eq_ignore_ascii_case("parent"));
-        if static_script && !member.global && member.kind == MemberKind::Function {
+        if static_script
+            && !member.global
+            && matches!(
+                member.kind,
+                MemberKind::Function | MemberKind::UnknownCallable
+            )
+        {
             self.issue(
                 "semantic.instance-member",
                 format!("{} requires an instance", name.text),
                 name.span,
             );
         }
-        if !static_script && member.global && member.kind == MemberKind::Function {
+        if !static_script
+            && member.global
+            && matches!(
+                member.kind,
+                MemberKind::Function | MemberKind::UnknownCallable
+            )
+        {
             self.issue(
                 "semantic.global-member",
                 "global function requires a script qualifier",
@@ -955,6 +967,7 @@ impl<'a> Scope<'a> {
                     ty: result,
                     kind: MemberKind::Function,
                     parameters: params,
+                    unknown_defaults: false,
                     global: false,
                     auto: false,
                     read_only: false,
@@ -979,7 +992,10 @@ impl<'a> Scope<'a> {
             );
             return CheckedCall::error();
         };
-        if !matches!(member.kind, MemberKind::Function | MemberKind::Event) {
+        if !matches!(
+            member.kind,
+            MemberKind::Function | MemberKind::Event | MemberKind::UnknownCallable
+        ) {
             self.issue("semantic.not-callable", "member is not callable", location);
             return CheckedCall::error();
         }
@@ -1026,7 +1042,8 @@ impl<'a> Scope<'a> {
             self.expect(arg, expected, "semantic.argument-type");
             bound.push(ordinal);
         }
-        let defaults = self.call_defaults(&member.parameters, &used, location);
+        let defaults =
+            self.call_defaults(&member.parameters, &used, location, member.unknown_defaults);
         CheckedCall {
             result: member.ty.clone(),
             target: Some(binding.symbol.clone()),
@@ -1065,7 +1082,8 @@ impl<'a> Scope<'a> {
             self.expect(arg, &member.parameters[ordinal].1, "semantic.argument-type");
             bound.push(ordinal);
         }
-        let defaults = self.call_defaults(&member.parameters, &used, location);
+        let defaults =
+            self.call_defaults(&member.parameters, &used, location, member.unknown_defaults);
         CheckedCall {
             result: member.ty.clone(),
             target: Some(symbol),
@@ -1080,12 +1098,21 @@ impl<'a> Scope<'a> {
         parameters: &[(String, Type, Option<String>)],
         used: &BTreeSet<usize>,
         location: SourceSpan,
+        unknown_defaults: bool,
     ) -> Vec<Option<(Type, String)>> {
         parameters
             .iter()
             .enumerate()
             .map(|(index, (name, ty, declared))| {
                 if used.contains(&index) {
+                    return None;
+                }
+                if unknown_defaults {
+                    self.issue(
+                        "semantic.pex-default-unavailable",
+                        format!("PEX does not record whether argument {name} has a default; provide it explicitly"),
+                        location,
+                    );
                     return None;
                 }
                 if let Some(value) = declared {

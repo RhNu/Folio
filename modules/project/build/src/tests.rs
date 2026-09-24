@@ -106,6 +106,7 @@ fn loaded_text_and_dialect_are_projected_without_another_reader() {
         target: "skyrim-se".into(),
         profile: "dev".into(),
         debug_info: true,
+        experimental_pex_dependencies: false,
         emit: vec![],
         dependencies: vec![],
     };
@@ -175,6 +176,7 @@ fn selected_inputs_exclude_shadowed_sdk_script_and_keep_flags() {
         target: "skyrim-se".into(),
         profile: "dev".into(),
         debug_info: true,
+        experimental_pex_dependencies: false,
         emit: vec!["pex".into()],
         dependencies: vec![],
     };

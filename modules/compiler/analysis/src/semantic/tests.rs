@@ -96,6 +96,49 @@ fn binds_inheritance_external_calls_and_local_definition() {
 }
 
 #[test]
+fn pex_callables_allow_explicit_calls_but_reject_unknown_defaults_and_overrides() {
+    let mut bundle = decode(br#"{"schema":2,"package":{"name":"binary","version":"local","source":"fixture","generator":"test"},"compatibility":{"target":"skyrim-se","abi":"papyrus-skyrim"},"naming":{"language":"papyrus","case_sensitive":false},"scripts":[{"name":"Base","members":[{"name":"GetValue","kind":"unknown-callable","ty":"Int","parameters":[{"name":"count","ty":"Int"}]}]}]}"#).unwrap();
+    bundle.scripts[0].members[0].unknown_defaults = true;
+    let mut host = AnalysisHost::new();
+    host.set_external_declarations(vec![bundle]);
+    host.set_fill_missing_arguments(true);
+    source(
+        &mut host,
+        80,
+        "ScriptName Child Extends Base\nFunction Probe()\nInt value = GetValue(1)\nEndFunction\n",
+    );
+    source(
+        &mut host,
+        81,
+        "ScriptName Missing Extends Base\nFunction Probe()\nInt value = GetValue()\nEndFunction\n",
+    );
+    source(
+        &mut host,
+        82,
+        "ScriptName Override Extends Base\nInt Function GetValue(Int count)\nReturn count\nEndFunction\n",
+    );
+    let view = host.view();
+    assert!(
+        view.diagnostics(FileId(80))
+            .unwrap()
+            .iter()
+            .all(|item| item.severity != Severity::Error)
+    );
+    assert!(
+        view.diagnostics(FileId(81))
+            .unwrap()
+            .iter()
+            .any(|item| item.code == "semantic.pex-default-unavailable")
+    );
+    assert!(
+        view.diagnostics(FileId(82))
+            .unwrap()
+            .iter()
+            .any(|item| item.code == "semantic.pex-override-ambiguous")
+    );
+}
+
+#[test]
 fn reports_local_errors_without_losing_sibling_facts() {
     let mut host = AnalysisHost::new();
     let text = "Scriptname Sample\nInt Function Broken()\nReturn Missing + 1\nEndFunction\nInt Function Good()\nReturn 2\nEndFunction\n";

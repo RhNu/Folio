@@ -55,6 +55,8 @@ struct RawManifest {
     dependencies: Vec<RawDependency>,
     #[serde(default)]
     lint: RawLint,
+    #[serde(default)]
+    experimental: RawExperimental,
 }
 
 #[derive(Deserialize)]
@@ -104,6 +106,12 @@ struct RawDependency {
     name: Spanned<String>,
     kind: Spanned<DependencyKind>,
     path: Spanned<String>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct RawExperimental {
+    pex_dependencies: bool,
 }
 
 #[derive(Default, Deserialize)]
@@ -357,6 +365,7 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
         target: raw.build.target.into_inner(),
         profile: raw.build.profile.into_inner(),
         debug_info: raw.build.debug_info.is_none_or(|value| value.into_inner()),
+        experimental_pex_dependencies: raw.experimental.pex_dependencies,
         emit,
         dependencies,
     })
@@ -528,6 +537,21 @@ emit = ["pex"]
         let manifest = parse("folio.toml", &input).unwrap();
         assert_eq!(manifest.dependencies[0].kind, DependencyKind::Builtin);
         assert_eq!(manifest.dependencies[0].path.value, "ck-1.6.1170");
+    }
+
+    #[test]
+    fn pex_dependency_gate_is_explicit() {
+        let dependency =
+            "\n[[dependencies]]\nname = \"binary\"\nkind = \"pex\"\npath = \"../Binary/Scripts\"\n";
+        let disabled = parse("folio.toml", &format!("{MINIMAL}{dependency}")).unwrap();
+        assert!(!disabled.experimental_pex_dependencies);
+        assert_eq!(disabled.dependencies[0].kind, DependencyKind::Pex);
+        let enabled = parse(
+            "folio.toml",
+            &format!("{MINIMAL}\n[experimental]\npex-dependencies = true\n{dependency}"),
+        )
+        .unwrap();
+        assert!(enabled.experimental_pex_dependencies);
     }
 
     #[test]

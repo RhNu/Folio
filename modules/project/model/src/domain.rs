@@ -26,6 +26,7 @@ pub enum SourceId {
     Project,
     Local { path: String },
     DeclarationSdk { path: String, digest: String },
+    BinaryPex { path: String, digest: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -35,6 +36,7 @@ pub enum DependencyKind {
     Sdk,
     Builtin,
     Psc,
+    Pex,
 }
 
 /// A parsed single-package manifest with field-level source positions.
@@ -59,6 +61,8 @@ pub struct Manifest {
     pub profile: String,
     /// Whether generated PEX includes source line debug information.
     pub debug_info: bool,
+    /// Explicit gate for binary PEX API dependencies.
+    pub experimental_pex_dependencies: bool,
     pub emit: Vec<String>,
     pub dependencies: Vec<DependencySpec>,
 }

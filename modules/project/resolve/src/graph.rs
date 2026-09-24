@@ -8,7 +8,7 @@ use folio_project_model::{
 };
 use tracing::{debug, info, instrument};
 
-pub const METADATA_SCHEMA: u32 = 4;
+pub const METADATA_SCHEMA: u32 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolveError {
@@ -347,6 +347,9 @@ pub fn resolve(root_key: &str, packages: &[LoadedPackage]) -> Result<Metadata, R
                 reason: match package.kind() {
                     folio_project_model::DependencyKind::Psc => {
                         "PSC API requires an external runtime"
+                    }
+                    folio_project_model::DependencyKind::Pex => {
+                        "PEX API requires an external runtime"
                     }
                     folio_project_model::DependencyKind::Sdk
                     | folio_project_model::DependencyKind::Builtin => {

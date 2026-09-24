@@ -492,6 +492,7 @@ dependencies = [
  "blake3",
  "folio-declaration-tools",
  "folio-format-declarations",
+ "folio-format-pex",
  "folio-project-model",
  "serde",
  "serde_json",
