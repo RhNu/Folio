@@ -61,6 +61,15 @@ emit = ["pex"]
 
 需要 CK 或 SKSE API 时，可用 `folio declarations list` 查看内置包，并在清单中显式声明依赖。后列依赖的同名脚本优先；例如 CK 在前、SKSE 在后。声明仅提供分析时的 API 可见性，所需运行时仍由项目自行提供。完整字段、依赖示例和覆盖规则见[项目与构建](docs/architecture/project-model.md)。
 
+只有 `.psc` 的模组源码目录可直接作为声明依赖，无需给该目录添加 `folio.toml`：
+
+```toml
+[[dependencies]]
+name = "other-mod"
+kind = "psc"
+path = "../OtherMod/Source/Scripts"
+```
+
 Folio 当前接受的语言构造及 Skyrim 行为见[Papyrus 规范](docs/papyrus.md)。格式化、lint 和编辑器功能见[工具与编辑器](docs/architecture/tooling.md)。
 
 ## 开发指南

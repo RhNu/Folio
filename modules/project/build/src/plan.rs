@@ -89,7 +89,7 @@ pub fn project_plan(
         .packages
         .iter()
         .find(|package| package.source_key == project.root_key)
-        .and_then(|package| package.manifest.as_ref())
+        .and_then(|package| package.manifest())
         .ok_or_else(|| PlanError::MissingPackage(project.root_key.clone()))?;
     for kind in &root.emit {
         if kind != "pex" {
@@ -286,8 +286,7 @@ mod tests {
             packages: vec![LoadedPackage {
                 source_key: "root".into(),
                 source_id: SourceId::Project,
-                manifest: Some(manifest),
-                sdk: None,
+                carrier: folio_project_model::LoadedCarrier::Manifest(manifest),
                 source_files: vec![source],
                 links: vec![],
             }],
@@ -326,11 +325,12 @@ mod tests {
             display_path: "Source/Scripts/External.psc".into(),
             script_candidate: "External".into(),
         };
+        let mut dependency_manifest = project.packages[0].manifest().unwrap().clone();
+        dependency_manifest.name = "api".into();
         project.packages.push(LoadedPackage {
             source_key: "api".into(),
             source_id: dependency.source.clone(),
-            manifest: None,
-            sdk: None,
+            carrier: folio_project_model::LoadedCarrier::Manifest(dependency_manifest),
             source_files: vec![file.clone()],
             links: vec![],
         });
@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn fingerprint_tracks_dependency_precedence() {
         let (mut project, metadata) = fixture("Scriptname Sky", "Sky");
-        let manifest = project.packages[0].manifest.as_mut().unwrap();
+        let manifest = project.packages[0].manifest_mut().unwrap();
         let span = folio_project_model::SourceSpan {
             source: "folio.toml".into(),
             start: 0,
@@ -447,8 +447,7 @@ mod tests {
         manifest.dependencies = vec![dependency("ck"), dependency("skse")];
         let first = crate::fingerprint::command_fingerprint(&project, &metadata, "compiler", &[]);
         project.packages[0]
-            .manifest
-            .as_mut()
+            .manifest_mut()
             .unwrap()
             .dependencies
             .reverse();

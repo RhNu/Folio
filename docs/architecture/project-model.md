@@ -37,7 +37,7 @@ debug-info = true
 
 ## 本地依赖与声明
 
-`[[dependencies]]` 按清单顺序声明。`kind = "package"` 指向本地包目录或清单；`kind = "sdk"` 指向声明 JSON；`kind = "builtin"` 使用内置声明 ID：
+`[[dependencies]]` 按清单顺序声明。`kind = "package"` 指向本地包目录或清单；`kind = "psc"` 指向无需清单的 PSC 源码目录；`kind = "sdk"` 指向声明 JSON；`kind = "builtin"` 使用内置声明 ID：
 
 ```toml
 [[dependencies]]
@@ -49,9 +49,14 @@ path = "ck-1.6.1170"
 name = "skse-2.2.8"
 kind = "builtin"
 path = "skse-2.2.8"
+
+[[dependencies]]
+name = "other-mod"
+kind = "psc"
+path = "../OtherMod/Source/Scripts"
 ```
 
-本地源码包与 SDK 只参加名称和类型分析；`build` 仅为最终选中的根工作区脚本生成 PEX。API 可见不意味着 Folio 部署相应运行时。Folio 不从网络获取依赖、不进行版本求解，也不建立用户级包 registry。
+本地源码包、PSC 目录与 SDK 只参加名称和类型分析；`build` 仅为最终选中的根工作区脚本生成 PEX。PSC 目录递归读取 UTF-8 `.psc`，在内存中提取 API 声明，不写 JSON、不编译依赖脚本；空目录、重名脚本或无效声明会报错。其依赖身份由 `name` 指定，版本在元数据中标记为 `local`，不具有传递依赖。API 可见不意味着 Folio 部署相应运行时。Folio 不从网络获取依赖、不进行版本求解，也不建立用户级包 registry。
 
 同名脚本按整脚本选择：后列依赖优先，包自身源码优先于其依赖，根项目源码最高。传递依赖按声明顺序展开；同一来源多次出现时，最后一次决定优先级。目录扫描顺序不参与选择。包内部的大小写不敏感重名和依赖环会报错。`folio tree` 与 `folio metadata` 展示提供者、选中来源和外部运行要求。
 

@@ -34,6 +34,7 @@ pub enum DependencyKind {
     Package,
     Sdk,
     Builtin,
+    Psc,
 }
 
 /// A parsed single-package manifest with field-level source positions.
@@ -109,10 +110,56 @@ pub struct DeclarationLocation {
 pub struct LoadedPackage {
     pub source_key: String,
     pub source_id: SourceId,
-    pub manifest: Option<Manifest>,
-    pub sdk: Option<LoadedSdk>,
+    pub carrier: LoadedCarrier,
     pub source_files: Vec<SourceFile>,
     pub links: Vec<LoadedLink>,
+}
+
+/// The source of one dependency, independent of how its scripts are selected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoadedCarrier {
+    Manifest(Manifest),
+    Declarations {
+        kind: DependencyKind,
+        sdk: LoadedSdk,
+    },
+}
+
+impl LoadedPackage {
+    pub fn manifest(&self) -> Option<&Manifest> {
+        match &self.carrier {
+            LoadedCarrier::Manifest(manifest) => Some(manifest),
+            LoadedCarrier::Declarations { .. } => None,
+        }
+    }
+
+    pub fn manifest_mut(&mut self) -> Option<&mut Manifest> {
+        match &mut self.carrier {
+            LoadedCarrier::Manifest(manifest) => Some(manifest),
+            LoadedCarrier::Declarations { .. } => None,
+        }
+    }
+
+    pub fn sdk(&self) -> Option<&LoadedSdk> {
+        match &self.carrier {
+            LoadedCarrier::Declarations { sdk, .. } => Some(sdk),
+            LoadedCarrier::Manifest(_) => None,
+        }
+    }
+
+    pub fn sdk_mut(&mut self) -> Option<&mut LoadedSdk> {
+        match &mut self.carrier {
+            LoadedCarrier::Declarations { sdk, .. } => Some(sdk),
+            LoadedCarrier::Manifest(_) => None,
+        }
+    }
+
+    pub fn kind(&self) -> DependencyKind {
+        match &self.carrier {
+            LoadedCarrier::Manifest(_) => DependencyKind::Package,
+            LoadedCarrier::Declarations { kind, .. } => *kind,
+        }
+    }
 }
 
 /// Explicitly associates one manifest dependency with a loaded source.

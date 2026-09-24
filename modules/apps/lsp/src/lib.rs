@@ -368,7 +368,7 @@ impl Server {
             .packages
             .iter()
             .find(|package| package.source_key == loaded.root_key)
-            .and_then(|package| package.manifest.as_ref())
+            .and_then(|package| package.manifest())
             .ok_or_else(|| LspError::Project("root package manifest is missing".into()))?
             .lint_rules
             .clone();
@@ -397,7 +397,7 @@ impl Server {
         else {
             return Err(LspError::Project("root package is missing".into()));
         };
-        let Some(manifest) = package.manifest.as_ref() else {
+        let Some(manifest) = package.manifest().cloned() else {
             return Err(LspError::Project("root manifest is missing".into()));
         };
         for (path, text) in self.documents.overlays() {

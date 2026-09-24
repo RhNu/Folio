@@ -490,6 +490,7 @@ name = "folio-project-resolve"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "folio-declaration-tools",
  "folio-format-declarations",
  "folio-project-model",
  "serde",

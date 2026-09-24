@@ -56,8 +56,7 @@ pub fn sources_from_loaded(project: &LoadedProject) -> Result<Vec<ProjectSource>
             .get(&input.package_key)
             .ok_or_else(|| ProjectionError::MissingPackage(input.package_key.clone()))?;
         let manifest = package
-            .manifest
-            .as_ref()
+            .manifest()
             .ok_or_else(|| ProjectionError::MissingPackage(input.package_key.clone()))?;
         if !manifest.language.eq_ignore_ascii_case("papyrus") {
             return Err(ProjectionError::UnsupportedLanguage {
@@ -159,7 +158,7 @@ pub fn selected_inputs(
         .packages
         .iter()
         .find(|package| package.source_key == project.root_key)
-        .and_then(|package| package.manifest.as_ref())
+        .and_then(|package| package.manifest())
         .map(|manifest| manifest.user_flags.clone())
         .unwrap_or_default();
     Ok(SelectedInputs {

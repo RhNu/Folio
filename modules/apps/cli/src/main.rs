@@ -203,6 +203,7 @@ impl CliError {
             | Self::Project(
                 LoadError::Manifest(_)
                 | LoadError::Declaration { .. }
+                | LoadError::SourceDeclarations { .. }
                 | LoadError::Builtin { .. }
                 | LoadError::SdkNaming { .. }
                 | LoadError::Resolve(_)
@@ -258,6 +259,7 @@ fn project_error_code(error: &LoadError) -> &'static str {
             ManifestErrorKind::InvalidValue { .. } => "MANIFEST003",
         },
         LoadError::Declaration { .. } => "SDK001",
+        LoadError::SourceDeclarations { .. } => "PSC001",
         LoadError::Builtin { .. } => "SDK004",
         LoadError::SdkNaming { .. } => "SDK002",
         LoadError::Resolve(resolve) => match &resolve.kind {
@@ -637,7 +639,7 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
                         .packages
                         .iter()
                         .find(|package| package.source_key == loaded.root_key)
-                        .and_then(|package| package.manifest.as_ref())
+                        .and_then(|package| package.manifest())
                         .ok_or_else(|| CliError::Lint("root package manifest is missing".into()))?;
                     let config = LintConfig::from_rules(&root_manifest.lint_rules)
                         .map_err(|error| CliError::Lint(error.to_string()))?;

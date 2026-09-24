@@ -7,10 +7,11 @@ use std::{
     sync::Arc,
 };
 
+use folio_declaration_tools::{GenerationOptions, SourceInput, generate};
 use folio_format_declarations::{DeclarationBundle, builtin, decode, encode};
 use folio_project_model::{
-    DeclarationLocation, DeclaredScript, DependencyKind, LoadedLink, LoadedPackage, LoadedSdk,
-    SourceFile, SourceId,
+    DeclarationLocation, DeclaredScript, DependencyKind, LoadedCarrier, LoadedLink, LoadedPackage,
+    LoadedSdk, SourceFile, SourceId,
 };
 use tracing::{debug, info, instrument};
 
@@ -81,6 +82,10 @@ pub enum LoadError {
         path: PathBuf,
         cause: folio_format_declarations::DecodeError,
     },
+    SourceDeclarations {
+        path: PathBuf,
+        reason: String,
+    },
     Builtin {
         name: String,
         reason: String,
@@ -108,6 +113,7 @@ impl std::fmt::Display for LoadError {
             } => write!(f, "{operation} {}: {cause}", path.display()),
             Self::Manifest(cause) => write!(f, "{cause}"),
             Self::Declaration { path, cause } => write!(f, "{}: {cause}", path.display()),
+            Self::SourceDeclarations { path, reason } => write!(f, "{}: {reason}", path.display()),
             Self::Builtin { name, reason } => write!(f, "built-in {name}: {reason}"),
             Self::SdkNaming {
                 path,
@@ -192,11 +198,14 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
         .to_owned();
     let root_key = path_key(&root_path)?;
     info!(manifest = %root_path.display(), "loading project");
-    let mut pending = BTreeMap::from([(root_key.clone(), (root_path, DependencyKind::Package))]);
+    let mut pending = BTreeMap::from([(
+        root_key.clone(),
+        (root_path, DependencyKind::Package, None::<String>),
+    )]);
     let mut packages = BTreeMap::new();
     let mut bundles = BTreeMap::new();
     let mut source_inputs = Vec::new();
-    while let Some((key, (path, kind))) = pending.pop_first() {
+    while let Some((key, (path, kind, declared_name))) = pending.pop_first() {
         if packages.contains_key(&key) {
             continue;
         }
@@ -229,9 +238,11 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                             dependency_index: index,
                             source_key: target_key.clone(),
                         });
-                        pending
-                            .entry(target_key)
-                            .or_insert((PathBuf::from(id), DependencyKind::Builtin));
+                        pending.entry(target_key).or_insert((
+                            PathBuf::from(id),
+                            DependencyKind::Builtin,
+                            Some(dependency.name.value.clone()),
+                        ));
                         continue;
                     }
                     let declared = base.join(&dependency.path.value);
@@ -251,9 +262,11 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                         dependency_index: index,
                         source_key: target_key.clone(),
                     });
-                    pending
-                        .entry(target_key)
-                        .or_insert((actual, dependency.kind));
+                    pending.entry(target_key).or_insert((
+                        actual,
+                        dependency.kind,
+                        Some(dependency.name.value.clone()),
+                    ));
                 }
                 let source_id = if key == root_key {
                     SourceId::Project
@@ -266,14 +279,13 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                     LoadedPackage {
                         source_key: key,
                         source_id,
-                        manifest: Some(manifest),
-                        sdk: None,
+                        carrier: LoadedCarrier::Manifest(manifest),
                         source_files,
                         links,
                     },
                 );
             }
-            DependencyKind::Sdk | DependencyKind::Builtin => {
+            DependencyKind::Sdk | DependencyKind::Builtin | DependencyKind::Psc => {
                 let (bundle, digest) = if kind == DependencyKind::Builtin {
                     let name = path.to_string_lossy().to_string();
                     let bundle = builtin(&name)
@@ -290,6 +302,33 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                         reason: cause.to_string(),
                     })?;
                     let digest = blake3::hash(&bytes).to_hex().to_string();
+                    (bundle, digest)
+                } else if kind == DependencyKind::Psc {
+                    if !path.is_dir() {
+                        return Err(LoadError::InvalidPath {
+                            path,
+                            reason: "PSC dependency is not a directory",
+                        });
+                    }
+                    let name = declared_name.expect("PSC dependency has a name");
+                    let (_, inputs) = collect_sources(&path, "", &["psc".into()], &key)?;
+                    if inputs.is_empty() {
+                        return Err(LoadError::InvalidPath {
+                            path,
+                            reason: "PSC dependency contains no scripts",
+                        });
+                    }
+                    let bundle = psc_declarations(&name, &inputs).map_err(|cause| {
+                        LoadError::SourceDeclarations {
+                            path: path.clone(),
+                            reason: cause.to_string(),
+                        }
+                    })?;
+                    let digest = bundle
+                        .package
+                        .source_digest
+                        .clone()
+                        .expect("generator hashes sources");
                     (bundle, digest)
                 } else {
                     let bytes =
@@ -330,18 +369,23 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
                     abi: bundle.compatibility.abi.clone(),
                     scripts,
                 };
-                let source_id = SourceId::DeclarationSdk {
-                    path: portable,
-                    digest,
+                let source_id = if kind == DependencyKind::Psc {
+                    SourceId::Local {
+                        path: portable.clone(),
+                    }
+                } else {
+                    SourceId::DeclarationSdk {
+                        path: portable.clone(),
+                        digest,
+                    }
                 };
-                debug!(package_id = %sdk.name, script_count = sdk.scripts.len(), "loaded declaration SDK");
+                debug!(package_id = %sdk.name, ?kind, script_count = sdk.scripts.len(), "loaded dependency declarations");
                 packages.insert(
                     key.clone(),
                     LoadedPackage {
                         source_key: key.clone(),
                         source_id,
-                        manifest: None,
-                        sdk: Some(sdk),
+                        carrier: LoadedCarrier::Declarations { kind, sdk },
                         source_files: Vec::new(),
                         links: Vec::new(),
                     },
@@ -359,6 +403,28 @@ pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, Load
         declaration_bundles: bundles,
         source_inputs,
     })
+}
+
+/// Extract a local source directory's API without publishing a carrier file.
+fn psc_declarations(
+    name: &str,
+    inputs: &[LoadedSourceInput],
+) -> Result<DeclarationBundle, folio_declaration_tools::GenerationError> {
+    let sources = inputs
+        .iter()
+        .map(|input| SourceInput {
+            path: &input.display_path,
+            text: &input.text,
+        })
+        .collect::<Vec<_>>();
+    generate(
+        GenerationOptions {
+            name,
+            version: "local",
+            source: "local-psc",
+        },
+        &sources,
+    )
 }
 
 /// Reject links and non-directory components before using a workspace path.
@@ -585,5 +651,25 @@ mod tests {
             relative_portable(Path::new("C:/work/app"), Path::new("C:/work/sdk/decl.json"))
                 .unwrap();
         assert_eq!(result, "../sdk/decl.json");
+    }
+
+    #[test]
+    fn psc_directory_inputs_supply_declarations_without_a_carrier_file() {
+        let input = LoadedSourceInput {
+            package_key: "scripts".into(),
+            canonical_path: PathBuf::from("/unused/Actor.psc"),
+            display_path: "Actor.psc".into(),
+            script_candidate: "Actor".into(),
+            text: Arc::from("ScriptName Actor\nInt Function Value(Int count = 2) Native\n"),
+        };
+        let bundle = psc_declarations("other-mod", &[input]).unwrap();
+        assert_eq!(bundle.package.name, "other-mod");
+        assert_eq!(bundle.scripts[0].name, "Actor");
+        assert_eq!(
+            bundle.scripts[0].members[0].parameters[0]
+                .default_literal
+                .as_deref(),
+            Some("2")
+        );
     }
 }

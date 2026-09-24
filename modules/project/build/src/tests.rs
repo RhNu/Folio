@@ -1,7 +1,7 @@
 use super::*;
 use folio_project_model::{
-    DeclarationLocation, LoadedPackage, Manifest, Metadata, PackageId, ScriptProvider,
-    ScriptSelection, SelectionReason, SourceFile, SourceId,
+    DeclarationLocation, LoadedCarrier, LoadedPackage, LoadedSdk, Manifest, Metadata, PackageId,
+    ScriptProvider, ScriptSelection, SelectionReason, SourceFile, SourceId,
 };
 use folio_project_resolve::io::LoadedSourceInput;
 
@@ -114,8 +114,7 @@ fn loaded_text_and_dialect_are_projected_without_another_reader() {
         packages: vec![LoadedPackage {
             source_key: "manifest".into(),
             source_id: SourceId::Project,
-            manifest: Some(manifest),
-            sdk: None,
+            carrier: LoadedCarrier::Manifest(manifest),
             source_files: vec![SourceFile {
                 path: "src/Sky.psc".into(),
                 display_path: "src/Sky.psc".into(),
@@ -248,16 +247,23 @@ fn selected_inputs_exclude_shadowed_sdk_script_and_keep_flags() {
             LoadedPackage {
                 source_key: "root".into(),
                 source_id: SourceId::Project,
-                manifest: Some(manifest.clone()),
-                sdk: None,
+                carrier: LoadedCarrier::Manifest(manifest.clone()),
                 source_files: vec![],
                 links: vec![],
             },
             LoadedPackage {
                 source_key: "sdk".into(),
                 source_id: sdk_source,
-                manifest: None,
-                sdk: None,
+                carrier: LoadedCarrier::Declarations {
+                    kind: folio_project_model::DependencyKind::Sdk,
+                    sdk: LoadedSdk {
+                        name: "sdk".into(),
+                        version: "1".into(),
+                        target: "skyrim-se".into(),
+                        abi: "papyrus-skyrim".into(),
+                        scripts: vec![],
+                    },
+                },
                 source_files: vec![],
                 links: vec![],
             },

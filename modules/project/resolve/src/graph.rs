@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use folio_project_model::{
-    DependencyEdge, DependencyKind, ExternalRequirement, LoadedPackage, Metadata, PackageId,
-    ResolvedPackage, ScriptProvider, ScriptSelection, SelectionReason, SourceId, SourceSpan,
+    DependencyEdge, ExternalRequirement, LoadedPackage, Metadata, PackageId, ResolvedPackage,
+    ScriptProvider, ScriptSelection, SelectionReason, SourceId, SourceSpan,
 };
 use tracing::{debug, info, instrument};
 
@@ -104,8 +104,7 @@ pub fn resolve(root_key: &str, packages: &[LoadedPackage]) -> Result<Metadata, R
         .get(root_key)
         .ok_or_else(|| error(ResolveErrorKind::MissingSource(root_key.into()), None))?;
     let root_manifest = root
-        .manifest
-        .as_ref()
+        .manifest()
         .ok_or_else(|| error(ResolveErrorKind::InvalidCarrier(root_key.into()), None))?;
     if root.source_id != SourceId::Project {
         return Err(error(
@@ -116,14 +115,15 @@ pub fn resolve(root_key: &str, packages: &[LoadedPackage]) -> Result<Metadata, R
     let mut ids = BTreeMap::new();
     let mut names = BTreeMap::<&str, (&str, Option<SourceSpan>)>::new();
     for (&key, package) in &indexed {
-        let (name, version, location) = match (&package.manifest, &package.sdk) {
-            (Some(manifest), None) => (
+        let (name, version, location) = match &package.carrier {
+            folio_project_model::LoadedCarrier::Manifest(manifest) => (
                 &manifest.name,
                 &manifest.version,
                 manifest.fields.get("package.name").cloned(),
             ),
-            (None, Some(sdk)) => (&sdk.name, &sdk.version, None),
-            _ => return Err(error(ResolveErrorKind::InvalidCarrier(key.into()), None)),
+            folio_project_model::LoadedCarrier::Declarations { sdk, .. } => {
+                (&sdk.name, &sdk.version, None)
+            }
         };
         if let Some((prior_key, prior_span)) = names.insert(name, (key, location.clone()))
             && prior_key != key
@@ -148,7 +148,7 @@ pub fn resolve(root_key: &str, packages: &[LoadedPackage]) -> Result<Metadata, R
     let mut edges = Vec::new();
     let mut adjacency = BTreeMap::<&str, Vec<&str>>::new();
     for (&key, package) in &indexed {
-        let Some(manifest) = &package.manifest else {
+        let Some(manifest) = package.manifest() else {
             continue;
         };
         for (index, dep) in manifest.dependencies.iter().enumerate() {
@@ -180,10 +180,7 @@ pub fn resolve(root_key: &str, packages: &[LoadedPackage]) -> Result<Metadata, R
                     Some(dep.name.span.clone()),
                 ));
             }
-            let kind_matches = match dep.kind {
-                DependencyKind::Package => target.manifest.is_some(),
-                DependencyKind::Sdk | DependencyKind::Builtin => target.sdk.is_some(),
-            };
+            let kind_matches = dep.kind == target.kind();
             if !kind_matches {
                 return Err(error(
                     ResolveErrorKind::DependencyKindMismatch(dep.name.value.clone()),
@@ -240,7 +237,7 @@ pub fn resolve(root_key: &str, packages: &[LoadedPackage]) -> Result<Metadata, R
     let mut providers = BTreeMap::<String, Vec<ScriptProvider>>::new();
     for (&key, package) in &indexed {
         let id = ids[key].clone();
-        let (source_root, language, dialect) = package.manifest.as_ref().map_or_else(
+        let (source_root, language, dialect) = package.manifest().map_or_else(
             || (None, None, None),
             |manifest| {
                 (
@@ -275,7 +272,7 @@ pub fn resolve(root_key: &str, packages: &[LoadedPackage]) -> Result<Metadata, R
                     source_path: Some(file.display_path.clone()),
                 });
         }
-        if let Some(sdk) = &package.sdk {
+        if let Some(sdk) = package.sdk() {
             if sdk.target != root_manifest.target {
                 return Err(error(
                     ResolveErrorKind::TargetMismatch {
@@ -337,7 +334,7 @@ pub fn resolve(root_key: &str, packages: &[LoadedPackage]) -> Result<Metadata, R
         if id == &root_id {
             continue;
         }
-        let sdk = package.sdk.as_ref();
+        let sdk = package.sdk();
         external_requirements.insert(
             id.clone(),
             ExternalRequirement {
@@ -347,10 +344,17 @@ pub fn resolve(root_key: &str, packages: &[LoadedPackage]) -> Result<Metadata, R
                     || format!("papyrus-{}", root_manifest.dialect),
                     |sdk| sdk.abi.clone(),
                 ),
-                reason: if sdk.is_some() {
-                    "SDK API supplied by external runtime"
-                } else {
-                    "source dependency is visible without local code generation"
+                reason: match package.kind() {
+                    folio_project_model::DependencyKind::Psc => {
+                        "PSC API requires an external runtime"
+                    }
+                    folio_project_model::DependencyKind::Sdk
+                    | folio_project_model::DependencyKind::Builtin => {
+                        "SDK API supplied by external runtime"
+                    }
+                    folio_project_model::DependencyKind::Package => {
+                        "source dependency is visible without local code generation"
+                    }
                 }
                 .into(),
             },

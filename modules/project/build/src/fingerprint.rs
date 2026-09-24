@@ -52,8 +52,7 @@ pub fn command_fingerprint(
             .get(&input.package_key)
             .expect("loaded source belongs to a loaded package");
         let dialect = package
-            .manifest
-            .as_ref()
+            .manifest()
             .map(|manifest| manifest.dialect.as_str())
             .unwrap_or("");
         sources.push(SourceContent {
@@ -66,7 +65,7 @@ pub fn command_fingerprint(
     sources.sort_by(|left, right| (&left.package, left.path).cmp(&(&right.package, right.path)));
     let mut manifests = Vec::new();
     for package in &project.packages {
-        if let Some(manifest) = &package.manifest {
+        if let Some(manifest) = package.manifest() {
             manifests.push(ManifestSettings {
                 package: &package.source_id,
                 name: &manifest.name,

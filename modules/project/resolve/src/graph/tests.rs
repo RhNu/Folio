@@ -1,6 +1,7 @@
 use super::*;
 use folio_project_model::{
-    DependencySpec, LoadedLink, LoadedSdk, LocatedString, Manifest, SourceFile,
+    DependencyKind, DependencySpec, LoadedCarrier, LoadedLink, LoadedSdk, LocatedString, Manifest,
+    SourceFile,
 };
 
 fn spot(source: &str) -> SourceSpan {
@@ -72,8 +73,7 @@ fn package(
                 path: format!("../{key}/folio.toml"),
             }
         },
-        manifest: Some(manifest(key, specs)),
-        sdk: None,
+        carrier: LoadedCarrier::Manifest(manifest(key, specs)),
         source_files: scripts
             .iter()
             .map(|script| SourceFile {
@@ -93,14 +93,16 @@ fn sdk(target: &str, digest: &str) -> LoadedPackage {
             path: "sdk.json".into(),
             digest: digest.into(),
         },
-        manifest: None,
-        sdk: Some(LoadedSdk {
-            name: "sdk".into(),
-            version: "1".into(),
-            target: target.into(),
-            abi: "papyrus-skyrim".into(),
-            scripts: Vec::new(),
-        }),
+        carrier: LoadedCarrier::Declarations {
+            kind: DependencyKind::Sdk,
+            sdk: LoadedSdk {
+                name: "sdk".into(),
+                version: "1".into(),
+                target: target.into(),
+                abi: "papyrus-skyrim".into(),
+                scripts: Vec::new(),
+            },
+        },
         source_files: Vec::new(),
         links: Vec::new(),
     }
@@ -144,8 +146,7 @@ fn later_dependency_and_root_source_win() {
         "b"
     );
     without_root[0]
-        .manifest
-        .as_mut()
+        .manifest_mut()
         .unwrap()
         .dependencies
         .swap(0, 1);
@@ -199,23 +200,25 @@ fn later_builtin_declaration_shadows_earlier_one() {
             path: format!("{name}.json"),
             digest: name.into(),
         },
-        manifest: None,
-        sdk: Some(LoadedSdk {
-            name: name.into(),
-            version: "1".into(),
-            target: "skyrim-se".into(),
-            abi: "papyrus-skyrim".into(),
-            scripts: vec![folio_project_model::DeclaredScript {
-                name: "Actor".into(),
-                location: folio_project_model::DeclarationLocation {
-                    carrier_path: format!("{name}.json"),
-                    script_index: 0,
-                    source_path: None,
-                    line: None,
-                    column: None,
-                },
-            }],
-        }),
+        carrier: LoadedCarrier::Declarations {
+            kind: DependencyKind::Builtin,
+            sdk: LoadedSdk {
+                name: name.into(),
+                version: "1".into(),
+                target: "skyrim-se".into(),
+                abi: "papyrus-skyrim".into(),
+                scripts: vec![folio_project_model::DeclaredScript {
+                    name: "Actor".into(),
+                    location: folio_project_model::DeclarationLocation {
+                        carrier_path: format!("{name}.json"),
+                        script_index: 0,
+                        source_path: None,
+                        line: None,
+                        column: None,
+                    },
+                }],
+            },
+        },
         source_files: Vec::new(),
         links: Vec::new(),
     };
@@ -234,6 +237,49 @@ fn later_builtin_declaration_shadows_earlier_one() {
     let result = resolve("root", &packages).unwrap();
     assert_eq!(result.scripts[0].selected.package.name, "skse");
     assert_eq!(result.scripts[0].providers.len(), 2);
+}
+
+#[test]
+fn psc_directory_declarations_share_normal_provider_precedence() {
+    let mut source = sdk("skyrim-se", "content");
+    source.source_key = "other-mod".into();
+    source.source_id = SourceId::Local {
+        path: "../OtherMod/Source".into(),
+    };
+    if let LoadedCarrier::Declarations { kind, sdk } = &mut source.carrier {
+        *kind = DependencyKind::Psc;
+        sdk.name = "other-mod".into();
+        sdk.scripts.push(folio_project_model::DeclaredScript {
+            name: "Actor".into(),
+            location: folio_project_model::DeclarationLocation {
+                carrier_path: "../OtherMod/Source".into(),
+                script_index: 0,
+                source_path: Some("Actor.psc".into()),
+                line: Some(1),
+                column: Some(1),
+            },
+        });
+    }
+    let packages = vec![
+        package(
+            "root",
+            vec![edge("root", "other-mod", DependencyKind::Psc)],
+            &[],
+        ),
+        source,
+    ];
+    let resolved = resolve("root", &packages).unwrap();
+    assert_eq!(resolved.scripts[0].selected.package.name, "other-mod");
+    assert_eq!(
+        resolved.scripts[0]
+            .selected
+            .declaration
+            .as_ref()
+            .unwrap()
+            .source_path
+            .as_deref(),
+        Some("Actor.psc")
+    );
 }
 
 #[test]
@@ -268,8 +314,8 @@ fn rejects_sdk_target_mismatch() {
         ResolveErrorKind::TargetMismatch { .. }
     ));
     let mut wrong_abi = mismatch;
-    wrong_abi[1].sdk.as_mut().unwrap().target = "skyrim-se".into();
-    wrong_abi[1].sdk.as_mut().unwrap().abi = "another-abi".into();
+    wrong_abi[1].sdk_mut().unwrap().target = "skyrim-se".into();
+    wrong_abi[1].sdk_mut().unwrap().abi = "another-abi".into();
     assert!(matches!(
         resolve("root", &wrong_abi).unwrap_err().kind,
         ResolveErrorKind::AbiMismatch { .. }
