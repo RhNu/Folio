@@ -413,6 +413,7 @@ version = "0.1.0"
 dependencies = [
  "folio-build",
  "folio-hir",
+ "folio-papyrus",
  "folio-source",
  "tracing",
 ]

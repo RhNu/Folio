@@ -1,6 +1,6 @@
 # Folio VS Code 客户端
 
-此扩展将 `.psc` 文件交给 `folio lsp`，显示诊断、hover 和跳转定义，并提供文档格式化。语言与项目规则由 Folio 服务器处理。客户端源码位于本目录，目前从仓库运行。
+此扩展为 `.psc` 提供基础语法高亮，将项目语义查询交给 `folio lsp`，显示诊断、带来源的 hover、定义与声明跳转、签名提示、文档大纲和语义高亮，并提供文档格式化。基础高亮使用通用 TextMate scope；服务器用 VS Code 标准语义 token 类别细化函数、事件、类型、属性、参数和变量的颜色。客户端源码位于本目录，目前从仓库运行。
 
 ## 本地调试
 
@@ -17,8 +17,10 @@ VS Code 应打开含 `folio.toml` 的项目文件夹。一个客户端会话处�
 
 | 设置 | 用途 |
 | --- | --- |
-| `folio.server.path` | Folio 可执行文件的绝对路径；空值使用仓库调试构建 |
+| `folio.server.path` | Folio 可执行文件或其目录的绝对路径；未找到时继续搜索 `PATH` |
 | `folio.server.manifestPath` | 可选清单路径；空值使用文件夹根目录的 `folio.toml` |
 | `folio.server.logFilter` | 服务器日志过滤器，默认 `info` |
 
-设置变化会重启服务器。LSP 报文走 stdout，日志走 stderr。仓库外的项目可在开发宿主中打开其文件夹，并设置 `folio.server.path`。
+设置变化会重启服务器。扩展按 `folio.server.path`、`PATH` 的顺序寻找 `folio`；仅在 VS Code 扩展开发模式下，才回退到仓库的 `target/debug/folio`（Windows 为 `folio.exe`）。已配置路径不可用时，输出面板会记录实际采用的来源。LSP 报文走 stdout，日志走 stderr。仓库外的项目可使用 `PATH` 中的 Folio，或设置 `folio.server.path`。
+
+在项目源码、PSC 目录和 package 依赖中，声明跳转指向解析后选中的 `.psc`。SDK、PEX 与内置声明没有可确认的本地 PSC 定义时，hover 显示提供者信息，跳转不返回位置。主题可直接使用通用 TextMate scope 与 VS Code 的标准语义 token 颜色规则。

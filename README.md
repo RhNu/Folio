@@ -72,13 +72,13 @@ path = "../OtherMod/Source/Scripts"
 
 实验性的 PEX 目录依赖需在根项目显式开启 `[experimental] pex-dependencies = true`。PEX 只提供二进制中可还原的 API，具体限制见[项目与构建](docs/architecture/project-model.md)。
 
-Folio 当前接受的语言构造及 Skyrim 行为见[Papyrus 规范](docs/papyrus.md)。格式化、lint 和编辑器功能见[工具与编辑器](docs/architecture/tooling.md)。
+Folio 当前接受的语言构造及 Skyrim 行为见[Papyrus 规范](docs/papyrus.md)。格式化、lint，以及 VS Code 的语法与语义高亮、签名提示和符号跳转见[工具与编辑器](docs/architecture/tooling.md)。
 
 ## 开发指南
 
 仓库按 `modules/<领域>/<crate>` 组织 Rust workspace；`editors/vscode` 是 VS Code 客户端。阅读[架构总览](docs/architecture/overview.md)了解模块边界，[编译管线](docs/architecture/compiler.md)了解语义、降级和生成，[构建与产物](docs/architecture/build-artifacts.md)了解缓存与发布。未完成工作集中在[开发计划](docs/planning/roadmap.md)。
 
-修改公开配置或行为时，更新所属专题和本页相关用法。开发约束见[AGENTS.md](AGENTS.md)。VS Code 客户端的本地调试方式见[扩展说明](editors/vscode/README.md)。
+修改公开配置或行为时，更新所属专题和本页相关用法。开发约束见[AGENTS.md](AGENTS.md)。VS Code 客户端优先使用配置的 Folio 可执行文件或目录，其次搜索 `PATH`；本地调试方式见[扩展说明](editors/vscode/README.md)。
 
 仓库维护命令通过 `cargo xtask` 运行。`cargo xtask lines` 统计 `modules` 下各 Rust 源文件的非空、非纯注释行；超过 650 行提示警告，超过 1200 行报错并返回非零状态。行尾注释所在的代码行仍计入。超过硬限制时应按职责拆入子模块，较大的内嵌测试也可移入测试子模块。
 

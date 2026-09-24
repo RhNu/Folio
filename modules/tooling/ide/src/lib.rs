@@ -8,6 +8,12 @@ use folio_build::ProjectAnalysisView;
 use folio_hir::Type;
 use folio_source::{FileId, SourceSpan, TextRange};
 
+mod symbols;
+pub use symbols::{
+    DocumentSymbol, SemanticToken, SemanticTokenKind, SignatureInfo, document_symbols,
+    semantic_tokens, signature_help, source_declaration,
+};
+
 /// The character unit used in editor positions; LSP defaults to UTF-16.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PositionEncoding {
@@ -249,45 +255,76 @@ impl Documents {
 pub struct Hover {
     pub content: String,
     pub span: SourceSpan,
+    pub owner_script: Option<String>,
 }
 
 /// Returns a typed hover from the same semantic facts used by project checks.
 pub fn hover(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Option<Hover> {
     let script = view.analysis.hir(file)?;
+    if let Some(name) = &script.name
+        && name.span.range.start <= byte
+        && byte < name.span.range.end
+    {
+        let parent = script
+            .parent
+            .as_ref()
+            .map_or(String::new(), |parent| format!(" extends {}", parent.text));
+        return Some(Hover {
+            content: format!("script {}{parent}", name.text),
+            span: name.span,
+            owner_script: Some(name.text.clone()),
+        });
+    }
+    if let Some(parent) = &script.parent
+        && parent.span.range.start <= byte
+        && byte < parent.span.range.end
+    {
+        return Some(Hover {
+            content: format!("script {}", parent.text),
+            span: parent.span,
+            owner_script: Some(parent.text.clone()),
+        });
+    }
     if let Some(declaration) = script.declarations.iter().find(|declaration| {
         declaration.span.range.start <= byte && byte < declaration.span.range.end
     }) {
-        let text = view.analysis.text(file)?;
-        let name = text.get(declaration.span.range.start..declaration.span.range.end)?;
+        let content = symbols::describe_symbol(&script, &declaration.symbol, &declaration.ty);
         return Some(Hover {
-            content: format!("{name}: {}", display_type(&declaration.ty)),
+            content,
             span: declaration.span,
+            owner_script: symbols::owner_script(&declaration.symbol),
+        });
+    }
+    if let Some((name, span)) = symbols::script_reference(view, file, byte) {
+        return Some(Hover {
+            content: format!("script {name}"),
+            span,
+            owner_script: Some(name),
         });
     }
     let fact = script.expression_at(byte)?;
-    let ty = match &fact.ty {
-        Type::Void => "None".to_owned(),
-        Type::Int => "Int".to_owned(),
-        Type::Float => "Float".to_owned(),
-        Type::Bool => "Bool".to_owned(),
-        Type::String => "String".to_owned(),
-        Type::Script(name) => name.clone(),
-        Type::Array(item) => format!("{}[]", display_type(item)),
-        Type::None => "None".to_owned(),
-        Type::Error => return None,
-    };
+    if fact.ty == Type::Error {
+        return None;
+    }
     let content = fact.binding.as_ref().map_or_else(
-        || ty.clone(),
-        |binding| format!("{}: {ty}", binding.name.text),
+        || display_type(&fact.ty),
+        |binding| symbols::describe_symbol(&script, &binding.symbol, &fact.ty),
     );
     let span = fact
         .binding
         .as_ref()
         .map_or(fact.span, |binding| binding.name.span);
-    Some(Hover { content, span })
+    Some(Hover {
+        content,
+        span,
+        owner_script: fact
+            .binding
+            .as_ref()
+            .and_then(|binding| symbols::owner_script(&binding.symbol)),
+    })
 }
 
-fn display_type(ty: &Type) -> String {
+pub(crate) fn display_type(ty: &Type) -> String {
     match ty {
         Type::Void | Type::None => "None".into(),
         Type::Int => "Int".into(),

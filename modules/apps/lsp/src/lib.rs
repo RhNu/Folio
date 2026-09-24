@@ -13,7 +13,7 @@ use folio_format::format_source;
 use folio_ide::{Documents, Position, PositionEncoding, Range};
 use folio_lint::{LintConfig, lint_script};
 use folio_papyrus::PapyrusDialect;
-use folio_project_model::SourceFile;
+use folio_project_model::{DependencyKind, Metadata, SourceFile, SourceId};
 use folio_project_resolve::{discover, io::LoadedSourceInput, load_and_resolve, resolve};
 use folio_source::{FileId, TextRange};
 use serde_json::{Value, json};
@@ -112,6 +112,7 @@ struct Server {
     documents: Documents,
     project: ProjectAnalysis,
     view: Option<Arc<ProjectAnalysisView>>,
+    metadata: Option<Arc<Metadata>>,
     paths: BTreeMap<PathBuf, FileId>,
     published: BTreeSet<String>,
     project_message: Option<String>,
@@ -133,6 +134,7 @@ impl Server {
             documents: Documents::default(),
             project: ProjectAnalysis::new(),
             view: None,
+            metadata: None,
             paths: BTreeMap::new(),
             published: BTreeSet::new(),
             project_message: None,
@@ -169,7 +171,7 @@ impl Server {
                 if let Some(id) = id {
                     send(
                         &self.output,
-                        &json!({"jsonrpc":"2.0","id":id,"result":{"capabilities":{"positionEncoding":name,"textDocumentSync":{"openClose":true,"change":2,"save":{"includeText":false}},"hoverProvider":true,"definitionProvider":true,"documentFormattingProvider":true},"serverInfo":{"name":"Folio","version":env!("CARGO_PKG_VERSION")}}}),
+                        &json!({"jsonrpc":"2.0","id":id,"result":{"capabilities":{"positionEncoding":name,"textDocumentSync":{"openClose":true,"change":2,"save":{"includeText":false}},"hoverProvider":true,"definitionProvider":true,"declarationProvider":true,"documentSymbolProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","],"retriggerCharacters":[","]},"semanticTokensProvider":{"legend":{"tokenTypes":["class","type","namespace","function","method","event","property","variable","parameter"],"tokenModifiers":["declaration","readonly"]},"full":true},"documentFormattingProvider":true},"serverInfo":{"name":"Folio","version":env!("CARGO_PKG_VERSION")}}}),
                     )?;
                 }
                 tracing::info!(encoding = name, "LSP initialized");
@@ -258,9 +260,16 @@ impl Server {
             }
             "textDocument/didSave" => self.reload_report()?,
             "workspace/didChangeWatchedFiles" => self.reload_report()?,
-            "textDocument/hover" | "textDocument/definition" => {
+            "textDocument/hover" | "textDocument/definition" | "textDocument/declaration" => {
                 if let Some(id) = id {
                     self.navigation(id, method, params)?;
+                }
+            }
+            "textDocument/signatureHelp"
+            | "textDocument/documentSymbol"
+            | "textDocument/semanticTokens/full" => {
+                if let Some(id) = id {
+                    self.symbol_request(id, method, params)?;
                 }
             }
             "textDocument/formatting" => {
@@ -307,6 +316,7 @@ impl Server {
 
     fn clear_view(&mut self) -> Result<(), LspError> {
         self.view = None;
+        self.metadata = None;
         self.paths.clear();
         self.project_message = None;
         for uri in &self.published {
@@ -354,6 +364,7 @@ impl Server {
                 .sync_project(&loaded, &metadata)
                 .map_err(|error| LspError::Project(error.to_string()))?,
         );
+        self.metadata = Some(Arc::new(metadata));
         self.paths = view
             .sources
             .iter()
@@ -572,6 +583,7 @@ impl Server {
         let file = uri_to_path(uri).and_then(|path| self.paths.get(&path).copied());
         let at = parse_position(&params["position"]);
         let view = self.view.clone();
+        let metadata = self.metadata.clone();
         let generation = self.generation.load(Ordering::SeqCst);
         let active = Arc::clone(&self.generation);
         let cancelled = Arc::clone(&self.cancelled);
@@ -615,12 +627,20 @@ impl Server {
                 let text = view.analysis.text(file)?;
                 let byte = folio_ide::offset(text, at?, encoding)?;
                 if hover {
-                    let item = folio_ide::hover(view, file, byte)?;
+                    let mut item = folio_ide::hover(view, file, byte)?;
+                    if let (Some(metadata), Some(owner)) = (metadata.as_deref(), item.owner_script.as_deref())
+                        && let Some(origin) = symbol_origin(metadata, owner)
+                    {
+                        item.content.push_str("\nSource: ");
+                        item.content.push_str(&origin);
+                    }
+                    tracing::debug!(request = %key, file = ?file, "resolved hover symbol");
                     Some(json!({"contents":{"kind":"plaintext","value":item.content},"range":range_json(folio_ide::range(text, item.span.range, encoding)?)}))
                 } else {
-                    let span = folio_ide::definition(view, file, byte)?;
+                    let span = folio_ide::source_declaration(view, file, byte)?;
                     let source = view.sources.get(&span.file)?;
                     let target = view.analysis.text(span.file)?;
+                    tracing::debug!(request = %key, source_file = ?file, target_file = ?span.file, "resolved source declaration");
                     Some(json!({"uri":path_to_uri(&source.canonical_path),"range":range_json(folio_ide::range(target, span.range, encoding)?)}))
                 }
             })().unwrap_or(Value::Null);
@@ -641,6 +661,153 @@ impl Server {
         });
         Ok(())
     }
+
+    /// Answers editor symbol requests from one coherent project generation.
+    fn symbol_request(&self, id: Value, method: &str, params: &Value) -> Result<(), LspError> {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+        let file = uri_to_path(uri).and_then(|path| self.paths.get(&path).copied());
+        let Some(view) = &self.view else {
+            return self.reply(id, Value::Null);
+        };
+        let Some(file) = file else {
+            return self.reply(id, Value::Null);
+        };
+        let Some(text) = view.analysis.text(file) else {
+            return self.reply(id, Value::Null);
+        };
+        let result = match method {
+            "textDocument/signatureHelp" => {
+                let info = parse_position(&params["position"])
+                    .and_then(|position| folio_ide::offset(text, position, self.encoding))
+                    .and_then(|byte| folio_ide::signature_help(view, file, byte));
+                info.map_or(Value::Null, |info| {
+                    tracing::debug!(?file, active_parameter = info.active_parameter, "resolved signature help");
+                    let parameters = info.parameters.iter().map(|label| json!({"label":label})).collect::<Vec<_>>();
+                    json!({"signatures":[{"label":info.label,"parameters":parameters}],"activeSignature":0,"activeParameter":info.active_parameter})
+                })
+            }
+            "textDocument/documentSymbol" => {
+                let symbols = folio_ide::document_symbols(view, file);
+                tracing::debug!(?file, count = symbols.len(), "collected document symbols");
+                json!(
+                    symbols
+                        .iter()
+                        .filter_map(|item| document_symbol_json(text, item, self.encoding))
+                        .collect::<Vec<_>>()
+                )
+            }
+            "textDocument/semanticTokens/full" => {
+                let tokens = folio_ide::semantic_tokens(view, file);
+                tracing::debug!(?file, count = tokens.len(), "collected semantic tokens");
+                json!({"data":encode_semantic_tokens(text, &tokens, self.encoding)})
+            }
+            _ => Value::Null,
+        };
+        self.reply(id, result)
+    }
+}
+
+/// Encodes sorted identifier spans in the position units negotiated by the client.
+fn encode_semantic_tokens(
+    text: &str,
+    tokens: &[folio_ide::SemanticToken],
+    encoding: PositionEncoding,
+) -> Vec<u32> {
+    let mut data = Vec::with_capacity(tokens.len() * 5);
+    let mut previous = Position {
+        line: 0,
+        character: 0,
+    };
+    for item in tokens {
+        let Some(range) = folio_ide::range(text, item.range, encoding) else {
+            continue;
+        };
+        if range.start.line != range.end.line {
+            continue;
+        }
+        let kind = match item.kind {
+            folio_ide::SemanticTokenKind::Class => 0,
+            folio_ide::SemanticTokenKind::Type => 1,
+            folio_ide::SemanticTokenKind::Namespace => 2,
+            folio_ide::SemanticTokenKind::Function => 3,
+            folio_ide::SemanticTokenKind::Method => 4,
+            folio_ide::SemanticTokenKind::Event => 5,
+            folio_ide::SemanticTokenKind::Property => 6,
+            folio_ide::SemanticTokenKind::Variable => 7,
+            folio_ide::SemanticTokenKind::Parameter => 8,
+        };
+        let Some(delta_line) = range.start.line.checked_sub(previous.line) else {
+            continue;
+        };
+        let Some(delta_start) = (if delta_line == 0 {
+            range.start.character.checked_sub(previous.character)
+        } else {
+            Some(range.start.character)
+        }) else {
+            continue;
+        };
+        let length = range.end.character - range.start.character;
+        let modifiers = u32::from(item.declaration) | (u32::from(item.readonly) << 1);
+        data.extend([delta_line, delta_start, length, kind, modifiers]);
+        previous = range.start;
+    }
+    data
+}
+
+fn document_symbol_json(
+    text: &str,
+    item: &folio_ide::DocumentSymbol,
+    encoding: PositionEncoding,
+) -> Option<Value> {
+    let children = item
+        .children
+        .iter()
+        .filter_map(|child| document_symbol_json(text, child, encoding))
+        .collect::<Vec<_>>();
+    Some(
+        json!({"name":item.name,"detail":item.detail,"kind":item.kind,
+        "range":range_json(folio_ide::range(text, item.range, encoding)?),
+        "selectionRange":range_json(folio_ide::range(text, item.selection_range, encoding)?),
+        "children":children}),
+    )
+}
+
+fn symbol_origin(metadata: &Metadata, script: &str) -> Option<String> {
+    let selected = &metadata
+        .scripts
+        .iter()
+        .find(|item| item.script.eq_ignore_ascii_case(script))?
+        .selected;
+    let dependency_kind = metadata
+        .dependencies
+        .iter()
+        .find(|edge| edge.to == selected.package)
+        .map(|edge| edge.kind);
+    let kind = match dependency_kind {
+        Some(DependencyKind::Package) => "package dependency",
+        Some(DependencyKind::Psc) => "PSC dependency",
+        Some(DependencyKind::Sdk) => "SDK declaration",
+        Some(DependencyKind::Builtin) => "built-in declaration",
+        Some(DependencyKind::Pex) => "PEX declaration",
+        None => match &selected.package.source {
+            SourceId::Project => "project",
+            SourceId::Local { .. } => "local dependency",
+            SourceId::DeclarationSdk { .. } => "SDK declaration",
+            SourceId::BinaryPex { .. } => "PEX declaration",
+        },
+    };
+    let path = selected.source_path.as_deref().or_else(|| {
+        selected
+            .declaration
+            .as_ref()
+            .map(|item| item.carrier_path.as_str())
+    });
+    Some(format!(
+        "{} {} ({kind}){}",
+        selected.package.name,
+        selected.package.version,
+        path.map_or(String::new(), |path| format!(" · {path}"))
+    ))
 }
 
 /// Results tied to an older project generation are never sent as current answers.
@@ -736,8 +903,9 @@ fn percent_decode(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{negotiate_encoding, request_stale};
+    use super::{encode_semantic_tokens, negotiate_encoding, request_stale};
     use folio_ide::PositionEncoding;
+    use folio_source::TextRange;
     use serde_json::json;
 
     #[test]
@@ -755,6 +923,35 @@ mod tests {
                 &json!({"capabilities":{"general":{"positionEncodings":["utf-8","utf-16"]}}})
             ),
             PositionEncoding::Utf8
+        );
+    }
+
+    #[test]
+    fn semantic_token_deltas_use_negotiated_character_units() {
+        use folio_ide::{SemanticToken, SemanticTokenKind};
+
+        let text = "🦊 Foo\nBar";
+        let tokens = [
+            SemanticToken {
+                range: TextRange { start: 5, end: 8 },
+                kind: SemanticTokenKind::Class,
+                declaration: true,
+                readonly: false,
+            },
+            SemanticToken {
+                range: TextRange { start: 9, end: 12 },
+                kind: SemanticTokenKind::Variable,
+                declaration: false,
+                readonly: false,
+            },
+        ];
+        assert_eq!(
+            encode_semantic_tokens(text, &tokens, PositionEncoding::Utf16),
+            [0, 3, 3, 0, 1, 1, 0, 3, 7, 0]
+        );
+        assert_eq!(
+            encode_semantic_tokens(text, &tokens, PositionEncoding::Utf8),
+            [0, 5, 3, 0, 1, 1, 0, 3, 7, 0]
         );
     }
 }

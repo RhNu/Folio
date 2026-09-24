@@ -1,0 +1,116 @@
+{
+  "name": "Papyrus",
+  "scopeName": "source.papyrus",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#references" },
+    { "include": "#numbers" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.block.documentation.papyrus", "begin": "\\{", "end": "\\}" },
+        { "name": "comment.block.papyrus", "begin": ";/", "end": "/;" },
+        { "name": "comment.line.semicolon.papyrus", "match": ";[^\\r\\n]*" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.papyrus",
+          "begin": "\"",
+          "end": "\"|(?=$)",
+          "patterns": [
+            { "name": "constant.character.escape.papyrus", "match": "\\\\." }
+          ]
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "(?i)\\b(ScriptName)\\s+([A-Za-z_][A-Za-z_0-9]*)(?:\\s+(Extends)\\s+([A-Za-z_][A-Za-z_0-9]*))?",
+          "captures": {
+            "1": { "name": "keyword.declaration.class.papyrus" },
+            "2": { "name": "entity.name.type.class.papyrus" },
+            "3": { "name": "keyword.other.inheritance.papyrus" },
+            "4": { "name": "entity.other.inherited-class.papyrus" }
+          }
+        },
+        {
+          "match": "(?i)\\b(Import)\\s+([A-Za-z_][A-Za-z_0-9]*)",
+          "captures": {
+            "1": { "name": "keyword.control.import.papyrus" },
+            "2": { "name": "entity.name.type.class.papyrus" }
+          }
+        },
+        {
+          "match": "(?i)\\b(Auto\\s+)?(State)\\s+([A-Za-z_][A-Za-z_0-9]*)",
+          "captures": {
+            "1": { "name": "storage.modifier.papyrus" },
+            "2": { "name": "keyword.declaration.papyrus" },
+            "3": { "name": "entity.name.namespace.papyrus" }
+          }
+        },
+        {
+          "match": "(?i)\\b(Event)\\s+([A-Za-z_][A-Za-z_0-9]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.function.papyrus" },
+            "2": { "name": "entity.name.function.papyrus" }
+          }
+        },
+        {
+          "match": "(?i)(?:(\\b[A-Za-z_][A-Za-z_0-9]*(?:\\[\\])?)\\s+)?\\b(Function)\\s+([A-Za-z_][A-Za-z_0-9]*)",
+          "captures": {
+            "1": { "name": "storage.type.papyrus" },
+            "2": { "name": "keyword.declaration.function.papyrus" },
+            "3": { "name": "entity.name.function.papyrus" }
+          }
+        },
+        {
+          "match": "(?i)\\b([A-Za-z_][A-Za-z_0-9]*(?:\\[\\])?)\\s+([A-Za-z_][A-Za-z_0-9]*)\\s+(Property)\\b",
+          "captures": {
+            "1": { "name": "storage.type.papyrus" },
+            "2": { "name": "variable.other.property.papyrus" },
+            "3": { "name": "keyword.declaration.papyrus" }
+          }
+        },
+        {
+          "match": "(?i)(?<=\\(|,)\\s*([A-Za-z_][A-Za-z_0-9]*(?:\\[\\])?)\\s+([A-Za-z_][A-Za-z_0-9]*)(?=\\s*(?:[,=)]))",
+          "captures": {
+            "1": { "name": "storage.type.papyrus" },
+            "2": { "name": "variable.parameter.papyrus" }
+          }
+        },
+        {
+          "match": "(?i)^\\s*([A-Za-z_][A-Za-z_0-9]*(?:\\[\\])?)\\s+([A-Za-z_][A-Za-z_0-9]*)(?=\\s*(?:=|;|$))",
+          "captures": {
+            "1": { "name": "storage.type.papyrus" },
+            "2": { "name": "variable.other.readwrite.papyrus" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.papyrus", "match": "(?i)\\b(?:If|ElseIf|Else|EndIf|While|EndWhile|Return|As|New)\\b" },
+        { "name": "keyword.declaration.papyrus", "match": "(?i)\\b(?:EndFunction|EndEvent|EndState|EndProperty|Group|EndGroup)\\b" },
+        { "name": "storage.modifier.papyrus", "match": "(?i)\\b(?:Auto|AutoReadOnly|Conditional|Global|Hidden|Native)\\b" },
+        { "name": "storage.type.primitive.papyrus", "match": "(?i)\\b(?:Bool|Float|Int|String)\\b" },
+        { "name": "constant.language.papyrus", "match": "(?i)\\b(?:True|False|None|Self|Parent)\\b" }
+      ]
+    },
+    "references": {
+      "patterns": [
+        { "name": "entity.name.function.papyrus", "match": "\\b[A-Za-z_][A-Za-z_0-9]*(?=\\s*\\()" },
+        { "name": "variable.other.property.papyrus", "match": "(?<=\\.)[A-Za-z_][A-Za-z_0-9]*\\b" }
+      ]
+    },
+    "numbers": { "name": "constant.numeric.papyrus", "match": "\\b(?:0[xX][0-9a-fA-F]+|[0-9]+(?:\\.[0-9]+)?)\\b" },
+    "operators": { "name": "keyword.operator.papyrus", "match": "==|!=|<=|>=|&&|\\|\\||\\+=|-=|\\*=|/=|%=|[=+*/%<>!-]" }
+  }
+}
