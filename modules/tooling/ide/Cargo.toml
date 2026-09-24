@@ -1,0 +1,15 @@
+[package]
+name = "folio-ide"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+folio-build = { path = "../../project/build" }
+folio-hir = { path = "../../compiler/hir" }
+folio-source = { path = "../../foundation/source" }
+tracing.workspace = true
+
+[lints]
+workspace = true

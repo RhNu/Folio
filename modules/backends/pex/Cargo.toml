@@ -1,0 +1,17 @@
+[package]
+name = "folio-backend-pex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+folio-mir = { path = "../../compiler/mir" }
+folio-profiles = { path = "../../foundation/profiles" }
+folio-format-pex = { path = "../../formats/pex" }
+folio-diagnostics = { path = "../../foundation/diagnostics" }
+folio-source = { path = "../../foundation/source" }
+tracing.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "package": {
+    "name": "editor-runtime-api",
+    "version": "1",
+    "source": "self-authored-editor-example",
+    "generator": "manual"
+  },
+  "compatibility": {
+    "target": "skyrim-se",
+    "abi": "papyrus-skyrim"
+  },
+  "naming": {
+    "language": "papyrus",
+    "case_sensitive": false
+  },
+  "scripts": [
+    {
+      "name": "Quest",
+      "is_native": true,
+      "members": [
+        { "name": "Start", "kind": "function", "is_native": true },
+        { "name": "Stop", "kind": "function", "is_native": true },
+        { "name": "IsRunning", "kind": "function", "ty": "Bool", "is_native": true }
+      ]
+    },
+    {
+      "name": "Actor",
+      "parent": "Form",
+      "is_native": true,
+      "members": [
+        { "name": "GetLevel", "kind": "function", "ty": "Int", "is_native": true },
+        { "name": "IsDead", "kind": "function", "ty": "Bool", "is_native": true },
+        {
+          "name": "AddItem",
+          "kind": "function",
+          "is_native": true,
+          "parameters": [
+            { "name": "item", "ty": "Form" },
+            { "name": "count", "ty": "Int", "default_literal": "1" },
+            { "name": "silent", "ty": "Bool", "default_literal": "false" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Form",
+      "is_native": true,
+      "members": [
+        { "name": "GetFormID", "kind": "function", "ty": "Int", "is_native": true }
+      ]
+    },
+    {
+      "name": "Debug",
+      "is_native": true,
+      "members": [
+        {
+          "name": "Notification",
+          "kind": "function",
+          "is_global": true,
+          "is_native": true,
+          "parameters": [{ "name": "message", "ty": "String" }]
+        }
+      ]
+    }
+  ]
+}

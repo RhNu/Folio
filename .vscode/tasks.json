@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Folio: Build CLI",
+      "type": "shell",
+      "command": "cargo build -p folio-cli",
+      "problemMatcher": []
+    },
+    {
+      "label": "Folio: Compile VS Code extension",
+      "type": "shell",
+      "command": "npm run compile",
+      "options": {
+        "cwd": "${workspaceFolder}/editors/vscode"
+      },
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "Folio: Build VS Code debug session",
+      "dependsOn": [
+        "Folio: Build CLI",
+        "Folio: Compile VS Code extension"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    }
+  ]
+}

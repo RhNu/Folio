@@ -1,0 +1,19 @@
+schema = 3
+
+[package]
+name = "folio-editor-example"
+version = "0.1.0"
+
+[languages.papyrus]
+dialect = "skyrim"
+extensions = ["psc"]
+
+[build]
+target = "skyrim-se"
+profile = "dev"
+emit = ["pex"]
+
+[[dependencies]]
+name = "editor-runtime-api"
+kind = "sdk"
+path = "sdk/editor-runtime-api.json"

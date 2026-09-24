@@ -1,0 +1,22 @@
+[package]
+name = "folio-lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+folio-build = { path = "../../project/build" }
+folio-diagnostics = { path = "../../foundation/diagnostics" }
+folio-format = { path = "../../tooling/format" }
+folio-ide = { path = "../../tooling/ide" }
+folio-lint = { path = "../../tooling/lint" }
+folio-papyrus = { path = "../../languages/papyrus" }
+folio-project-model = { path = "../../project/model" }
+folio-project-resolve = { path = "../../project/resolve" }
+folio-source = { path = "../../foundation/source" }
+serde_json.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

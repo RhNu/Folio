@@ -1,0 +1,65 @@
+{
+  "name": "folio-vscode",
+  "displayName": "Folio",
+  "description": "Papyrus language support powered by the Folio language server",
+  "version": "0.1.0",
+  "private": true,
+  "extensionKind": ["workspace"],
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": ["Programming Languages"],
+  "main": "./out/extension.js",
+  "activationEvents": ["onLanguage:papyrus", "onCommand:folio.restartServer"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "papyrus",
+        "aliases": ["Papyrus"],
+        "extensions": [".psc"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "folio.restartServer",
+        "title": "Folio: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Folio",
+      "properties": {
+        "folio.server.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Absolute path to the Folio executable. Empty uses this repository's debug build when available."
+        },
+        "folio.server.manifestPath": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Optional folio.toml path, absolute or relative to the open workspace folder."
+        },
+        "folio.server.logFilter": {
+          "type": "string",
+          "default": "info",
+          "scope": "resource",
+          "description": "Rust tracing filter passed to folio lsp; logs are written to stderr."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "check": "tsc -p . --noEmit"
+  },
+  "dependencies": {
+    "vscode-languageclient": "10.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.6",
+    "@types/vscode": "1.91.0",
+    "typescript": "6.0.2"
+  }
+}

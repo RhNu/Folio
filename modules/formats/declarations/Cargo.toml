@@ -1,0 +1,13 @@
+[package]
+name = "folio-format-declarations"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+flate2.workspace = true
+
+[lints]
+workspace = true

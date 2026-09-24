@@ -1,0 +1,58 @@
+[workspace]
+resolver = "3"
+members = [
+    "modules/foundation/source",
+    "modules/foundation/diagnostics",
+    "modules/foundation/profiles",
+    "modules/project/model",
+    "modules/project/resolve",
+    "modules/project/build",
+    "modules/languages/papyrus",
+    "modules/compiler/hir",
+    "modules/compiler/analysis",
+    "modules/compiler/mir",
+    "modules/compiler/lowering",
+    "modules/backends/pex",
+    "modules/formats/declarations",
+    "modules/formats/pex",
+    "modules/tooling/ide",
+    "modules/tooling/format",
+    "modules/tooling/lint",
+    "modules/tooling/declarations",
+    "modules/apps/cli",
+    "modules/apps/lsp",
+    "modules/apps/xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+publish = false
+
+[workspace.dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = [
+    "env-filter",
+    "fmt",
+    "json",
+] }
+rowan = "0.16.1"
+encoding_rs = "0.8"
+flate2 = "1"
+salsa = "0.28.4"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

@@ -1,0 +1,17 @@
+[package]
+name = "folio-lint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+folio-diagnostics = { path = "../../foundation/diagnostics" }
+folio-hir = { path = "../../compiler/hir" }
+tracing.workspace = true
+
+[dev-dependencies]
+folio-source = { path = "../../foundation/source" }
+
+[lints]
+workspace = true

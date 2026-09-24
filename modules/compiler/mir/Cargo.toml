@@ -1,0 +1,14 @@
+[package]
+name = "folio-mir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+folio-source = { path = "../../foundation/source" }
+folio-profiles = { path = "../../foundation/profiles" }
+tracing.workspace = true
+
+[lints]
+workspace = true

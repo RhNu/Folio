@@ -1,0 +1,27 @@
+[package]
+name = "folio-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+folio-analysis = { path = "../../compiler/analysis" }
+folio-diagnostics = { path = "../../foundation/diagnostics" }
+folio-papyrus = { path = "../../languages/papyrus" }
+folio-format-declarations = { path = "../../formats/declarations" }
+folio-project-model = { path = "../model" }
+folio-project-resolve = { path = "../resolve" }
+folio-source = { path = "../../foundation/source" }
+folio-profiles = { path = "../../foundation/profiles" }
+folio-hir = { path = "../../compiler/hir" }
+folio-mir = { path = "../../compiler/mir" }
+folio-lowering = { path = "../../compiler/lowering" }
+folio-backend-pex = { path = "../../backends/pex" }
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
