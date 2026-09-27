@@ -1,6 +1,8 @@
 # Folio VS Code 客户端
 
-此扩展为 `.psc` 提供基础语法高亮，将项目语义查询交给 `folio lsp`，显示诊断、带来源的 hover、定义与声明跳转、签名提示、文档大纲和语义高亮，并提供文档格式化。基础高亮使用通用 TextMate scope；服务器用 VS Code 标准语义 token 类别细化函数、事件、类型、属性、参数和变量的颜色。客户端源码位于本目录，可从仓库调试或打包成 VSIX 安装。
+此扩展为 `.psc` 提供文件图标和基础语法高亮，将项目语义查询交给 `folio lsp`，显示诊断、带来源的 hover、定义与声明跳转、签名提示、文档大纲和语义高亮，并提供文档格式化。基础高亮使用通用 TextMate scope；服务器用 VS Code 标准语义 token 类别细化函数、事件、类型、属性、参数和变量的颜色。客户端源码位于本目录，可从仓库调试或打包成 VSIX 安装。
+
+扩展将 `icons/papyrus-psc.svg` 注册为 Papyrus 语言的默认文件图标，并随 VSIX 打包。VS Code 会在当前文件图标主题未为 `.psc` 或 Papyrus 指定专用图标、且允许语言图标时使用它；主题自带的专用图标优先。
 
 ## 本地打包与安装
 
@@ -31,11 +33,11 @@ code --install-extension .\folio-vscode-0.1.0.vsix
 
 VS Code 应打开含 `folio.toml` 的项目文件夹。一个客户端会话处理一个项目文件夹内的 `.psc`，并转发该文件夹内的清单、源码和 JSON 文件变化。
 
-| 设置 | 用途 |
-| --- | --- |
-| `folio.server.path` | Folio 可执行文件或其目录的绝对路径；未找到时继续搜索 `PATH` |
-| `folio.server.manifestPath` | 可选清单路径；空值使用文件夹根目录的 `folio.toml` |
-| `folio.server.logFilter` | 服务器日志过滤器，默认 `info` |
+| 设置                        | 用途                                                        |
+| --------------------------- | ----------------------------------------------------------- |
+| `folio.server.path`         | Folio 可执行文件或其目录的绝对路径；未找到时继续搜索 `PATH` |
+| `folio.server.manifestPath` | 可选清单路径；空值使用文件夹根目录的 `folio.toml`           |
+| `folio.server.logFilter`    | 服务器日志过滤器，默认 `info`                               |
 
 设置变化会重启服务器。扩展按 `folio.server.path`、`PATH` 的顺序寻找 `folio`；仅在 VS Code 扩展开发模式下，才回退到仓库的 `target/debug/folio`（Windows 为 `folio.exe`）。已配置路径不可用时，输出面板会记录实际采用的来源。LSP 报文走 stdout，日志走 stderr。仓库外的项目可使用 `PATH` 中的 Folio，或设置 `folio.server.path`。
 

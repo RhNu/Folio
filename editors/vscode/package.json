@@ -25,7 +25,11 @@
         "extensions": [
           ".psc"
         ],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/papyrus-psc.svg",
+          "dark": "./icons/papyrus-psc.svg"
+        }
       }
     ],
     "grammars": [
