@@ -1,6 +1,22 @@
 # Folio VS Code 客户端
 
-此扩展为 `.psc` 提供基础语法高亮，将项目语义查询交给 `folio lsp`，显示诊断、带来源的 hover、定义与声明跳转、签名提示、文档大纲和语义高亮，并提供文档格式化。基础高亮使用通用 TextMate scope；服务器用 VS Code 标准语义 token 类别细化函数、事件、类型、属性、参数和变量的颜色。客户端源码位于本目录，目前从仓库运行。
+此扩展为 `.psc` 提供基础语法高亮，将项目语义查询交给 `folio lsp`，显示诊断、带来源的 hover、定义与声明跳转、签名提示、文档大纲和语义高亮，并提供文档格式化。基础高亮使用通用 TextMate scope；服务器用 VS Code 标准语义 token 类别细化函数、事件、类型、属性、参数和变量的颜色。客户端源码位于本目录，可从仓库调试或打包成 VSIX 安装。
+
+## 本地打包与安装
+
+使用 Node.js 22 或更新版本，在本目录运行：
+
+```powershell
+npm ci
+npm run package
+code --install-extension .\folio-vscode-0.1.0.vsix
+```
+
+`npm run package` 会先编译 TypeScript，再生成 `folio-vscode-<版本>.vsix`。也可以在 VS Code 的扩展视图选择“从 VSIX 安装”。重复测试时重新打包并安装新 VSIX；版本号来自 `package.json`。VSIX 只包含客户端，安装后仍须将 `folio` 可执行文件加入 `PATH`，或设置 `folio.server.path`。
+
+## 发布命令
+
+`npm run publish` 会先编译客户端，然后调用 `vsce publish` 上传到 VS Code Marketplace。当前 `package.json` 中的 `folio-local` 仅用于本地测试；发布前须将它替换为已注册的 publisher ID、更新版本，并按[官方发布说明](https://code.visualstudio.com/api/working-with-extensions/publishing-extension)配置认证。本仓库不保存发布凭据。
 
 ## 本地调试
 

@@ -80,6 +80,8 @@ Folio 当前接受的语言构造及 Skyrim 行为见[Papyrus 规范](docs/papyr
 
 修改公开配置或行为时，更新所属专题和本页相关用法。开发约束见[AGENTS.md](AGENTS.md)。VS Code 客户端优先使用配置的 Folio 可执行文件或目录，其次搜索 `PATH`；本地调试方式见[扩展说明](editors/vscode/README.md)。
 
+VS Code 客户端可在 `editors/vscode` 运行 `npm ci`、`npm run package` 生成本地安装的 VSIX；发布命令为 `npm run publish`，具体前提和安装步骤见[扩展说明](editors/vscode/README.md)。VSIX 不含 `folio` 可执行文件。
+
 仓库维护命令通过 `cargo xtask` 运行。`cargo xtask lines` 统计 `modules` 下各 Rust 源文件的非空、非纯注释行；超过 650 行提示警告，超过 1200 行报错并返回非零状态。行尾注释所在的代码行仍计入。超过硬限制时应按职责拆入子模块，较大的内嵌测试也可移入测试子模块。
 
 ## 许可与来源
