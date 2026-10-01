@@ -1,38 +1,46 @@
-//! Filesystem shell. Pure manifest and graph decisions live in sibling modules.
+//! Filesystem adapters for one root and four parallel declaration inputs.
 
+use crate::{graph, manifest};
+use folio_declaration_tools::{GenerationOptions, PexInput, SourceInput, extract_pex, generate};
+use folio_format_declarations::{DeclarationBundle, decode, semantic_digest};
+use folio_project_model::{
+    DeclarationLocation, DeclaredScript, DependencyKind, LoadedDependency, LoadedRoot,
+    SourceEncoding, SourceFile, SourceId,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
-
-use folio_declaration_tools::{GenerationOptions, SourceInput, generate};
-use folio_format_declarations::{DeclarationBundle, builtin, decode, encode};
-use folio_project_model::{
-    DeclarationLocation, DeclaredScript, DependencyKind, LoadedCarrier, LoadedLink, LoadedPackage,
-    LoadedSdk, SourceFile, SourceId,
-};
 use tracing::{debug, info, instrument};
 
-use crate::{graph, manifest, pex_declarations};
-
+mod repo;
 mod scan;
-pub use scan::relative_portable;
-use scan::{canonical_file, collect_pex_files, collect_sources, io, path_key};
+mod watch;
+pub use repo::{FolioHome, RepoEntry, publish_declaration};
+pub use scan::{
+    InputSnapshot, SnapshotEntry, SnapshotEntryKind, decode_source, relative_portable,
+    verify_snapshots,
+};
+use scan::{canonical_file, collect_sources, io, path_key, read_bytes};
+pub use watch::{WatchPlan, watch_plan, watch_plan_with_home};
 
 pub const MANIFEST_FILE: &str = "folio.toml";
 
-/// Loaded declarations stay intact here for a later project-to-analysis projection.
+/// Every dependency occurrence owns a declaration projection; root sources are separate.
 #[derive(Clone)]
 pub struct LoadedProject {
     pub root_key: String,
-    pub packages: Vec<LoadedPackage>,
+    pub root: LoadedRoot,
+    pub dependencies: Vec<LoadedDependency>,
     pub declaration_bundles: BTreeMap<String, DeclarationBundle>,
     pub source_inputs: Vec<LoadedSourceInput>,
+    pub input_snapshots: Vec<InputSnapshot>,
+    pub watch_plan: WatchPlan,
+    pub folio_home: FolioHome,
 }
 
-/// Source text and canonical host identity provided to the analysis adapter.
 #[derive(Clone)]
 pub struct LoadedSourceInput {
     pub package_key: String,
@@ -42,14 +50,13 @@ pub struct LoadedSourceInput {
     pub text: Arc<str>,
 }
 
-/// Root sources selected by the manifest, independent of SDK availability.
 pub struct RootSources {
     pub language: String,
     pub dialect: String,
     pub inputs: Vec<LoadedSourceInput>,
 }
 
-/// Loads only the root package's editable sources for syntax-only tools.
+/// Load only editable sources for tools that do not require dependency APIs.
 #[instrument(name = "project.load_root_sources", skip_all, fields(phase = "load"))]
 pub fn load_root_sources(start: &Path, explicit: Option<&Path>) -> Result<RootSources, LoadError> {
     let path = discover(start, explicit)?;
@@ -63,6 +70,8 @@ pub fn load_root_sources(start: &Path, explicit: Option<&Path>) -> Result<RootSo
         &manifest.source_path.value,
         &manifest.extensions,
         &key,
+        SourceEncoding::Utf8,
+        &mut Vec::new(),
     )?;
     info!(
         sources = inputs.len(),
@@ -99,15 +108,16 @@ pub enum LoadError {
     ExperimentalDependency {
         name: String,
     },
-    Builtin {
-        name: String,
-        reason: String,
+    RepoMissing {
+        repo: PathBuf,
+        key: String,
+        candidates: Vec<PathBuf>,
     },
-    SdkNaming {
-        path: PathBuf,
-        language: String,
-        case_sensitive: bool,
+    RepoAmbiguous {
+        key: String,
+        candidates: Vec<PathBuf>,
     },
+    InputChanged(PathBuf),
     Resolve(Box<graph::ResolveError>),
     InvalidPath {
         path: PathBuf,
@@ -126,31 +136,49 @@ impl std::fmt::Display for LoadError {
             } => write!(f, "{operation} {}: {cause}", path.display()),
             Self::Manifest(cause) => write!(f, "{cause}"),
             Self::Declaration { path, cause } => write!(f, "{}: {cause}", path.display()),
-            Self::SourceDeclarations { path, reason } => write!(f, "{}: {reason}", path.display()),
-            Self::PexDeclarations { path, reason } => write!(f, "{}: {reason}", path.display()),
+            Self::SourceDeclarations { path, reason } | Self::PexDeclarations { path, reason } => {
+                write!(f, "{}: {reason}", path.display())
+            }
             Self::ExperimentalDependency { name } => write!(
                 f,
                 "PEX dependency {name} requires [experimental] pex-dependencies = true"
             ),
-            Self::Builtin { name, reason } => write!(f, "built-in {name}: {reason}"),
-            Self::SdkNaming {
-                path,
-                language,
-                case_sensitive,
-            } => write!(
-                f,
-                "{}: unsupported SDK naming policy (language={language}, case_sensitive={case_sensitive})",
-                path.display()
-            ),
+            Self::RepoMissing {
+                repo,
+                key,
+                candidates,
+            } => {
+                write!(
+                    f,
+                    "repository declaration {key} not found in {}; tried",
+                    repo.display()
+                )?;
+                for candidate in candidates {
+                    write!(f, " {}", candidate.display())?;
+                }
+                Ok(())
+            }
+            Self::RepoAmbiguous { key, candidates } => {
+                write!(
+                    f,
+                    "repository declaration {key} is ambiguous; specify .json or .fdecl explicitly:"
+                )?;
+                for candidate in candidates {
+                    write!(f, " {}", candidate.display())?;
+                }
+                Ok(())
+            }
+            Self::InputChanged(path) => {
+                write!(f, "input changed during operation: {}", path.display())
+            }
             Self::Resolve(cause) => write!(f, "{cause}"),
             Self::InvalidPath { path, reason } => write!(f, "{}: {reason}", path.display()),
         }
     }
 }
-
 impl std::error::Error for LoadError {}
 
-/// Find the nearest manifest, or use the explicitly selected manifest path.
+/// Find the nearest manifest, or use an explicitly selected manifest.
 pub fn discover(start: &Path, explicit: Option<&Path>) -> Result<PathBuf, LoadError> {
     if let Some(path) = explicit {
         if path.file_name().is_none_or(|name| name != MANIFEST_FILE) {
@@ -190,9 +218,9 @@ pub fn discover(start: &Path, explicit: Option<&Path>) -> Result<PathBuf, LoadEr
 }
 
 fn contains_manifest(directory: &Path) -> Result<bool, LoadError> {
-    let entries =
-        fs::read_dir(directory).map_err(|cause| io("read project directory", directory, cause))?;
-    for entry in entries {
+    for entry in
+        fs::read_dir(directory).map_err(|cause| io("read project directory", directory, cause))?
+    {
         let entry = entry.map_err(|cause| io("read project entry", directory, cause))?;
         if entry.file_name() == MANIFEST_FILE
             && entry
@@ -206,274 +234,237 @@ fn contains_manifest(directory: &Path) -> Result<bool, LoadError> {
     Ok(false)
 }
 
-/// Read only manifest-declared dependencies and files under declared source roots.
-#[instrument(name = "project.load", skip_all, fields(phase = "load"))]
 pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, LoadError> {
-    let root_path = discover(start, explicit)?;
-    let root_dir = root_path
-        .parent()
-        .expect("canonical manifest has parent")
-        .to_owned();
-    let root_key = path_key(&root_path)?;
-    info!(manifest = %root_path.display(), "loading project");
-    let mut pending = BTreeMap::from([(
-        root_key.clone(),
-        (root_path, DependencyKind::Package, None::<String>),
-    )]);
-    let mut packages = BTreeMap::new();
+    load_with_home(start, explicit, &FolioHome::from_env()?)
+}
+
+/// Read all dependency modes through the same normalized declaration boundary.
+#[instrument(name = "project.load", skip_all, fields(phase = "load"))]
+pub fn load_with_home(
+    start: &Path,
+    explicit: Option<&Path>,
+    home: &FolioHome,
+) -> Result<LoadedProject, LoadError> {
+    let watch_plan = watch_plan_with_home(start, explicit, home);
+    let path = discover(start, explicit)?;
+    let base = path.parent().expect("canonical manifest has parent");
+    let root_key = path_key(&path)?;
+    let mut snapshots = Vec::new();
+    let bytes = read_bytes(&path, &mut snapshots)?;
+    let text = std::str::from_utf8(&bytes).map_err(|cause| LoadError::SourceDeclarations {
+        path: path.clone(),
+        reason: format!("manifest is not UTF-8: {cause}"),
+    })?;
+    let manifest = manifest::parse(MANIFEST_FILE, text.strip_prefix('\u{feff}').unwrap_or(text))
+        .map_err(LoadError::Manifest)?;
+    validate_workspace_directory(base, &manifest.source_path.value, true)?;
+    validate_workspace_directory(base, &manifest.output_path.value, false)?;
+    let (source_files, source_inputs) = collect_sources(
+        base,
+        &manifest.source_path.value,
+        &manifest.extensions,
+        &root_key,
+        SourceEncoding::Utf8,
+        &mut snapshots,
+    )?;
+    info!(manifest = %path.display(), dependency_count = manifest.dependencies.len(), "loading root and declaration dependencies");
+    let mut dependencies = Vec::new();
     let mut bundles = BTreeMap::new();
-    let mut source_inputs = Vec::new();
-    let mut pex_enabled = false;
-    while let Some((key, (path, kind, declared_name))) = pending.pop_first() {
-        if packages.contains_key(&key) {
-            continue;
+    for (index, specification) in manifest.dependencies.iter().enumerate() {
+        if specification.kind == DependencyKind::Pex && !manifest.experimental_pex_dependencies {
+            return Err(LoadError::ExperimentalDependency {
+                name: specification.name.value.clone(),
+            });
         }
-        let portable = if kind == DependencyKind::Builtin {
-            format!("builtin:{}", path.to_string_lossy())
+        let declared = &specification.path.value;
+        let canonical_path = if specification.kind == DependencyKind::Repo {
+            home.locate(declared, &mut snapshots)?
         } else {
-            relative_portable(&root_dir, &path)?
+            let path = base.join(declared);
+            let canonical_path = canonical_file(&path)?;
+            snapshots.push(InputSnapshot::Resolution {
+                path,
+                canonical_path: canonical_path.clone(),
+            });
+            canonical_path
         };
-        match kind {
-            DependencyKind::Package => {
-                let input =
-                    fs::read_to_string(&path).map_err(|cause| io("read manifest", &path, cause))?;
-                let manifest = manifest::parse(&portable, &input).map_err(LoadError::Manifest)?;
-                if key == root_key {
-                    pex_enabled = manifest.experimental_pex_dependencies;
-                }
-                let base = path.parent().expect("canonical manifest has parent");
-                validate_workspace_directory(base, &manifest.source_path.value, true)?;
-                validate_workspace_directory(base, &manifest.output_path.value, false)?;
-                let (source_files, mut inputs) = collect_sources(
-                    base,
-                    &manifest.source_path.value,
-                    &manifest.extensions,
-                    &key,
+        let source_key = format!("dependency:{index}");
+        // The relative host path may traverse parents; provenance remains a portable label.
+        let source_label = format!("dependency/{index}");
+        let (bundle, pex_paths) = match specification.kind {
+            DependencyKind::Psc => {
+                let (_, inputs) = collect_sources(
+                    &canonical_path,
+                    "",
+                    &["psc".into()],
+                    &source_key,
+                    specification.encoding,
+                    &mut snapshots,
                 )?;
-                source_inputs.append(&mut inputs);
-                let mut links = Vec::new();
-                for (index, dependency) in manifest.dependencies.iter().enumerate() {
-                    if dependency.kind == DependencyKind::Pex && !pex_enabled {
-                        return Err(LoadError::ExperimentalDependency {
-                            name: dependency.name.value.clone(),
-                        });
-                    }
-                    if dependency.kind == DependencyKind::Builtin {
-                        let id = dependency.path.value.clone();
-                        let target_key = format!("builtin:{id}");
-                        links.push(LoadedLink {
-                            dependency_index: index,
-                            source_key: target_key.clone(),
-                        });
-                        pending.entry(target_key).or_insert((
-                            PathBuf::from(id),
-                            DependencyKind::Builtin,
-                            Some(dependency.name.value.clone()),
-                        ));
-                        continue;
-                    }
-                    let declared = base.join(&dependency.path.value);
-                    let candidate =
-                        if dependency.kind == DependencyKind::Package && declared.is_dir() {
-                            declared.join(MANIFEST_FILE)
-                        } else {
-                            declared
-                        };
-                    let actual = if dependency.kind == DependencyKind::Package {
-                        discover(base, Some(&candidate))?
-                    } else {
-                        canonical_file(&candidate)?
-                    };
-                    let target_key = path_key(&actual)?;
-                    links.push(LoadedLink {
-                        dependency_index: index,
-                        source_key: target_key.clone(),
+                if inputs.is_empty() {
+                    return Err(LoadError::InvalidPath {
+                        path: canonical_path,
+                        reason: "PSC dependency contains no scripts",
                     });
-                    pending.entry(target_key).or_insert((
-                        actual,
-                        dependency.kind,
-                        Some(dependency.name.value.clone()),
-                    ));
                 }
-                let source_id = if key == root_key {
-                    SourceId::Project
-                } else {
-                    SourceId::Local { path: portable }
-                };
-                debug!(package_id = %manifest.name, source_count = source_files.len(), dependency_count = links.len(), "loaded source package");
-                packages.insert(
-                    key.clone(),
-                    LoadedPackage {
-                        source_key: key,
-                        source_id,
-                        carrier: LoadedCarrier::Manifest(manifest),
-                        source_files,
-                        links,
-                    },
-                );
-            }
-            DependencyKind::Sdk
-            | DependencyKind::Builtin
-            | DependencyKind::Psc
-            | DependencyKind::Pex => {
-                let (bundle, digest, pex_paths) = if kind == DependencyKind::Builtin {
-                    let name = path.to_string_lossy().to_string();
-                    let bundle = builtin(&name)
-                        .map_err(|reason| LoadError::Builtin {
-                            name: name.clone(),
-                            reason,
-                        })?
-                        .ok_or_else(|| LoadError::Builtin {
-                            name: name.clone(),
-                            reason: "unknown package".into(),
-                        })?;
-                    let bytes = encode(&bundle).map_err(|cause| LoadError::Builtin {
-                        name,
+                let bundle = psc_declarations(&source_label, &inputs).map_err(|cause| {
+                    LoadError::SourceDeclarations {
+                        path: canonical_path.clone(),
                         reason: cause.to_string(),
-                    })?;
-                    let digest = blake3::hash(&bytes).to_hex().to_string();
-                    (bundle, digest, None)
-                } else if kind == DependencyKind::Psc {
-                    if !path.is_dir() {
-                        return Err(LoadError::InvalidPath {
-                            path,
-                            reason: "PSC dependency is not a directory",
-                        });
                     }
-                    let name = declared_name.expect("PSC dependency has a name");
-                    let (_, inputs) = collect_sources(&path, "", &["psc".into()], &key)?;
-                    if inputs.is_empty() {
-                        return Err(LoadError::InvalidPath {
-                            path,
-                            reason: "PSC dependency contains no scripts",
-                        });
+                })?;
+                (bundle, None)
+            }
+            DependencyKind::Pex => {
+                let files = scan::collect_files(&canonical_path, &["pex".into()], &mut snapshots)?;
+                let mut binary_inputs = Vec::new();
+                for (relative, path) in files {
+                    binary_inputs.push((relative, read_bytes(&path, &mut snapshots)?));
+                }
+                let inputs = binary_inputs
+                    .iter()
+                    .map(|(path, bytes)| PexInput { path, bytes })
+                    .collect::<Vec<_>>();
+                let extracted = extract_pex(&source_label, &inputs).map_err(|reason| {
+                    LoadError::PexDeclarations {
+                        path: canonical_path.clone(),
+                        reason,
                     }
-                    let bundle = psc_declarations(&name, &inputs).map_err(|cause| {
-                        LoadError::SourceDeclarations {
-                            path: path.clone(),
-                            reason: cause.to_string(),
-                        }
-                    })?;
-                    let digest = bundle
-                        .package
-                        .source_digest
-                        .clone()
-                        .expect("generator hashes sources");
-                    (bundle, digest, None)
-                } else if kind == DependencyKind::Pex {
-                    if !path.is_dir() {
-                        return Err(LoadError::InvalidPath {
-                            path,
-                            reason: "PEX dependency is not a directory",
-                        });
-                    }
-                    let name = declared_name.expect("PEX dependency has a name");
-                    let files = collect_pex_files(&path)?;
-                    let inputs = files
-                        .iter()
-                        .map(|(relative, bytes)| pex_declarations::PexInput {
-                            path: relative,
-                            bytes,
-                        })
-                        .collect::<Vec<_>>();
-                    let extracted =
-                        pex_declarations::extract(&name, &inputs).map_err(|reason| {
-                            LoadError::PexDeclarations {
-                                path: path.clone(),
-                                reason,
-                            }
-                        })?;
-                    let digest = extracted
-                        .bundle
-                        .package
-                        .source_digest
-                        .clone()
-                        .expect("PEX extractor hashes binaries");
-                    (extracted.bundle, digest, Some(extracted.paths))
-                } else {
-                    let bytes =
-                        fs::read(&path).map_err(|cause| io("read declaration", &path, cause))?;
-                    let digest = blake3::hash(&bytes).to_hex().to_string();
-                    let bundle = decode(&bytes).map_err(|cause| LoadError::Declaration {
-                        path: path.clone(),
-                        cause,
-                    })?;
-                    (bundle, digest, None)
-                };
-                if bundle.naming.language != "papyrus" || bundle.naming.case_sensitive {
-                    return Err(LoadError::SdkNaming {
-                        path: path.clone(),
-                        language: bundle.naming.language.clone(),
-                        case_sensitive: bundle.naming.case_sensitive,
+                })?;
+                (extracted.bundle, Some(extracted.paths))
+            }
+            DependencyKind::Decl | DependencyKind::Repo => {
+                if !canonical_path.is_file() {
+                    return Err(LoadError::InvalidPath {
+                        path: canonical_path,
+                        reason: "declaration dependency is not a file",
                     });
                 }
-                let scripts = bundle
-                    .scripts
-                    .iter()
-                    .enumerate()
-                    .map(|(script_index, script)| DeclaredScript {
-                        name: script.name.clone(),
-                        location: DeclarationLocation {
-                            carrier_path: pex_paths.as_ref().map_or_else(
-                                || portable.clone(),
-                                |paths| format!("{portable}/{}", paths[script_index]),
-                            ),
-                            script_index,
-                            source_path: script.source.as_ref().map(|source| source.path.clone()),
-                            line: script.source.as_ref().map(|source| source.line),
-                            column: script.source.as_ref().map(|source| source.column),
-                        },
-                    })
-                    .collect();
-                let sdk = LoadedSdk {
-                    name: bundle.package.name.clone(),
-                    version: bundle.package.version.clone(),
-                    target: bundle.compatibility.target.clone(),
-                    abi: bundle.compatibility.abi.clone(),
-                    scripts,
-                };
-                let source_id = match kind {
-                    DependencyKind::Psc => SourceId::Local {
-                        path: portable.clone(),
-                    },
-                    DependencyKind::Pex => SourceId::BinaryPex {
-                        path: portable.clone(),
-                        digest,
-                    },
-                    _ => SourceId::DeclarationSdk {
-                        path: portable.clone(),
-                        digest,
-                    },
-                };
-                debug!(package_id = %sdk.name, ?kind, script_count = sdk.scripts.len(), "loaded dependency declarations");
-                packages.insert(
-                    key.clone(),
-                    LoadedPackage {
-                        source_key: key.clone(),
-                        source_id,
-                        carrier: LoadedCarrier::Declarations { kind, sdk },
-                        source_files: Vec::new(),
-                        links: Vec::new(),
-                    },
-                );
-                bundles.insert(key, bundle);
+                let bytes = read_bytes(&canonical_path, &mut snapshots)?;
+                let bundle = decode(&bytes).map_err(|cause| LoadError::Declaration {
+                    path: canonical_path.clone(),
+                    cause,
+                })?;
+                (bundle, None)
             }
-        }
+        };
+        let carrier = if specification.kind == DependencyKind::Repo {
+            format!("repo:{declared}")
+        } else {
+            declared.clone()
+        };
+        let scripts = bundle
+            .scripts
+            .iter()
+            .enumerate()
+            .map(|(index, script)| DeclaredScript {
+                name: script.name.clone(),
+                location: DeclarationLocation {
+                    carrier_path: pex_paths.as_ref().map_or_else(
+                        || carrier.clone(),
+                        |paths| format!("{carrier}/{}", paths[index]),
+                    ),
+                    script_name: script.name.to_ascii_lowercase(),
+                    source_path: script.source.as_ref().map(|source| source.path.clone()),
+                    line: script.source.as_ref().map(|source| source.line),
+                    column: script.source.as_ref().map(|source| source.column),
+                },
+            })
+            .collect();
+        let source_id = SourceId::Dependency {
+            index,
+            kind: specification.kind,
+            path: declared.clone(),
+            digest: semantic_digest(&bundle),
+        };
+        debug!(name = %specification.name.value, kind = ?specification.kind, script_count = bundle.scripts.len(), "normalized dependency declarations");
+        dependencies.push(LoadedDependency {
+            source_key: source_key.clone(),
+            source_id,
+            kind: specification.kind,
+            name: specification.name.value.clone(),
+            declared_path: declared.clone(),
+            canonical_path,
+            declaration: specification.path.span.clone(),
+            profile: bundle.profile.clone(),
+            scripts,
+        });
+        bundles.insert(source_key, bundle);
     }
-    source_inputs.sort_by(|left, right| {
-        (&left.package_key, &left.canonical_path).cmp(&(&right.package_key, &right.canonical_path))
-    });
+    let root = LoadedRoot {
+        source_key: root_key.clone(),
+        source_id: SourceId::Project,
+        manifest,
+        source_files,
+    };
+    verify_snapshots(&snapshots)?;
     Ok(LoadedProject {
         root_key,
-        packages: packages.into_values().collect(),
+        root,
+        dependencies,
         declaration_bundles: bundles,
         source_inputs,
+        input_snapshots: snapshots,
+        watch_plan,
+        folio_home: home.clone(),
     })
 }
 
-/// Extract a local source directory's API without publishing a carrier file.
+/// Shared PSC directory loading for direct dependencies and generation commands.
+pub fn read_psc_sources(
+    root: &Path,
+    encoding: SourceEncoding,
+) -> Result<Vec<LoadedSourceInput>, LoadError> {
+    let mut snapshots = Vec::new();
+    let (_, inputs) = collect_sources(
+        root,
+        "",
+        &["psc".into()],
+        "generation",
+        encoding,
+        &mut snapshots,
+    )?;
+    if inputs.is_empty() {
+        return Err(LoadError::InvalidPath {
+            path: root.to_owned(),
+            reason: "PSC source directory contains no scripts",
+        });
+    }
+    verify_snapshots(&snapshots)?;
+    Ok(inputs)
+}
+
+pub fn generate_psc_directory(
+    root: &Path,
+    source: &str,
+    encoding: SourceEncoding,
+) -> Result<DeclarationBundle, LoadError> {
+    let mut snapshots = Vec::new();
+    let (_, inputs) = collect_sources(
+        root,
+        "",
+        &["psc".into()],
+        "generation",
+        encoding,
+        &mut snapshots,
+    )?;
+    if inputs.is_empty() {
+        return Err(LoadError::InvalidPath {
+            path: root.to_owned(),
+            reason: "PSC source directory contains no scripts",
+        });
+    }
+    let bundle =
+        psc_declarations(source, &inputs).map_err(|cause| LoadError::SourceDeclarations {
+            path: root.to_owned(),
+            reason: cause.to_string(),
+        })?;
+    verify_snapshots(&snapshots)?;
+    Ok(bundle)
+}
+
 fn psc_declarations(
-    name: &str,
+    source: &str,
     inputs: &[LoadedSourceInput],
 ) -> Result<DeclarationBundle, folio_declaration_tools::GenerationError> {
     let sources = inputs
@@ -483,18 +474,10 @@ fn psc_declarations(
             text: &input.text,
         })
         .collect::<Vec<_>>();
-    generate(
-        GenerationOptions {
-            name,
-            version: "local",
-            source: "local-psc",
-        },
-        &sources,
-    )
+    generate(GenerationOptions { source }, &sources)
 }
 
-/// Read a binary dependency tree in stable relative-path order.
-/// Reject links and non-directory components before using a workspace path.
+/// Root source and output directories never traverse links or non-directory components.
 fn validate_workspace_directory(
     base: &Path,
     relative: &str,
@@ -524,50 +507,22 @@ fn validate_workspace_directory(
     Ok(())
 }
 
-/// Load and resolve a project, preserving the loaded carriers for semantic use.
 pub fn load_and_resolve(
     start: &Path,
     explicit: Option<&Path>,
 ) -> Result<(LoadedProject, folio_project_model::Metadata), LoadError> {
-    let loaded = load(start, explicit)?;
-    match graph::resolve(&loaded.root_key, &loaded.packages) {
-        Ok(metadata) => Ok((loaded, metadata)),
-        Err(cause) => {
-            debug!(phase = "resolve", cause = %cause, "project resolution failed");
-            Err(LoadError::Resolve(Box::new(cause)))
-        }
-    }
+    load_and_resolve_with_home(start, explicit, &FolioHome::from_env()?)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn relative_path_keeps_sibling_identity_without_absolute_prefix() {
-        let result =
-            relative_portable(Path::new("C:/work/app"), Path::new("C:/work/sdk/decl.json"))
-                .unwrap();
-        assert_eq!(result, "../sdk/decl.json");
-    }
-
-    #[test]
-    fn psc_directory_inputs_supply_declarations_without_a_carrier_file() {
-        let input = LoadedSourceInput {
-            package_key: "scripts".into(),
-            canonical_path: PathBuf::from("/unused/Actor.psc"),
-            display_path: "Actor.psc".into(),
-            script_candidate: "Actor".into(),
-            text: Arc::from("ScriptName Actor\nInt Function Value(Int count = 2) Native\n"),
-        };
-        let bundle = psc_declarations("other-mod", &[input]).unwrap();
-        assert_eq!(bundle.package.name, "other-mod");
-        assert_eq!(bundle.scripts[0].name, "Actor");
-        assert_eq!(
-            bundle.scripts[0].members[0].parameters[0]
-                .default_literal
-                .as_deref(),
-            Some("2")
-        );
-    }
+pub fn load_and_resolve_with_home(
+    start: &Path,
+    explicit: Option<&Path>,
+    home: &FolioHome,
+) -> Result<(LoadedProject, folio_project_model::Metadata), LoadError> {
+    let loaded = load_with_home(start, explicit, home)?;
+    let metadata = graph::resolve(&loaded.root, &loaded.dependencies).map_err(|cause| {
+        debug!(phase = "resolve", cause = %cause, "project resolution failed");
+        LoadError::Resolve(Box::new(cause))
+    })?;
+    Ok((loaded, metadata))
 }

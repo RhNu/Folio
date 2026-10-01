@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use folio_diagnostics::{Diagnostic, RelatedLocation, Severity};
-use folio_format_declarations::{MemberKind, Script as ExternalScript};
+use folio_format_declarations::{MemberKind, ParameterDefault, Script as ExternalScript};
 use folio_hir::{
     Binding, Body, CallFact, DeclarationFact, ExpressionFact, ExpressionKind, MemberFact,
     MemberKind as HirMemberKind, NameRef, ParameterFact, Script, StateFact, Statement, Symbol,
@@ -35,8 +35,7 @@ struct MemberInfo {
     name: String,
     ty: Type,
     kind: MemberKind,
-    parameters: Vec<(String, Type, Option<String>)>,
-    unknown_defaults: bool,
+    parameters: Vec<(String, Type, ParameterDefault)>,
     global: bool,
     auto: bool,
     read_only: bool,
@@ -177,7 +176,7 @@ fn source_declaration_node(
         .last()
 }
 
-/// Builds the selected source and SDK symbol environment, then analyzes each source independently.
+/// Builds the selected source and external declaration symbol environment, then analyzes each source independently.
 pub(super) fn analyze(view: &AnalysisView) -> Analysis {
     analyze_with_cancel(view, &|| false).expect("non-cancellable analysis cannot be cancelled")
 }
@@ -509,7 +508,7 @@ pub(super) fn analyze_with_cancel(
             }
         }
     }
-    // Export the resolved ancestor layout once, so lowering never reopens source or SDK.
+    // Export the resolved ancestor layout once, so lowering never reopens source or external declarations.
     for (&file, script_key) in &file_scripts {
         let mut inherited = Vec::new();
         let mut seen = HashSet::new();
@@ -553,9 +552,9 @@ pub(super) fn analyze_with_cancel(
                 {
                     override_diagnostics.push(
                         Diagnostic::new(
-                            "semantic.pex-override-ambiguous",
+                            "semantic.override-ambiguous",
                             Severity::Error,
-                            "cannot override a PEX callable whose event/function kind is unknown",
+                            "cannot override a declaration whose event/function kind is unknown",
                         )
                         .at(member.span),
                     );
@@ -609,7 +608,7 @@ pub(super) fn analyze_with_cancel(
                                 .map(|(name, ty, default)| ParameterFact {
                                     name: name.clone(),
                                     ty: ty.clone(),
-                                    default_literal: default.clone(),
+                                    default_literal: default.literal().map(str::to_owned),
                                     span: at,
                                 })
                                 .collect(),
@@ -738,7 +737,7 @@ pub(super) fn analyze_with_cancel(
                                 .map(|(name, ty, default)| ParameterFact {
                                     name: name.clone(),
                                     ty: ty.clone(),
-                                    default_literal: default.clone(),
+                                    default_literal: default.literal().map(str::to_owned),
                                     span: at,
                                 })
                                 .collect(),

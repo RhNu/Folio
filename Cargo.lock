@@ -80,6 +80,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "autocfg"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -288,7 +294,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "folio-analysis"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "folio-diagnostics",
  "folio-format-declarations",
@@ -302,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "folio-backend-pex"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "folio-diagnostics",
  "folio-format-pex",
@@ -314,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "folio-build"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "folio-analysis",
@@ -336,14 +342,11 @@ dependencies = [
 
 [[package]]
 name = "folio-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "clap",
- "encoding_rs",
- "flate2",
  "folio-build",
- "folio-declaration-tools",
  "folio-diagnostics",
  "folio-format",
  "folio-format-declarations",
@@ -362,24 +365,25 @@ dependencies = [
 
 [[package]]
 name = "folio-declaration-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "folio-format-declarations",
+ "folio-format-pex",
  "folio-papyrus",
  "tracing",
 ]
 
 [[package]]
 name = "folio-diagnostics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "folio-source",
 ]
 
 [[package]]
 name = "folio-format"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "folio-papyrus",
  "tracing",
@@ -387,30 +391,33 @@ dependencies = [
 
 [[package]]
 name = "folio-format-declarations"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "blake3",
  "flate2",
+ "rmp-serde",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
 name = "folio-format-pex"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tracing",
 ]
 
 [[package]]
 name = "folio-hir"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "folio-source",
 ]
 
 [[package]]
 name = "folio-ide"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "folio-build",
  "folio-hir",
@@ -421,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "folio-lint"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "folio-diagnostics",
  "folio-hir",
@@ -431,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "folio-lowering"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "folio-diagnostics",
  "folio-hir",
@@ -443,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "folio-lsp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "folio-build",
  "folio-diagnostics",
@@ -460,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "folio-mir"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "folio-profiles",
  "folio-source",
@@ -469,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "folio-papyrus"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "folio-source",
  "rowan",
@@ -478,37 +485,35 @@ dependencies = [
 
 [[package]]
 name = "folio-profiles"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "folio-project-model"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "folio-project-resolve"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "blake3",
+ "encoding_rs",
  "folio-declaration-tools",
  "folio-format-declarations",
- "folio-format-pex",
  "folio-project-model",
  "serde",
- "serde_json",
  "toml",
  "tracing",
 ]
 
 [[package]]
 name = "folio-source"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "folio-xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "tracing",
@@ -673,6 +678,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-traits"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -782,6 +796,25 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
+dependencies = [
+ "rmp",
+ "serde",
+]
 
 [[package]]
 name = "rowan"

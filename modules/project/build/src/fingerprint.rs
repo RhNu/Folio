@@ -1,130 +1,58 @@
-//! Canonical, conservative content identity for one build command.
+//! Stable semantic build identity, separate from the loader's physical snapshot.
 
-use folio_project_model::{DependencyKind, Metadata};
+use folio_project_model::{Metadata, SourceId};
 use folio_project_resolve::LoadedProject;
-use serde::Serialize;
 
 /// Bump when key inputs or cache representation change.
-pub const CACHE_SCHEMA: u32 = 4;
+pub const CACHE_SCHEMA: u32 = 5;
 
-#[derive(Serialize)]
-struct SourceContent<'a> {
-    package: &'a folio_project_model::SourceId,
-    path: &'a str,
-    dialect: &'a str,
-    digest: String,
+/// Logical provider identity excludes host paths, carrier bytes and provenance.
+fn occurrence(source: &SourceId) -> Option<usize> {
+    match source {
+        SourceId::Project => None,
+        SourceId::Dependency { index, .. } => Some(*index),
+    }
 }
 
-#[derive(Serialize)]
-struct ManifestSettings<'a> {
-    package: &'a folio_project_model::SourceId,
-    name: &'a str,
-    version: &'a str,
-    source: &'a str,
-    language: &'a str,
-    dialect: &'a str,
-    extensions: &'a [String],
-    flags: &'a [String],
-    fill_missing_arguments: bool,
-    target: &'a str,
-    profile: &'a str,
-    debug_info: bool,
-    experimental_pex_dependencies: bool,
-    emit: &'a [String],
-    dependencies: Vec<(&'a str, DependencyKind, &'a str)>,
-}
-
-/// Hash all loaded semantic inputs, resolved provider decisions and target options.
-/// Host absolute paths and unordered map iteration never enter this payload.
+/// Hash semantic inputs, dependency occurrences and selected whole-script APIs.
+/// Physical input changes are checked independently before publishing artifacts.
 pub fn command_fingerprint(
     project: &LoadedProject,
     metadata: &Metadata,
     compiler_identity: &str,
     target_decisions: &[String],
 ) -> String {
-    let packages = project
-        .packages
+    let root = &project.root.manifest;
+    let mut sources = project
+        .source_inputs
         .iter()
-        .map(|package| (&package.source_key, package))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let mut sources = Vec::new();
-    for input in &project.source_inputs {
-        let package = packages
-            .get(&input.package_key)
-            .expect("loaded source belongs to a loaded package");
-        let dialect = package
-            .manifest()
-            .map(|manifest| manifest.dialect.as_str())
-            .unwrap_or("");
-        sources.push(SourceContent {
-            package: &package.source_id,
-            path: &input.display_path,
-            dialect,
-            digest: blake3::hash(input.text.as_bytes()).to_hex().to_string(),
-        });
-    }
-    sources.sort_by(|left, right| (&left.package, left.path).cmp(&(&right.package, right.path)));
-    let mut manifests = Vec::new();
-    for package in &project.packages {
-        if let Some(manifest) = package.manifest() {
-            manifests.push(ManifestSettings {
-                package: &package.source_id,
-                name: &manifest.name,
-                version: &manifest.version,
-                source: &manifest.source_path.value,
-                language: &manifest.language,
-                dialect: &manifest.dialect,
-                extensions: &manifest.extensions,
-                flags: &manifest.user_flags,
-                fill_missing_arguments: manifest.fill_missing_arguments,
-                target: &manifest.target,
-                profile: &manifest.profile,
-                debug_info: manifest.debug_info,
-                experimental_pex_dependencies: manifest.experimental_pex_dependencies,
-                emit: &manifest.emit,
-                dependencies: manifest
-                    .dependencies
-                    .iter()
-                    .map(|item| {
-                        (
-                            item.name.value.as_str(),
-                            item.kind,
-                            item.path.value.as_str(),
-                        )
-                    })
-                    .collect(),
-            });
-        }
-    }
-    manifests.sort_by(|left, right| left.package.cmp(right.package));
-    let mut declarations = project
-        .declaration_bundles
-        .iter()
-        .map(|(key, bundle)| {
-            let package = packages
-                .get(key)
-                .expect("declaration belongs to loaded package");
-            (&package.source_id, bundle)
-        })
-        .collect::<Vec<_>>();
-    declarations.sort_by(|left, right| left.0.cmp(right.0));
-    let packages = metadata
-        .packages
-        .iter()
-        .map(|package| {
+        .map(|input| {
             (
-                &package.id,
-                &package.source_root,
-                &package.source_files,
-                &package.language,
-                &package.dialect,
+                &input.display_path,
+                blake3::hash(input.text.as_bytes()).to_hex().to_string(),
             )
         })
         .collect::<Vec<_>>();
-    let dependencies = metadata
+    sources.sort_by(|left, right| left.0.cmp(right.0));
+    let declarations = project
         .dependencies
         .iter()
-        .map(|edge| (&edge.from, &edge.to, edge.kind, &edge.declared_path))
+        .map(|dependency| {
+            let bundle = project
+                .declaration_bundles
+                .get(&dependency.source_key)
+                .expect("loaded dependency owns a declaration bundle");
+            (
+                &dependency.name,
+                dependency.kind,
+                folio_format_declarations::semantic_digest(bundle),
+            )
+        })
+        .collect::<Vec<_>>();
+    let dependency_settings = root
+        .dependencies
+        .iter()
+        .map(|dependency| (&dependency.name.value, dependency.kind))
         .collect::<Vec<_>>();
     let selections = metadata
         .scripts
@@ -135,52 +63,54 @@ pub fn command_fingerprint(
                 .iter()
                 .map(|provider| {
                     (
-                        &provider.package,
+                        &provider.package.name,
+                        occurrence(&provider.package.source),
                         &provider.source_path,
-                        provider
-                            .declaration
-                            .as_ref()
-                            .map(|location| location.script_index),
                     )
                 })
                 .collect::<Vec<_>>();
             (
                 &selection.script,
-                &selection.selected.package,
+                &selection.selected.package.name,
+                occurrence(&selection.selected.package.source),
                 &selection.selected.source_path,
                 providers,
                 selection.reason,
             )
         })
         .collect::<Vec<_>>();
-    let resolution = (
-        &metadata.root,
+    let settings = (
+        &root.name,
+        &root.version,
+        &root.source_path.value,
+        &root.language,
+        &root.dialect,
+        &root.extensions,
+        &root.emit,
+        root.experimental_pex_dependencies,
         &metadata.target,
         &metadata.profile,
+        &metadata.user_flags,
         metadata.fill_missing_arguments,
         metadata.debug_info,
-        &metadata.user_flags,
-        packages,
-        dependencies,
-        selections,
-        &metadata.external_requirements,
     );
     let payload = serde_json::to_vec(&(
         CACHE_SCHEMA,
         env!("CARGO_PKG_VERSION"),
         "folio-pex-skyrim-v1",
         compiler_identity,
-        resolution,
-        manifests,
+        settings,
+        dependency_settings,
         sources,
         declarations,
+        selections,
         target_decisions,
     ))
-    .expect("cache key inputs are serializable");
+    .expect("build key inputs are serializable");
     blake3::hash(&payload).to_hex().to_string()
 }
 
-/// A unit key includes its logical identity even when its command inputs match another unit.
+/// A unit key includes its logical identity even when its command inputs match.
 pub fn unit_fingerprint(command: &str, unit: &super::plan::BuildUnit) -> String {
     let identity = serde_json::to_vec(&(command, unit)).expect("build unit is serializable");
     blake3::hash(&identity).to_hex().to_string()

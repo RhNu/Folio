@@ -11,7 +11,7 @@
 ```powershell
 npm ci
 npm run package
-code --install-extension .\folio-vscode-0.1.0.vsix
+code --install-extension .\folio-vscode-0.2.0.vsix
 ```
 
 `npm run package` 会先编译 TypeScript，再生成 `folio-vscode-<版本>.vsix`。也可以在 VS Code 的扩展视图选择“从 VSIX 安装”。重复测试时重新打包并安装新 VSIX；版本号来自 `package.json`。VSIX 只包含客户端，安装后仍须将 `folio` 可执行文件加入 `PATH`，或设置 `folio.server.path`。
@@ -31,7 +31,7 @@ code --install-extension .\folio-vscode-0.1.0.vsix
 
 ## 项目与设置
 
-VS Code 应打开含 `folio.toml` 的项目文件夹。一个客户端会话处理一个项目文件夹内的 `.psc`，并转发该文件夹内的清单、源码和 JSON 文件变化。服务器还动态注册已解析清单、源码目录及声明载体的监控，覆盖项目文件夹外的依赖；依赖配置变化后更新注册。打开和重开相同文本复用服务器会话内的语义视图，保存或监控事件刷新磁盘输入。
+VS Code 应打开含 `folio.toml` 的项目文件夹。一个客户端会话处理一个项目文件夹内的 `.psc`，并转发该文件夹内的清单、源码、JSON 和 `.fdecl` 文件变化。服务器还动态注册已解析清单、源码目录及声明载体的监控，覆盖项目文件夹外的依赖；依赖配置变化后更新注册。打开和重开相同文本复用服务器会话内的语义视图，保存或监控事件刷新磁盘输入。
 
 | 设置                        | 用途                                                        |
 | --------------------------- | ----------------------------------------------------------- |
@@ -41,4 +41,4 @@ VS Code 应打开含 `folio.toml` 的项目文件夹。一个客户端会话处�
 
 设置变化会重启服务器。扩展按 `folio.server.path`、`PATH` 的顺序寻找 `folio`；仅在 VS Code 扩展开发模式下，才回退到仓库的 `target/debug/folio`（Windows 为 `folio.exe`）。已配置路径不可用时，输出面板会记录实际采用的来源。LSP 报文走 stdout，日志走 stderr。仓库外的项目可使用 `PATH` 中的 Folio，或设置 `folio.server.path`。
 
-在项目源码、PSC 目录和 package 依赖中，声明跳转指向解析后选中的 `.psc`。SDK、PEX 与内置声明没有可确认的本地 PSC 定义时，hover 显示提供者信息，跳转不返回位置。主题可直接使用通用 TextMate scope 与 VS Code 的标准语义 token 颜色规则。
+在项目源码与 PSC 目录依赖中，声明跳转指向解析后选中的真实 `.psc`。decl、repo 和 PEX 依赖仅展示提供者信息，不把声明载体中的相对来源位置当成本机源码。客户端监控 `.fdecl` 与 JSON 声明变化；服务器注册的依赖监控覆盖工作区外的本地仓库和未创建的候选路径。主题可直接使用通用 TextMate scope 与 VS Code 的标准语义 token 颜色规则。

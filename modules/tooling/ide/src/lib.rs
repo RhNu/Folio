@@ -8,7 +8,9 @@ use folio_build::ProjectAnalysisView;
 use folio_hir::Type;
 use folio_source::{FileId, LineIndex, SourceSpan, TextRange};
 
+mod external;
 mod symbols;
+pub use external::{external_declaration_range, referenced_symbol, symbol_script};
 pub use symbols::{
     DocumentSymbol, SemanticToken, SemanticTokenKind, SignatureInfo, document_symbols,
     semantic_tokens, signature_help, source_declaration,

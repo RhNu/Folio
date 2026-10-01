@@ -48,7 +48,7 @@ pub struct SuccessRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalRecord {
     pub package: String,
-    pub package_version: String,
+    pub package_version: Option<String>,
     pub package_source: serde_json::Value,
     pub target: String,
     pub abi: String,

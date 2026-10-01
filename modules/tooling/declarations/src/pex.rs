@@ -1,7 +1,8 @@
 //! Pure conversion of Skyrim PEX binaries into the API facts they actually retain.
 
 use folio_format_declarations::{
-    Compatibility, DeclarationBundle, Member, MemberKind, Naming, Package, Parameter, Script, State,
+    DeclarationBundle, FORMAT, Member, MemberData, Origin, PROFILE, Parameter, ParameterDefault,
+    PropertyAccess, Script, State,
 };
 use folio_format_pex::{PexFile, PexFunction, PexTarget};
 
@@ -18,7 +19,7 @@ pub struct ExtractedPex {
 }
 
 /// Decode every object as one script, preserving PEX's callable ambiguity.
-pub fn extract(name: &str, inputs: &[PexInput<'_>]) -> Result<ExtractedPex, String> {
+pub fn extract_pex(source: &str, inputs: &[PexInput<'_>]) -> Result<ExtractedPex, String> {
     let mut sorted = inputs.iter().collect::<Vec<_>>();
     sorted.sort_by(|left, right| left.path.cmp(right.path));
     let mut digest = blake3::Hasher::new();
@@ -52,35 +53,33 @@ pub fn extract(name: &str, inputs: &[PexInput<'_>]) -> Result<ExtractedPex, Stri
                 }
                 members.push(Member {
                     name: variable_name.into(),
-                    kind: MemberKind::Variable,
-                    ty: Some(string(&file, variable.type_name).into()),
-                    is_global: false,
-                    is_native: false,
-                    is_auto: false,
-                    is_read_only: false,
-                    is_readable: false,
-                    is_writable: false,
                     flags: Vec::new(),
-                    initial_literal: None,
-                    parameters: Vec::new(),
-                    unknown_defaults: false,
+                    data: MemberData::Variable {
+                        ty: string(&file, variable.type_name).into(),
+                        initial_literal: None,
+                    },
                 });
             }
             for property in &object.properties {
                 members.push(Member {
                     name: string(&file, property.name).into(),
-                    kind: MemberKind::Property,
-                    ty: Some(string(&file, property.type_name).into()),
-                    is_global: false,
-                    is_native: false,
-                    is_auto: property.is_auto,
-                    is_read_only: !property.is_writable,
-                    is_readable: property.is_readable,
-                    is_writable: property.is_writable,
                     flags: Vec::new(),
-                    initial_literal: None,
-                    parameters: Vec::new(),
-                    unknown_defaults: false,
+                    data: MemberData::Property {
+                        ty: string(&file, property.type_name).into(),
+                        access: if property.is_auto && property.is_readable && property.is_writable
+                        {
+                            PropertyAccess::Auto
+                        } else if property.is_auto && property.is_readable && !property.is_writable
+                        {
+                            PropertyAccess::AutoReadOnly
+                        } else {
+                            PropertyAccess::Manual {
+                                readable: property.is_readable,
+                                writable: property.is_writable,
+                            }
+                        },
+                        initial_literal: None,
+                    },
                 });
             }
             for state in &object.states {
@@ -121,27 +120,18 @@ pub fn extract(name: &str, inputs: &[PexInput<'_>]) -> Result<ExtractedPex, Stri
     scripts.sort_by_key(|(script, _)| script.name.to_ascii_lowercase());
     let (scripts, paths): (Vec<_>, Vec<_>) = scripts.into_iter().unzip();
     let bundle = DeclarationBundle {
+        format: FORMAT.into(),
         schema: folio_format_declarations::SCHEMA_VERSION,
-        package: Package {
-            name: name.into(),
-            version: "local".into(),
-            source: "local-pex".into(),
-            generator: format!("folio-pex-import/{}", env!("CARGO_PKG_VERSION")),
-            source_digest: Some(digest.finalize().to_hex().to_string()),
-        },
-        compatibility: Compatibility {
-            target: "skyrim-se".into(),
-            abi: "papyrus-skyrim".into(),
-        },
-        naming: Naming {
-            language: "papyrus".into(),
-            case_sensitive: false,
+        profile: PROFILE.into(),
+        origin: Origin {
+            source: source.into(),
+            input_digest: Some(digest.finalize().to_hex().to_string()),
         },
         scripts,
     };
     folio_format_declarations::validate(&bundle).map_err(|cause| cause.to_string())?;
     tracing::info!(
-        package = name,
+        source,
         scripts = bundle.scripts.len(),
         "extracted PEX declarations"
     );
@@ -157,32 +147,28 @@ fn callable(file: &PexFile, function: &PexFunction) -> Member {
     let return_type = string(file, function.return_type_name);
     Member {
         name: string(file, function.name).into(),
-        kind: MemberKind::UnknownCallable,
-        ty: (!return_type.eq_ignore_ascii_case("none")).then(|| return_type.into()),
-        is_global: function.is_global,
-        is_native: function.is_native,
-        is_auto: false,
-        is_read_only: false,
-        is_readable: false,
-        is_writable: false,
         flags: Vec::new(),
-        initial_literal: None,
-        parameters: function
-            .parameters
-            .iter()
-            .map(|parameter| Parameter {
-                name: string(file, parameter.name).into(),
-                ty: string(file, parameter.type_name).into(),
-                default_literal: None,
-            })
-            .collect(),
-        unknown_defaults: true,
+        data: MemberData::UnknownCallable {
+            return_type: (!return_type.eq_ignore_ascii_case("none")).then(|| return_type.into()),
+            global: function.is_global,
+            native: function.is_native,
+            parameters: function
+                .parameters
+                .iter()
+                .map(|parameter| Parameter {
+                    name: string(file, parameter.name).into(),
+                    ty: string(file, parameter.type_name).into(),
+                    default: ParameterDefault::Unknown,
+                })
+                .collect(),
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use folio_format_declarations::{DeclarationFormat, MemberKind, decode, encode};
     use folio_format_pex::{
         PexHeader, PexObject, PexParameter, PexProperty, PexState, PexValue, PexVariable,
     };
@@ -240,7 +226,7 @@ mod tests {
             }],
         });
         let bytes = file.write_to_vec().unwrap();
-        let extracted = extract(
+        let extracted = extract_pex(
             "binary-mod",
             &[PexInput {
                 path: "Actor.pex",
@@ -255,15 +241,28 @@ mod tests {
             .unwrap();
         assert_eq!(extracted.bundle.scripts[0].name, "Actor");
         assert_eq!(extracted.paths, ["Actor.pex"]);
-        assert_eq!(member.kind, MemberKind::UnknownCallable);
-        assert_eq!(member.ty.as_deref(), Some("Int"));
-        assert!(member.unknown_defaults);
-        assert_eq!(member.parameters[0].ty, "Int");
+        assert_eq!(member.kind(), MemberKind::UnknownCallable);
+        assert_eq!(member.ty(), Some("Int"));
+        assert_eq!(member.parameters()[0].default, ParameterDefault::Unknown);
+        assert_eq!(member.parameters()[0].ty, "Int");
+        for format in [DeclarationFormat::Json, DeclarationFormat::Binary] {
+            let persisted = decode(&encode(&extracted.bundle, format).unwrap()).unwrap();
+            assert_eq!(
+                persisted.scripts[0]
+                    .members
+                    .iter()
+                    .find(|item| item.name == "GetValue")
+                    .unwrap()
+                    .parameters()[0]
+                    .default,
+                ParameterDefault::Unknown
+            );
+        }
         assert_eq!(
             extracted.bundle.scripts[0]
                 .members
                 .iter()
-                .filter(|item| item.kind == MemberKind::Property)
+                .filter(|item| item.kind() == MemberKind::Property)
                 .count(),
             1
         );
@@ -271,13 +270,13 @@ mod tests {
             extracted.bundle.scripts[0]
                 .members
                 .iter()
-                .all(|item| item.kind != MemberKind::Variable)
+                .all(|item| item.kind() != MemberKind::Variable)
         );
     }
 
     #[test]
     fn malformed_binary_reports_its_dependency_path() {
-        let error = extract(
+        let error = extract_pex(
             "binary-mod",
             &[PexInput {
                 path: "Broken.pex",

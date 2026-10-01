@@ -108,8 +108,7 @@ def script(name, methods, parent=""):
 def make_project(root, count, methods, dependencies):
     sources = root / "Source/Scripts"
     sources.mkdir(parents=True, exist_ok=True)
-    manifest = '''schema = 3
-[package]
+    manifest = '''[package]
 name = "lsp-benchmark"
 version = "0.1.0"
 [languages.papyrus]
@@ -125,10 +124,6 @@ emit = ["pex"]
 name = "api"
 kind = "psc"
 path = "api"
-[[dependencies]]
-name = "ck-1.6.1170"
-kind = "builtin"
-path = "ck-1.6.1170"
 '''
         api = root / "api"
         api.mkdir(exist_ok=True)

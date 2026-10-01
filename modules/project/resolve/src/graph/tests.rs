@@ -1,384 +1,108 @@
 use super::*;
-use folio_project_model::{
-    DependencyKind, DependencySpec, LoadedCarrier, LoadedLink, LoadedSdk, LocatedString, Manifest,
-    SourceFile,
-};
+use folio_project_model::{DeclarationLocation, DeclaredScript, DependencyKind, SourceFile};
+use std::path::PathBuf;
 
-fn spot(source: &str) -> SourceSpan {
-    SourceSpan {
-        source: source.into(),
-        start: 0,
-        end: 1,
+fn fixture(names: &[&str]) -> (LoadedRoot, Vec<LoadedDependency>) {
+    let mut text = "[package]\nname = \"root\"\nversion = \"0.2.0\"\n[languages.papyrus]\ndialect = \"skyrim\"\nextensions = [\"psc\"]\n[build]\ntarget = \"skyrim-se\"\nprofile = \"dev\"\nemit = [\"pex\"]\n".to_owned();
+    for name in names {
+        text.push_str(&format!(
+            "\n[[dependencies]]\nname = \"{name}\"\nkind = \"decl\"\npath = \"api.json\"\n"
+        ));
     }
-}
-
-fn value(source: &str, text: &str) -> LocatedString {
-    LocatedString {
-        value: text.into(),
-        span: spot(source),
-    }
-}
-
-fn dependency(source: &str, name: &str, kind: DependencyKind) -> DependencySpec {
-    DependencySpec {
-        name: value(source, name),
-        kind,
-
-        path: value(source, name),
-    }
-}
-
-fn manifest(name: &str, dependencies: Vec<DependencySpec>) -> Manifest {
-    Manifest {
-        source: format!("{name}/folio.toml"),
-        fields: BTreeMap::new(),
-        name: name.into(),
-        version: "1.0".into(),
-        source_path: value(name, "Source/Scripts"),
-        output_path: value(name, "Scripts"),
-        language: "papyrus".into(),
-        dialect: "skyrim".into(),
-        extensions: vec!["psc".into()],
-        user_flags: vec![],
-        fill_missing_arguments: false,
-        lint_rules: Default::default(),
-        target: "skyrim-se".into(),
-        profile: "dev".into(),
-        debug_info: true,
-        experimental_pex_dependencies: false,
-        emit: vec!["pex".into()],
-        dependencies,
-    }
-}
-
-fn package(
-    key: &str,
-    dependencies: Vec<(DependencySpec, &str)>,
-    scripts: &[&str],
-) -> LoadedPackage {
-    let links = dependencies
+    let manifest = crate::manifest::parse("folio.toml", &text).unwrap();
+    let dependencies = manifest
+        .dependencies
         .iter()
         .enumerate()
-        .map(|(index, (_, target))| LoadedLink {
-            dependency_index: index,
-            source_key: (*target).into(),
+        .map(|(index, specification)| LoadedDependency {
+            source_key: format!("dependency:{index}"),
+            source_id: SourceId::Dependency {
+                index,
+                kind: DependencyKind::Decl,
+                path: "api.json".into(),
+                digest: "same-api".into(),
+            },
+            kind: DependencyKind::Decl,
+            name: specification.name.value.clone(),
+            declared_path: "api.json".into(),
+            canonical_path: PathBuf::from("/api.json"),
+            declaration: specification.path.span.clone(),
+            profile: "papyrus-skyrim".into(),
+            scripts: vec![DeclaredScript {
+                name: "Actor".into(),
+                location: DeclarationLocation {
+                    carrier_path: "api.json".into(),
+                    script_name: "actor".into(),
+                    source_path: None,
+                    line: None,
+                    column: None,
+                },
+            }],
         })
         .collect();
-    let specs = dependencies.into_iter().map(|(spec, _)| spec).collect();
-    LoadedPackage {
-        source_key: key.into(),
-        source_id: if key == "root" {
-            SourceId::Project
-        } else {
-            SourceId::Local {
-                path: format!("../{key}/folio.toml"),
-            }
+    (
+        LoadedRoot {
+            source_key: "root".into(),
+            source_id: SourceId::Project,
+            manifest,
+            source_files: Vec::new(),
         },
-        carrier: LoadedCarrier::Manifest(manifest(key, specs)),
-        source_files: scripts
+        dependencies,
+    )
+}
+
+#[test]
+fn repeated_carrier_occurrences_keep_alias_and_order() {
+    let (root, dependencies) = fixture(&["first", "second"]);
+    let metadata = resolve(&root, &dependencies).unwrap();
+    assert_eq!(metadata.scripts[0].selected.package.name, "second");
+    assert_eq!(metadata.scripts[0].providers.len(), 2);
+    assert!(
+        metadata
+            .dependencies
             .iter()
-            .map(|script| SourceFile {
-                path: format!("src/{script}.psc"),
-                display_path: format!("src/{script}.psc"),
-                script_candidate: (*script).into(),
-            })
-            .collect(),
-        links,
-    }
-}
-
-fn sdk(target: &str, digest: &str) -> LoadedPackage {
-    LoadedPackage {
-        source_key: "sdk".into(),
-        source_id: SourceId::DeclarationSdk {
-            path: "sdk.json".into(),
-            digest: digest.into(),
-        },
-        carrier: LoadedCarrier::Declarations {
-            kind: DependencyKind::Sdk,
-            sdk: LoadedSdk {
-                name: "sdk".into(),
-                version: "1".into(),
-                target: target.into(),
-                abi: "papyrus-skyrim".into(),
-                scripts: Vec::new(),
-            },
-        },
-        source_files: Vec::new(),
-        links: Vec::new(),
-    }
-}
-
-fn edge<'a>(owner: &str, name: &'a str, kind: DependencyKind) -> (DependencySpec, &'a str) {
-    (dependency(owner, name, kind), name)
-}
-
-#[test]
-fn later_dependency_and_root_source_win() {
-    let base = vec![
-        package(
-            "root",
-            vec![
-                edge("root", "a", DependencyKind::Package),
-                edge("root", "b", DependencyKind::Package),
-            ],
-            &["Shared"],
-        ),
-        package("a", vec![], &["shared"]),
-        package("b", vec![], &["SHARED"]),
-    ];
-    let result = resolve("root", &base).unwrap();
-    assert_eq!(result.scripts[0].selected.package.name, "root");
-    assert_eq!(
-        result.scripts[0]
-            .providers
-            .iter()
-            .map(|p| p.package.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["a", "b", "root"]
+            .all(|edge| edge.to.version.is_none())
     );
-    let mut without_root = base;
-    without_root[0].source_files.clear();
-    assert_eq!(
-        resolve("root", &without_root).unwrap().scripts[0]
-            .selected
-            .package
-            .name,
-        "b"
-    );
-    without_root[0]
-        .manifest_mut()
-        .unwrap()
-        .dependencies
-        .swap(0, 1);
-    without_root[0].links.swap(0, 1);
-    for link in &mut without_root[0].links {
-        link.dependency_index = 1 - link.dependency_index;
-    }
-    assert_eq!(
-        resolve("root", &without_root).unwrap().scripts[0]
-            .selected
-            .package
-            .name,
-        "a"
+    assert_ne!(
+        metadata.dependencies[0].to.source,
+        metadata.dependencies[1].to.source
     );
 }
 
 #[test]
-fn transitive_dependencies_follow_the_last_declared_path() {
-    let packages = vec![
-        package(
-            "root",
-            vec![
-                edge("root", "a", DependencyKind::Package),
-                edge("root", "b", DependencyKind::Package),
-            ],
-            &[],
-        ),
-        package(
-            "a",
-            vec![edge("a", "shared", DependencyKind::Package)],
-            &["Actor"],
-        ),
-        package("b", vec![edge("b", "shared", DependencyKind::Package)], &[]),
-        package("shared", vec![], &["actor"]),
-    ];
-    let result = resolve("root", &packages).unwrap();
-    assert_eq!(result.scripts[0].selected.package.name, "shared");
-    let mut reversed_inputs = packages;
-    reversed_inputs.reverse();
+fn root_script_has_highest_precedence() {
+    let (mut root, dependencies) = fixture(&["api"]);
+    root.source_files.push(SourceFile {
+        path: "Actor.psc".into(),
+        display_path: "Actor.psc".into(),
+        script_candidate: "actor".into(),
+    });
+    let metadata = resolve(&root, &dependencies).unwrap();
     assert_eq!(
-        resolve("root", &reversed_inputs).unwrap().scripts,
-        result.scripts
+        metadata.scripts[0].selected.package.source,
+        SourceId::Project
     );
 }
 
 #[test]
-fn later_builtin_declaration_shadows_earlier_one() {
-    let sdk = |name: &str| LoadedPackage {
-        source_key: name.into(),
-        source_id: SourceId::DeclarationSdk {
-            path: format!("{name}.json"),
-            digest: name.into(),
-        },
-        carrier: LoadedCarrier::Declarations {
-            kind: DependencyKind::Builtin,
-            sdk: LoadedSdk {
-                name: name.into(),
-                version: "1".into(),
-                target: "skyrim-se".into(),
-                abi: "papyrus-skyrim".into(),
-                scripts: vec![folio_project_model::DeclaredScript {
-                    name: "Actor".into(),
-                    location: folio_project_model::DeclarationLocation {
-                        carrier_path: format!("{name}.json"),
-                        script_index: 0,
-                        source_path: None,
-                        line: None,
-                        column: None,
-                    },
-                }],
-            },
-        },
-        source_files: Vec::new(),
-        links: Vec::new(),
-    };
-    let packages = vec![
-        package(
-            "root",
-            vec![
-                edge("root", "ck", DependencyKind::Builtin),
-                edge("root", "skse", DependencyKind::Builtin),
-            ],
-            &[],
-        ),
-        sdk("ck"),
-        sdk("skse"),
-    ];
-    let result = resolve("root", &packages).unwrap();
-    assert_eq!(result.scripts[0].selected.package.name, "skse");
-    assert_eq!(result.scripts[0].providers.len(), 2);
-}
-
-#[test]
-fn psc_directory_declarations_share_normal_provider_precedence() {
-    let mut source = sdk("skyrim-se", "content");
-    source.source_key = "other-mod".into();
-    source.source_id = SourceId::Local {
-        path: "../OtherMod/Source".into(),
-    };
-    if let LoadedCarrier::Declarations { kind, sdk } = &mut source.carrier {
-        *kind = DependencyKind::Psc;
-        sdk.name = "other-mod".into();
-        sdk.scripts.push(folio_project_model::DeclaredScript {
-            name: "Actor".into(),
-            location: folio_project_model::DeclarationLocation {
-                carrier_path: "../OtherMod/Source".into(),
-                script_index: 0,
-                source_path: Some("Actor.psc".into()),
-                line: Some(1),
-                column: Some(1),
-            },
-        });
-    }
-    let packages = vec![
-        package(
-            "root",
-            vec![edge("root", "other-mod", DependencyKind::Psc)],
-            &[],
-        ),
-        source,
-    ];
-    let resolved = resolve("root", &packages).unwrap();
-    assert_eq!(resolved.scripts[0].selected.package.name, "other-mod");
-    assert_eq!(
-        resolved.scripts[0]
-            .selected
-            .declaration
-            .as_ref()
-            .unwrap()
-            .source_path
-            .as_deref(),
-        Some("Actor.psc")
-    );
-}
-
-#[test]
-fn pex_directory_is_a_normal_declaration_provider() {
-    let mut binary = sdk("skyrim-se", "bytes");
-    binary.source_key = "binary".into();
-    binary.source_id = SourceId::BinaryPex {
-        path: "../Binary/Scripts".into(),
-        digest: "bytes".into(),
-    };
-    if let LoadedCarrier::Declarations { kind, sdk } = &mut binary.carrier {
-        *kind = DependencyKind::Pex;
-        sdk.name = "binary".into();
-        sdk.scripts.push(folio_project_model::DeclaredScript {
-            name: "Actor".into(),
-            location: folio_project_model::DeclarationLocation {
-                carrier_path: "../Binary/Scripts/Actor.pex".into(),
-                script_index: 0,
-                source_path: None,
-                line: None,
-                column: None,
-            },
-        });
-    }
-    let packages = vec![
-        package(
-            "root",
-            vec![edge("root", "binary", DependencyKind::Pex)],
-            &[],
-        ),
-        binary,
-    ];
-    let resolved = resolve("root", &packages).unwrap();
-    assert_eq!(resolved.scripts[0].selected.package.name, "binary");
-    assert_eq!(
-        resolved.scripts[0]
-            .selected
-            .declaration
-            .as_ref()
-            .unwrap()
-            .carrier_path,
-        "../Binary/Scripts/Actor.pex"
-    );
-}
-
-#[test]
-fn rejects_a_duplicate_within_one_package_and_dependency_cycles() {
-    let duplicated = vec![package("root", vec![], &["Actor", "actor"])];
+fn duplicates_inside_one_provider_are_conflicts() {
+    let (root, mut dependencies) = fixture(&["api"]);
+    let duplicate = dependencies[0].scripts[0].clone();
+    dependencies[0].scripts.push(duplicate);
     assert!(matches!(
-        resolve("root", &duplicated).unwrap_err().kind,
+        resolve(&root, &dependencies).unwrap_err().kind,
         ResolveErrorKind::ScriptConflict(_)
     ));
-    let cycle = vec![
-        package(
-            "root",
-            vec![edge("root", "a", DependencyKind::Package)],
-            &[],
-        ),
-        package("a", vec![edge("a", "root", DependencyKind::Package)], &[]),
-    ];
-    assert!(matches!(
-        resolve("root", &cycle).unwrap_err().kind,
-        ResolveErrorKind::DependencyCycle(_)
-    ));
 }
 
 #[test]
-fn rejects_sdk_target_mismatch() {
-    let mismatch = vec![
-        package("root", vec![edge("root", "sdk", DependencyKind::Sdk)], &[]),
-        sdk("other-target", "abc"),
-    ];
+fn incompatible_profile_has_dependency_location() {
+    let (root, mut dependencies) = fixture(&["api"]);
+    dependencies[0].profile = "other".into();
+    let error = resolve(&root, &dependencies).unwrap_err();
     assert!(matches!(
-        resolve("root", &mismatch).unwrap_err().kind,
-        ResolveErrorKind::TargetMismatch { .. }
+        error.kind,
+        ResolveErrorKind::ProfileMismatch { .. }
     ));
-    let mut wrong_abi = mismatch;
-    wrong_abi[1].sdk_mut().unwrap().target = "skyrim-se".into();
-    wrong_abi[1].sdk_mut().unwrap().abi = "another-abi".into();
-    assert!(matches!(
-        resolve("root", &wrong_abi).unwrap_err().kind,
-        ResolveErrorKind::AbiMismatch { .. }
-    ));
-}
-
-#[test]
-fn declared_name_must_match_loaded_package_identity() {
-    let mut inputs = vec![
-        package(
-            "root",
-            vec![edge("root", "expected", DependencyKind::Package)],
-            &[],
-        ),
-        package("actual", vec![], &[]),
-    ];
-    inputs[0].links[0].source_key = "actual".into();
-    assert!(matches!(
-        resolve("root", &inputs).unwrap_err().kind,
-        ResolveErrorKind::DependencyIdentityMismatch { .. }
-    ));
+    assert!(error.location.is_some());
 }

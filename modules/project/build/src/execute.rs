@@ -8,7 +8,7 @@ use std::{
 
 use folio_diagnostics::{Diagnostic, Severity};
 use folio_project_model::Metadata;
-use folio_project_resolve::{LoadedProject, load_and_resolve};
+use folio_project_resolve::{LoadedProject, io::load_and_resolve_with_home};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -174,14 +174,19 @@ pub struct BuildOutcome {
 
 fn snapshot_still_current(
     project_root: &Path,
+    project: &LoadedProject,
     metadata: &Metadata,
     compiler_identity: &str,
     decisions: &[String],
     command_key: &str,
 ) -> Result<bool, BuildError> {
-    let (current, current_metadata) = load_and_resolve(project_root, None)
+    folio_project_resolve::io::verify_snapshots(&project.input_snapshots)
         .map_err(|cause| BuildError::InputsChanged(cause.to_string()))?;
-    Ok(current_metadata.output == metadata.output
+    let (current, current_metadata) =
+        load_and_resolve_with_home(project_root, None, &project.folio_home)
+            .map_err(|cause| BuildError::InputsChanged(cause.to_string()))?;
+    Ok(current.input_snapshots == project.input_snapshots
+        && current_metadata.output == metadata.output
         && command_fingerprint(&current, &current_metadata, compiler_identity, decisions)
             == command_key)
 }
@@ -205,7 +210,7 @@ pub fn prepare_success(
         if !seen.insert(&completed.unit_id)
             || planned.id != completed.unit_id
             || planned.package.name != completed.package
-            || planned.package.version != completed.package_version
+            || planned.package.version.as_deref() != Some(completed.package_version.as_str())
             || serde_json::to_value(&planned.package.source).expect("source identity serializes")
                 != completed.package_source
             || planned.target != completed.target
@@ -303,6 +308,7 @@ pub fn build_project(
     {
         if !snapshot_still_current(
             project_root,
+            project,
             metadata,
             compiler_identity,
             &target.decisions,
@@ -312,9 +318,19 @@ pub fn build_project(
                 "workspace or dependency snapshot changed".into(),
             ));
         }
+        // Carrier relocation can preserve the API and PEX while changing provenance.
+        let success = prepare_success(
+            &target.project,
+            previous.units.clone(),
+            cancelled.load(Ordering::Relaxed),
+        )?;
+        if success != *previous {
+            output::publish(&build_root, &success)?;
+            info!(output = %metadata.output, "refreshed source provenance for reused artifacts");
+        }
         info!(output = %metadata.output, "workspace snapshot and published output unchanged");
         return Ok(BuildOutcome {
-            success: previous.clone(),
+            success,
             cache_decisions: target
                 .project
                 .units
@@ -426,7 +442,11 @@ pub fn build_project(
         let record = UnitRecord {
             unit_id: unit.id.clone(),
             package: unit.package.name.clone(),
-            package_version: unit.package.version.clone(),
+            package_version: unit
+                .package
+                .version
+                .clone()
+                .expect("build units belong to the versioned root"),
             package_source: serde_json::to_value(&unit.package.source)
                 .expect("source identity serializes"),
             target: unit.target.clone(),
@@ -443,6 +463,7 @@ pub fn build_project(
     let success = prepare_success(&target.project, units, cancelled.load(Ordering::Relaxed))?;
     if !snapshot_still_current(
         project_root,
+        project,
         metadata,
         compiler_identity,
         &target.decisions,
@@ -469,7 +490,7 @@ mod tests {
     fn fixture() -> (ProjectPlan, UnitRecord) {
         let package = PackageId {
             name: "app".into(),
-            version: "1".into(),
+            version: Some("1".into()),
             source: SourceId::Project,
         };
         let script = PlannedScript {
@@ -479,7 +500,7 @@ mod tests {
             artifact_path: "sky.pex".into(),
         };
         let plan = ProjectPlan {
-            schema: 2,
+            schema: 3,
             root: package.clone(),
             output: "Scripts".into(),
             units: vec![BuildUnit {
@@ -495,7 +516,7 @@ mod tests {
             unit_id: "abc".into(),
             package: "app".into(),
             package_version: "1".into(),
-            package_source: serde_json::json!({"kind":"project"}),
+            package_source: serde_json::json!({"source_kind":"project"}),
             target: "skyrim-se".into(),
             profile: "dev".into(),
             fingerprint: "key".into(),
@@ -532,5 +553,45 @@ mod tests {
         ));
         let complete = prepare_success(&plan, vec![unit.clone()], false).unwrap();
         assert_eq!(complete.units, vec![unit]);
+    }
+
+    #[test]
+    fn reused_artifacts_record_current_dependency_provenance() {
+        let (mut plan, unit) = fixture();
+        let current_source = SourceId::Dependency {
+            index: 0,
+            kind: folio_project_model::DependencyKind::Decl,
+            path: "new/api.fdecl".into(),
+            digest: "semantic-api".into(),
+        };
+        plan.external_requirements
+            .push(folio_project_model::ExternalRequirement {
+                package: PackageId {
+                    name: "api".into(),
+                    version: None,
+                    source: SourceId::Dependency {
+                        index: 0,
+                        kind: folio_project_model::DependencyKind::Decl,
+                        path: "old/api.json".into(),
+                        digest: "semantic-api".into(),
+                    },
+                },
+                target: "skyrim-se".into(),
+                abi: "papyrus-skyrim".into(),
+                reason: "runtime API".into(),
+            });
+        let previous = prepare_success(&plan, vec![unit], false).unwrap();
+        plan.external_requirements[0].package.source = current_source.clone();
+        let refreshed = prepare_success(&plan, previous.units.clone(), false).unwrap();
+        assert_eq!(refreshed.units, previous.units);
+        assert_ne!(
+            refreshed.external_requirements,
+            previous.external_requirements
+        );
+        assert_eq!(
+            refreshed.external_requirements[0].package_source,
+            serde_json::to_value(current_source).unwrap()
+        );
+        assert_eq!(refreshed.external_requirements[0].package_version, None);
     }
 }

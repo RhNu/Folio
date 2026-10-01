@@ -130,7 +130,7 @@ pub(super) fn analyze_file(
                     span(file, &node),
                 ));
             }
-            let parameters: Vec<(String, Type, Option<String>)> = actual
+            let parameters: Vec<(String, Type, ParameterDefault)> = actual
                 .map(|ast| {
                     ast.parameters()
                         .into_iter()
@@ -138,7 +138,11 @@ pub(super) fn analyze_file(
                             (
                                 parameter.name,
                                 Type::from_spelling(&parameter.ty),
-                                parameter.default.clone(),
+                                parameter
+                                    .default
+                                    .clone()
+                                    .map(ParameterDefault::Literal)
+                                    .unwrap_or(ParameterDefault::Required),
                             )
                         })
                         .collect()
@@ -159,7 +163,6 @@ pub(super) fn analyze_file(
                 ty,
                 kind: MemberKind::Function,
                 parameters,
-                unknown_defaults: false,
                 global: false,
                 auto: false,
                 read_only: false,

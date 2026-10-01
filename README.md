@@ -29,18 +29,16 @@ folio build
 | `folio metadata`             | 输出解析后的项目数据，默认 JSON        |
 | `folio inspect`              | 验证最近一次成功构建及产物             |
 | `folio inspect --pex <路径>` | 独立读取一个 PEX 文件                  |
-| `folio declarations list`    | 列出内置声明包                         |
+| `folio declarations list`    | 列出本地仓库声明                         |
 | `folio lsp`                  | 启动供编辑器使用的语言服务器           |
 
 `check` 不执行最终 PEX 编码，因此个别布局限制可能在 `build` 时才报告。`inspect --pex` 只读取产物，不执行单文件构建。`check`、`build`、`lint`、`tree` 和 `inspect` 可按命令帮助选择文本或 JSON 输出。
 
 ## 项目配置
 
-`folio.toml` 使用 schema 3。下面是基本配置；`paths` 可省略，展示的是默认目录：
+`folio.toml` 按当前版本的字段与默认值解析，不声明 schema 版本。下面是基本配置；`paths` 可省略，展示的是默认目录：
 
 ```toml
-schema = 3
-
 [package]
 name = "my-mod"
 version = "0.1.0"
@@ -59,7 +57,7 @@ profile = "dev"
 emit = ["pex"]
 ```
 
-需要 CK 或 SKSE API 时，可用 `folio declarations list` 查看内置包，并在清单中显式声明依赖。后列依赖的同名脚本优先；例如 CK 在前、SKSE 在后。声明仅提供分析时的 API 可见性，所需运行时仍由项目自行提供。完整字段、依赖示例和覆盖规则见[项目与构建](docs/architecture/project-model.md)。
+依赖支持 `psc`、实验性的 `pex`、`decl` 和 `repo`，都只提供 API 声明。`decl` 读取 JSON 或 `.fdecl` 二进制文件；`repo` 从用户目录的 `.folio/repo` 读取，也可用绝对路径的 `FOLIO_HOME` 改变位置。CK、SKSE 声明须从自己的本地源码生成，再以 `repo` 显式选择。后列依赖的同名脚本优先，根项目源码最高；所需运行时由项目自行提供。完整字段、生成命令和覆盖规则见[项目与依赖](docs/architecture/project-model.md)。
 
 只有 `.psc` 的模组源码目录可直接作为声明依赖，无需给该目录添加 `folio.toml`：
 
@@ -86,4 +84,4 @@ VS Code 客户端可在 `editors/vscode` 运行 `npm ci`、`npm run package` 生
 
 ## 许可与来源
 
-Folio 使用 [GNU GPL version 3](LICENSE)。复用源码的来源见[PEX codec 来源记录](modules/formats/pex/PROVENANCE.md)；内置声明的输入与摘要见[声明来源记录](modules/formats/declarations/builtin/README.md)。第三方 SDK、游戏脚本和其他资产须按各自权利条件使用和分发。
+Folio 使用 [GNU GPL version 3](LICENSE)。复用源码的来源见[PEX codec 来源记录](modules/formats/pex/PROVENANCE.md)；本地声明生成与来源信息见[项目与依赖](docs/architecture/project-model.md#从源生成声明)。第三方 SDK、游戏脚本和其他资产须按各自权利条件使用和分发。

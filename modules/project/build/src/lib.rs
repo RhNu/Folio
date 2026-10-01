@@ -5,6 +5,9 @@ pub mod fingerprint;
 pub mod output;
 pub mod plan;
 
+#[cfg(test)]
+mod test_support;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,19 +48,12 @@ impl ProjectSource {
 
 /// Maps only the files explicitly loaded by the project resolver.
 pub fn sources_from_loaded(project: &LoadedProject) -> Result<Vec<ProjectSource>, ProjectionError> {
-    let packages = project
-        .packages
-        .iter()
-        .map(|package| (&package.source_key, package))
-        .collect::<BTreeMap<_, _>>();
+    let manifest = &project.root.manifest;
     let mut sources = Vec::new();
     for input in &project.source_inputs {
-        let package = packages
-            .get(&input.package_key)
-            .ok_or_else(|| ProjectionError::MissingPackage(input.package_key.clone()))?;
-        let manifest = package
-            .manifest()
-            .ok_or_else(|| ProjectionError::MissingPackage(input.package_key.clone()))?;
+        if input.package_key != project.root_key {
+            return Err(ProjectionError::MissingPackage(input.package_key.clone()));
+        }
         if !manifest.language.eq_ignore_ascii_case("papyrus") {
             return Err(ProjectionError::UnsupportedLanguage {
                 package: input.package_key.clone(),
@@ -96,14 +92,10 @@ pub fn selected_inputs(
     project: &LoadedProject,
     metadata: &Metadata,
 ) -> Result<SelectedInputs, ProjectionError> {
-    let package_ids = project
-        .packages
-        .iter()
-        .map(|package| (&package.source_key, &package.source_id))
-        .collect::<BTreeMap<_, _>>();
     let selected_sources = metadata
         .scripts
         .iter()
+        .filter(|selection| selection.selected.package.source == SourceId::Project)
         .filter_map(|selection| {
             selection
                 .selected
@@ -115,52 +107,44 @@ pub fn selected_inputs(
     let sources: Vec<_> = sources_from_loaded(project)?
         .into_iter()
         .filter(|source| {
-            package_ids
-                .get(&source.package_key)
-                .is_some_and(|source_id| {
-                    selected_sources.contains(&((**source_id).clone(), source.display_path.clone()))
-                })
+            selected_sources.contains(&(SourceId::Project, source.display_path.clone()))
         })
         .collect();
     if sources.len() != selected_sources.len() {
         return Err(ProjectionError::MissingSelectedProvider);
     }
-    let mut selected_declarations = BTreeMap::<SourceId, BTreeSet<usize>>::new();
+    let mut selected_declarations = BTreeMap::<SourceId, BTreeSet<String>>::new();
     for selection in &metadata.scripts {
         if let Some(location) = &selection.selected.declaration {
             selected_declarations
                 .entry(selection.selected.package.source.clone())
                 .or_default()
-                .insert(location.script_index);
+                .insert(location.script_name.to_ascii_lowercase());
         }
     }
     let mut bundles = Vec::new();
-    for package in &project.packages {
+    for package in &project.dependencies {
         let Some(bundle) = project.declaration_bundles.get(&package.source_key) else {
             continue;
         };
-        let Some(indices) = selected_declarations.get(&package.source_id) else {
+        let Some(names) = selected_declarations.get(&package.source_id) else {
             continue;
         };
         let mut bundle = bundle.clone();
-        if indices.iter().any(|index| *index >= bundle.scripts.len()) {
+        let available = bundle
+            .scripts
+            .iter()
+            .map(|script| script.name.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        if !names.is_subset(&available) {
             return Err(ProjectionError::MissingSelectedProvider);
         }
-        bundle.scripts = bundle
+        bundle
             .scripts
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, script)| indices.contains(&index).then_some(script))
-            .collect();
+            .retain(|script| names.contains(&script.name.to_ascii_lowercase()));
         bundles.push(bundle);
     }
-    let root_flags = project
-        .packages
-        .iter()
-        .find(|package| package.source_key == project.root_key)
-        .and_then(|package| package.manifest())
-        .map(|manifest| manifest.user_flags.clone())
-        .unwrap_or_default();
+    let root_flags = project.root.manifest.user_flags.clone();
     Ok(SelectedInputs {
         sources,
         declarations: bundles,

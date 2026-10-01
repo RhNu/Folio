@@ -129,7 +129,7 @@ function serverLaunch(context: vscode.ExtensionContext, folder: vscode.Workspace
 async function startServer(context: vscode.ExtensionContext): Promise<void> {
   const folder = projectFolder();
   const launch = serverLaunch(context, folder);
-  const pattern = new vscode.RelativePattern(folder, '**/{folio.toml,*.psc,*.pex,*.json}');
+  const pattern = new vscode.RelativePattern(folder, '**/{folio.toml,*.psc,*.pex,*.json,*.fdecl}');
   const watcher = vscode.workspace.createFileSystemWatcher(pattern);
   const serverOptions: ServerOptions = {
     command: launch.command,

@@ -43,7 +43,7 @@ impl<'a> Scope<'a> {
                     .parameters
                     .iter()
                     .find(|(parameter, _, _)| parameter.eq_ignore_ascii_case(&name))
-                    .and_then(|(_, _, default)| default.clone()),
+                    .and_then(|(_, _, default)| default.literal().map(str::to_owned)),
                 span: definition,
             });
             if self
@@ -698,7 +698,7 @@ impl<'a> Scope<'a> {
             );
         }
         // These methods are emitted by the compiler and have fixed signatures;
-        // SDK declarations cannot redefine their meaning.
+        // External declarations cannot redefine their meaning.
         if let Some(ty) = state_runtime_intrinsic_type(&name.text) {
             if self.member.global {
                 self.issue(
@@ -927,12 +927,15 @@ impl<'a> Scope<'a> {
                 name,
             } => lookup_state_member(self.world, script, state, name).map(|(_, member)| member),
             Symbol::Intrinsic { name } => {
-                let (result, params): (Type, Vec<(String, Type, Option<String>)>) = if name
+                let (result, params): (Type, Vec<(String, Type, ParameterDefault)>) = if name
                     .eq_ignore_ascii_case("GetState")
                 {
                     (Type::String, Vec::new())
                 } else if name.eq_ignore_ascii_case("GotoState") {
-                    (Type::Void, vec![("newState".into(), Type::String, None)])
+                    (
+                        Type::Void,
+                        vec![("newState".into(), Type::String, ParameterDefault::Required)],
+                    )
                 } else if name.eq_ignore_ascii_case("Find") || name.eq_ignore_ascii_case("RFind") {
                     let element = match &callee.kind {
                         ExpressionKind::Member { owner, .. } => match &owner.ty {
@@ -944,11 +947,11 @@ impl<'a> Scope<'a> {
                     (
                         Type::Int,
                         vec![
-                            ("value".into(), element, None),
+                            ("value".into(), element, ParameterDefault::Required),
                             (
                                 "startIndex".into(),
                                 Type::Int,
-                                Some(
+                                ParameterDefault::Literal(
                                     if name.eq_ignore_ascii_case("Find") {
                                         "0"
                                     } else {
@@ -967,7 +970,6 @@ impl<'a> Scope<'a> {
                     ty: result,
                     kind: MemberKind::Function,
                     parameters: params,
-                    unknown_defaults: false,
                     global: false,
                     auto: false,
                     read_only: false,
@@ -1042,8 +1044,7 @@ impl<'a> Scope<'a> {
             self.expect(arg, expected, "semantic.argument-type");
             bound.push(ordinal);
         }
-        let defaults =
-            self.call_defaults(&member.parameters, &used, location, member.unknown_defaults);
+        let defaults = self.call_defaults(&member.parameters, &used, location);
         CheckedCall {
             result: member.ty.clone(),
             target: Some(binding.symbol.clone()),
@@ -1082,8 +1083,7 @@ impl<'a> Scope<'a> {
             self.expect(arg, &member.parameters[ordinal].1, "semantic.argument-type");
             bound.push(ordinal);
         }
-        let defaults =
-            self.call_defaults(&member.parameters, &used, location, member.unknown_defaults);
+        let defaults = self.call_defaults(&member.parameters, &used, location);
         CheckedCall {
             result: member.ty.clone(),
             target: Some(symbol),
@@ -1095,10 +1095,9 @@ impl<'a> Scope<'a> {
     /// Returns declaration-order values for omitted parameters and reports each required gap.
     fn call_defaults(
         &mut self,
-        parameters: &[(String, Type, Option<String>)],
+        parameters: &[(String, Type, ParameterDefault)],
         used: &BTreeSet<usize>,
         location: SourceSpan,
-        unknown_defaults: bool,
     ) -> Vec<Option<(Type, String)>> {
         parameters
             .iter()
@@ -1107,15 +1106,15 @@ impl<'a> Scope<'a> {
                 if used.contains(&index) {
                     return None;
                 }
-                if unknown_defaults {
+                if matches!(declared, ParameterDefault::Unknown) {
                     self.issue(
-                        "semantic.pex-default-unavailable",
-                        format!("PEX does not record whether argument {name} has a default; provide it explicitly"),
+                        "semantic.default-unavailable",
+                        format!("declaration does not record whether argument {name} has a default; provide it explicitly"),
                         location,
                     );
                     return None;
                 }
-                if let Some(value) = declared {
+                if let ParameterDefault::Literal(value) = declared {
                     return Some((ty.clone(), value.clone()));
                 }
                 if self.fill_missing_arguments

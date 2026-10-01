@@ -14,9 +14,11 @@ use folio_format::format_source;
 use folio_ide::{Documents, Position, PositionEncoding, PositionIndex, Range};
 use folio_lint::{LintConfig, lint_script};
 use folio_papyrus::PapyrusDialect;
-use folio_project_model::{DependencyKind, LoadedCarrier, Metadata, SourceFile, SourceId};
+use folio_project_model::{DependencyKind, Metadata, SourceFile, SourceId};
 use folio_project_resolve::{
-    LoadedProject, discover, io::LoadedSourceInput, load_and_resolve, resolve,
+    LoadedProject, discover,
+    io::{FolioHome, LoadedSourceInput},
+    resolve,
 };
 use folio_source::{FileId, TextRange};
 use serde_json::{Value, json};
@@ -99,7 +101,8 @@ pub fn serve_stdio(manifest_path: Option<&Path>) -> Result<(), LspError> {
     let output = Arc::new(Mutex::new(io::stdout()));
     let input = io::stdin();
     let mut reader = io::BufReader::new(input.lock());
-    let mut server = Server::new(cwd, manifest_path.map(Path::to_path_buf), output);
+    let home = FolioHome::from_env().map_err(|error| LspError::Project(error.to_string()))?;
+    let mut server = Server::new(cwd, manifest_path.map(Path::to_path_buf), output, home);
     while let Some(message) = read_message(&mut reader)? {
         if server.handle(message)? {
             break;
@@ -110,6 +113,7 @@ pub fn serve_stdio(manifest_path: Option<&Path>) -> Result<(), LspError> {
 
 struct Server {
     cwd: PathBuf,
+    home: FolioHome,
     manifest_path: Option<PathBuf>,
     output: Output,
     documents: Documents,
@@ -134,9 +138,10 @@ struct Server {
 }
 
 impl Server {
-    fn new(cwd: PathBuf, manifest_path: Option<PathBuf>, output: Output) -> Self {
+    fn new(cwd: PathBuf, manifest_path: Option<PathBuf>, output: Output, home: FolioHome) -> Self {
         Self {
             cwd,
+            home,
             manifest_path,
             output,
             documents: Documents::default(),
@@ -408,7 +413,14 @@ impl Server {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let started = Instant::now();
         if refresh_disk || self.disk_project.is_none() {
-            match load_and_resolve(&self.cwd, self.manifest_path.as_deref()) {
+            // Register candidate paths before reading carriers so missing or ambiguous
+            // inputs can recover when files or intermediate directories change.
+            self.register_file_watches(generation)?;
+            match folio_project_resolve::io::load_and_resolve_with_home(
+                &self.cwd,
+                self.manifest_path.as_deref(),
+                &self.home,
+            ) {
                 Ok(project) => self.disk_project = Some(project),
                 Err(error) => {
                     tracing::error!(%error, "LSP project reload failed");
@@ -440,7 +452,7 @@ impl Server {
         self.documents.retain_disk_paths(&disk_paths);
         self.add_unsaved_sources(&mut loaded, &disk_paths)?;
         if loaded.source_inputs.len() != disk_paths.len() {
-            metadata = resolve(&loaded.root_key, &loaded.packages)
+            metadata = resolve(&loaded.root, &loaded.dependencies)
                 .map_err(|error| LspError::Project(error.to_string()))?;
         }
         for source in &mut loaded.source_inputs {
@@ -470,14 +482,7 @@ impl Server {
             files = self.paths.len(),
             "LSP project view updated"
         );
-        let rules = loaded
-            .packages
-            .iter()
-            .find(|package| package.source_key == loaded.root_key)
-            .and_then(|package| package.manifest())
-            .ok_or_else(|| LspError::Project("root package manifest is missing".into()))?
-            .lint_rules
-            .clone();
+        let rules = loaded.root.manifest.lint_rules.clone();
         let lint =
             LintConfig::from_rules(&rules).map_err(|error| LspError::Project(error.to_string()))?;
         self.publish(view.clone(), generation, &loaded.root_key, &lint)?;
@@ -491,35 +496,20 @@ impl Server {
         if !self.dynamic_watches || !self.client_ready {
             return Ok(());
         }
-        let Some((loaded, _)) = &self.disk_project else {
-            return Ok(());
-        };
+        let plan = folio_project_resolve::io::watch_plan_with_home(
+            &self.cwd,
+            self.manifest_path.as_deref(),
+            &self.home,
+        );
         let mut patterns = BTreeSet::new();
-        for package in &loaded.packages {
-            let path = Path::new(&package.source_key);
-            match &package.carrier {
-                LoadedCarrier::Manifest(manifest) => {
-                    if let Some(base) = path.parent() {
-                        patterns.insert((path_to_uri(base), "folio.toml"));
-                        patterns
-                            .insert((path_to_uri(&base.join(&manifest.source_path.value)), "**/*"));
-                    }
-                }
-                LoadedCarrier::Declarations {
-                    kind: DependencyKind::Builtin,
-                    ..
-                } => {}
-                LoadedCarrier::Declarations {
-                    kind: DependencyKind::Psc | DependencyKind::Pex,
-                    ..
-                } => {
-                    patterns.insert((path_to_uri(path), "**/*"));
-                }
-                LoadedCarrier::Declarations { .. } => {
-                    if let Some(base) = path.parent() {
-                        patterns.insert((path_to_uri(base), "*"));
-                    }
-                }
+        for directory in &plan.directories {
+            patterns.insert((path_to_uri(directory), String::from("**/*")));
+        }
+        for file in &plan.files {
+            if let (Some(parent), Some(name)) = (file.parent(), file.file_name())
+                && parent.is_dir()
+            {
+                patterns.insert((path_to_uri(parent), name.to_string_lossy().into_owned()));
             }
         }
         let watchers = json!(
@@ -562,16 +552,7 @@ impl Server {
         let base = manifest_path
             .parent()
             .ok_or_else(|| LspError::Project("manifest has no parent".into()))?;
-        let Some(package) = loaded
-            .packages
-            .iter_mut()
-            .find(|package| package.source_key == loaded.root_key)
-        else {
-            return Err(LspError::Project("root package is missing".into()));
-        };
-        let Some(manifest) = package.manifest().cloned() else {
-            return Err(LspError::Project("root manifest is missing".into()));
-        };
+        let manifest = loaded.root.manifest.clone();
         for (path, text) in self.documents.overlays() {
             if disk_paths.contains(path) {
                 continue;
@@ -606,7 +587,7 @@ impl Server {
             let portable = folio_project_resolve::io::relative_portable(base, path)
                 .map_err(|error| LspError::Project(error.to_string()))?;
             tracing::debug!(path = %path.display(), "added unsaved project source");
-            package.source_files.push(SourceFile {
+            loaded.root.source_files.push(SourceFile {
                 path: portable.clone(),
                 display_path: display_path.clone(),
                 script_candidate: candidate.to_owned(),
@@ -770,6 +751,7 @@ impl Server {
         let at = parse_position(&params["position"]);
         let view = self.view.clone();
         let metadata = self.metadata.clone();
+        let disk_project = self.disk_project.as_ref().map(|(loaded, _)| loaded.clone());
         let generation = self.generation.load(Ordering::SeqCst);
         let active = Arc::clone(&self.generation);
         let cancelled = Arc::clone(&self.cancelled);
@@ -823,11 +805,31 @@ impl Server {
                     tracing::debug!(request = %key, file = ?file, "resolved hover symbol");
                     Some(json!({"contents":{"kind":"plaintext","value":item.content},"range":range_json(folio_ide::range(text, item.span.range, encoding)?)}))
                 } else {
-                    let span = folio_ide::source_declaration(view, file, byte)?;
-                    let source = view.sources.get(&span.file)?;
-                    let target = view.analysis.text(span.file)?;
-                    tracing::debug!(request = %key, source_file = ?file, target_file = ?span.file, "resolved source declaration");
-                    Some(json!({"uri":path_to_uri(&source.canonical_path),"range":range_json(folio_ide::range(target, span.range, encoding)?)}))
+                    if let Some(span) = folio_ide::source_declaration(view, file, byte) {
+                        let source = view.sources.get(&span.file)?;
+                        let target = view.analysis.text(span.file)?;
+                        tracing::debug!(request = %key, source_file = ?file, target_file = ?span.file, "resolved source declaration");
+                        return Some(json!({"uri":path_to_uri(&source.canonical_path),"range":range_json(folio_ide::range(target, span.range, encoding)?)}));
+                    }
+                    // Only direct PSC dependencies have verified local source snapshots.
+                    let symbol = folio_ide::referenced_symbol(view, file, byte)?;
+                    let owner = folio_ide::symbol_script(&symbol)?;
+                    let metadata = metadata.as_deref()?;
+                    let loaded = disk_project.as_ref()?;
+                    let selected = &metadata.scripts.iter().find(|selection| selection.script.eq_ignore_ascii_case(owner))?.selected;
+                    let dependency = loaded.dependencies.iter().find(|dependency| dependency.source_id == selected.package.source && dependency.kind == DependencyKind::Psc)?;
+                    let location = selected.declaration.as_ref()?;
+                    let source_path = dependency.canonical_path.join(location.source_path.as_ref()?);
+                    let bytes = loaded.input_snapshots.iter().find_map(|snapshot| match snapshot {
+                        folio_project_resolve::io::InputSnapshot::File { path, bytes } if path == &source_path => Some(bytes),
+                        _ => None,
+                    })?;
+                    let SourceId::Dependency { index, .. } = &dependency.source_id else { return None; };
+                    let source_encoding = loaded.root.manifest.dependencies.get(*index)?.encoding;
+                    let target = folio_project_resolve::io::decode_source(bytes, source_encoding).ok()?;
+                    let range = folio_ide::external_declaration_range(&target, &symbol)?;
+                    tracing::debug!(request = %key, path = %source_path.display(), "resolved PSC dependency declaration");
+                    Some(json!({"uri":path_to_uri(&source_path),"range":range_json(folio_ide::range(&target, range, encoding)?)}))
                 }
             })().unwrap_or(Value::Null);
             let response = if is_cancelled() {
@@ -985,16 +987,13 @@ fn symbol_origin(metadata: &Metadata, script: &str) -> Option<String> {
         .find(|edge| edge.to == selected.package)
         .map(|edge| edge.kind);
     let kind = match dependency_kind {
-        Some(DependencyKind::Package) => "package dependency",
         Some(DependencyKind::Psc) => "PSC dependency",
-        Some(DependencyKind::Sdk) => "SDK declaration",
-        Some(DependencyKind::Builtin) => "built-in declaration",
+        Some(DependencyKind::Decl) => "declaration",
+        Some(DependencyKind::Repo) => "repository declaration",
         Some(DependencyKind::Pex) => "PEX declaration",
         None => match &selected.package.source {
             SourceId::Project => "project",
-            SourceId::Local { .. } => "local dependency",
-            SourceId::DeclarationSdk { .. } => "SDK declaration",
-            SourceId::BinaryPex { .. } => "PEX declaration",
+            SourceId::Dependency { .. } => "dependency",
         },
     };
     let path = selected.source_path.as_deref().or_else(|| {
@@ -1006,7 +1005,7 @@ fn symbol_origin(metadata: &Metadata, script: &str) -> Option<String> {
     Some(format!(
         "{} {} ({kind}){}",
         selected.package.name,
-        selected.package.version,
+        selected.package.version.as_deref().unwrap_or(""),
         path.map_or(String::new(), |path| format!(" · {path}"))
     ))
 }

@@ -14,7 +14,6 @@ use folio_build::{
     execute::{self, BuildError},
     output::{self, OutputError},
 };
-use folio_declaration_tools::{GenerationOptions, SourceInput, generate};
 use folio_diagnostics::{Diagnostic, Severity};
 use folio_format::format_source;
 use folio_lint::{LintConfig, lint_script};
@@ -53,7 +52,7 @@ enum SourceEncoding {
 
 #[derive(Debug, Subcommand)]
 enum ProjectCommand {
-    /// Create an analysis-only declaration package from local PSC sources.
+    /// Generate or list local API declarations.
     Declarations {
         #[command(subcommand)]
         command: DeclarationsCommand,
@@ -113,27 +112,39 @@ enum ProjectCommand {
     },
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum DeclarationOutputFormat {
+    Json,
+    Binary,
+}
+
+impl From<DeclarationOutputFormat> for folio_format_declarations::DeclarationFormat {
+    fn from(value: DeclarationOutputFormat) -> Self {
+        match value {
+            DeclarationOutputFormat::Json => Self::Json,
+            DeclarationOutputFormat::Binary => Self::Binary,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum DeclarationsCommand {
-    /// List package identities compiled into Folio.
+    /// List declaration files in the local Folio repository.
     List,
-    /// Generate a deterministic Folio schema 2 JSON package.
+    /// Extract PSC API declarations into a portable carrier.
     Generate {
         #[arg(long)]
         source_root: PathBuf,
         #[arg(long)]
-        name: String,
-        #[arg(long)]
-        version: String,
-        #[arg(long)]
         source: String,
         #[arg(long, value_enum, default_value_t = SourceEncoding::Utf8)]
         encoding: SourceEncoding,
-        #[arg(long)]
-        output: PathBuf,
-        /// Write reproducible gzip bytes for embedded packages.
-        #[arg(long)]
-        gzip: bool,
+        #[arg(long, required_unless_present = "repo", conflicts_with = "repo")]
+        output: Option<PathBuf>,
+        #[arg(long, required_unless_present = "output", conflicts_with = "output")]
+        repo: Option<String>,
+        #[arg(long, value_enum, default_value_t = DeclarationOutputFormat::Binary)]
+        format: DeclarationOutputFormat,
     },
 }
 
@@ -206,11 +217,12 @@ impl CliError {
                 | LoadError::SourceDeclarations { .. }
                 | LoadError::PexDeclarations { .. }
                 | LoadError::ExperimentalDependency { .. }
-                | LoadError::Builtin { .. }
-                | LoadError::SdkNaming { .. }
                 | LoadError::Resolve(_)
                 | LoadError::InvalidPath { .. }
-                | LoadError::NotFound(_),
+                | LoadError::NotFound(_)
+                | LoadError::RepoMissing { .. }
+                | LoadError::RepoAmbiguous { .. }
+                | LoadError::InputChanged(_),
             ) => ExitCode::from(2),
             Self::Analysis(_) => ExitCode::from(2),
             Self::Build(BuildError::Diagnostics(_) | BuildError::Plan(_))
@@ -257,25 +269,23 @@ fn project_error_code(error: &LoadError) -> &'static str {
         LoadError::NotFound(_) => "PROJECT001",
         LoadError::Manifest(manifest) => match manifest.kind {
             ManifestErrorKind::Toml(_) => "MANIFEST001",
-            ManifestErrorKind::UnsupportedSchema(_) => "MANIFEST002",
             ManifestErrorKind::InvalidValue { .. } => "MANIFEST003",
         },
-        LoadError::Declaration { .. } => "SDK001",
+        LoadError::Declaration { .. } => "DECL001",
         LoadError::SourceDeclarations { .. } => "PSC001",
         LoadError::PexDeclarations { .. } => "PEX001",
         LoadError::ExperimentalDependency { .. } => "PEX002",
-        LoadError::Builtin { .. } => "SDK004",
-        LoadError::SdkNaming { .. } => "SDK002",
         LoadError::Resolve(resolve) => match &resolve.kind {
-            ResolveErrorKind::DuplicatePackageName(_) => "RESOLVE002",
-            ResolveErrorKind::TargetMismatch { .. } | ResolveErrorKind::AbiMismatch { .. } => {
-                "SDK003"
-            }
+            ResolveErrorKind::DuplicateDependencyAlias(_) => "RESOLVE002",
+            ResolveErrorKind::ProfileMismatch { .. } => "DECL003",
             ResolveErrorKind::ScriptConflict(_) => "RESOLVE004",
             _ => "RESOLVE001",
         },
         LoadError::InvalidPath { .. } => "PATH001",
         LoadError::Io { .. } => "IO001",
+        LoadError::RepoMissing { .. } => "REPO001",
+        LoadError::RepoAmbiguous { .. } => "REPO002",
+        LoadError::InputChanged(_) => "INPUT001",
     }
 }
 
@@ -358,146 +368,47 @@ fn run_fmt(
     }
 }
 
-/// Read a local source tree once, then run the pure declaration generator.
+/// Delegate source decoding and publication to the shared project I/O boundary.
 fn run_declarations_generate(
     source_root: &Path,
-    name: &str,
-    version: &str,
     source: &str,
     encoding: SourceEncoding,
-    output: &Path,
-    gzip: bool,
-) -> Result<usize, CliError> {
-    let root = fs::canonicalize(source_root).map_err(|cause| {
-        CliError::Declarations(format!("source root {}: {cause}", source_root.display()))
-    })?;
-    if !root.is_dir() {
-        return Err(CliError::Declarations(format!(
-            "source root {} is not a directory",
-            root.display()
-        )));
-    }
-    let mut pending = vec![root.clone()];
-    let mut files = Vec::new();
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory).map_err(|cause| {
-            CliError::Declarations(format!("read {}: {cause}", directory.display()))
-        })? {
-            let entry = entry.map_err(|cause| {
-                CliError::Declarations(format!("read {}: {cause}", directory.display()))
-            })?;
-            let file_type = entry.file_type().map_err(|cause| {
-                CliError::Declarations(format!("inspect {}: {cause}", entry.path().display()))
-            })?;
-            if file_type.is_symlink() {
-                return Err(CliError::Declarations(format!(
-                    "source tree contains symlink {}",
-                    entry.path().display()
-                )));
-            }
-            if file_type.is_dir() {
-                pending.push(entry.path());
-            } else if file_type.is_file()
-                && entry
-                    .path()
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("psc"))
-            {
-                files.push(entry.path());
-            }
+    output: Option<&Path>,
+    repo: Option<&str>,
+    format: DeclarationOutputFormat,
+) -> Result<(usize, PathBuf), CliError> {
+    use folio_project_resolve::io::{FolioHome, generate_psc_directory, publish_declaration};
+    let encoding = match encoding {
+        SourceEncoding::Utf8 => folio_project_model::SourceEncoding::Utf8,
+        SourceEncoding::Windows1252 => folio_project_model::SourceEncoding::Windows1252,
+    };
+    let format = format.into();
+    let (path, home) = match (output, repo) {
+        (Some(path), None) => (path.to_owned(), None),
+        (None, Some(key)) => {
+            let home = FolioHome::from_env().map_err(CliError::Project)?;
+            let path = home.repo_output(key, format).map_err(CliError::Project)?;
+            (path, Some(home))
         }
-    }
-    files.sort();
-    if files.is_empty() {
-        return Err(CliError::Declarations(
-            "source tree contains no PSC files".into(),
-        ));
-    }
-    let mut texts = Vec::with_capacity(files.len());
-    let mut paths = Vec::with_capacity(files.len());
-    for file in &files {
-        let relative = file
-            .strip_prefix(&root)
-            .expect("enumerated beneath source root");
-        paths.push(
-            relative
-                .components()
-                .map(|part| part.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/"),
-        );
-        let bytes = fs::read(file)
-            .map_err(|cause| CliError::Declarations(format!("read {}: {cause}", file.display())))?;
-        let text = match encoding {
-            SourceEncoding::Utf8 => String::from_utf8(bytes).map_err(|cause| {
-                CliError::Declarations(format!("decode {} as UTF-8: {cause}", file.display()))
-            })?,
-            SourceEncoding::Windows1252 => {
-                let (decoded, had_errors) =
-                    encoding_rs::WINDOWS_1252.decode_without_bom_handling(&bytes);
-                if had_errors {
-                    return Err(CliError::Declarations(format!(
-                        "decode {} as Windows-1252: undefined byte",
-                        file.display()
-                    )));
-                }
-                decoded.into_owned()
-            }
-        };
-        texts.push(text);
-    }
-    let inputs = paths
-        .iter()
-        .zip(&texts)
-        .map(|(path, text)| SourceInput { path, text })
-        .collect::<Vec<_>>();
-    let bundle = generate(
-        GenerationOptions {
-            name,
-            version,
-            source,
-        },
-        &inputs,
-    )
-    .map_err(|cause| CliError::Declarations(cause.to_string()))?;
-    let mut bytes = folio_format_declarations::encode(&bundle)
-        .map_err(|cause| CliError::Declarations(cause.to_string()))?;
-    if gzip {
-        use std::io::Write as _;
-        let mut compressor =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        compressor.write_all(&bytes).map_err(CliError::Output)?;
-        bytes = compressor.finish().map_err(CliError::Output)?;
-    }
-    let file_name = output
-        .file_name()
-        .ok_or_else(|| CliError::Declarations("output must name a file".into()))?;
-    let temporary = output.with_file_name(format!(
-        ".{}.{}.tmp",
-        file_name.to_string_lossy(),
-        std::process::id()
-    ));
-    let mut writer = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .map_err(|cause| {
-            CliError::Declarations(format!("create {}: {cause}", temporary.display()))
-        })?;
-    let write_result = (|| -> Result<(), std::io::Error> {
-        writer.write_all(&bytes)?;
-        writer.sync_all()?;
-        drop(writer);
-        // A same-directory hard link publishes complete bytes without replacing an existing file.
-        fs::hard_link(&temporary, output)?;
-        Ok(())
-    })();
-    let _ = fs::remove_file(&temporary);
-    write_result.map_err(|cause| {
-        CliError::Declarations(format!("publish {}: {cause}", output.display()))
-    })?;
-    info!(package = name, files = files.len(), bytes = bytes.len(), digest = %bundle.package.source_digest.as_deref().unwrap_or(""), output = %output.display(), "declaration package written");
-    Ok(files.len())
+        _ => {
+            return Err(CliError::Declarations(
+                "choose exactly one of --output or --repo".into(),
+            ));
+        }
+    };
+    let bundle =
+        generate_psc_directory(source_root, source, encoding).map_err(CliError::Project)?;
+    let bytes = folio_format_declarations::encode(&bundle, format)
+        .map_err(|error| CliError::Declarations(error.to_string()))?;
+    let path = if let (Some(home), Some(key)) = (home, repo) {
+        home.publish_repo(key, &bytes, format)
+            .map_err(CliError::Project)?
+    } else {
+        publish_declaration(&path, &bytes).map_err(CliError::Project)?;
+        path
+    };
+    info!(source, scripts = bundle.scripts.len(), bytes = bytes.len(), output = %path.display(), "declarations published");
+    Ok((bundle.scripts.len(), path))
 }
 
 fn run(cli: Cli) -> Result<ExitCode, CliError> {
@@ -561,26 +472,24 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             command:
                 DeclarationsCommand::Generate {
                     source_root,
-                    name,
-                    version,
                     source,
                     encoding,
                     output: path,
-                    gzip,
+                    repo,
+                    format,
                 },
         }) => {
-            let count = run_declarations_generate(
+            let (count, path) = run_declarations_generate(
                 &source_root,
-                &name,
-                &version,
                 &source,
                 encoding,
-                &path,
-                gzip,
+                path.as_deref(),
+                repo.as_deref(),
+                format,
             )?;
             writeln!(
                 output,
-                "generated {name} from {count} PSC files -> {}",
+                "generated {count} script declarations -> {}",
                 path.display()
             )
             .map_err(CliError::Output)?;
@@ -588,8 +497,15 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
         Some(ProjectCommand::Declarations {
             command: DeclarationsCommand::List,
         }) => {
-            for name in folio_format_declarations::BUILTIN_PACKAGES {
-                writeln!(output, "{name}").map_err(CliError::Output)?;
+            let home =
+                folio_project_resolve::io::FolioHome::from_env().map_err(CliError::Project)?;
+            for entry in home.list_repo().map_err(CliError::Project)? {
+                writeln!(
+                    output,
+                    "{} [{}; {} scripts; {}]",
+                    entry.key, entry.profile, entry.scripts, entry.source
+                )
+                .map_err(CliError::Output)?;
             }
         }
         Some(command) => {
@@ -639,12 +555,7 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
                     }
                 }
                 ProjectCommand::Lint { format } => {
-                    let root_manifest = loaded
-                        .packages
-                        .iter()
-                        .find(|package| package.source_key == loaded.root_key)
-                        .and_then(|package| package.manifest())
-                        .ok_or_else(|| CliError::Lint("root package manifest is missing".into()))?;
+                    let root_manifest = &loaded.root.manifest;
                     let config = LintConfig::from_rules(&root_manifest.lint_rules)
                         .map_err(|error| CliError::Lint(error.to_string()))?;
                     let mut service = ProjectAnalysis::new();
@@ -863,7 +774,7 @@ fn scaffold(name: &str) -> Result<(String, String), CliError> {
         .collect::<String>();
     let script = format!("Folio{suffix}");
     let text = format!(
-        "schema = 3\n\n[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[languages.papyrus]\ndialect = \"skyrim\"\nextensions = [\"psc\"]\n\n[build]\ntarget = \"skyrim-se\"\nprofile = \"dev\"\nemit = [\"pex\"]\n"
+        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[languages.papyrus]\ndialect = \"skyrim\"\nextensions = [\"psc\"]\n\n[build]\ntarget = \"skyrim-se\"\nprofile = \"dev\"\nemit = [\"pex\"]\n"
     );
     Ok((script, text))
 }
@@ -896,7 +807,7 @@ fn write_build_json(
             serde_json::json!({"unit_id": unit, "status": status, "reason": reason})
         })
         .collect::<Vec<_>>();
-    let report = serde_json::json!({"schema": 3, "success": outcome.success, "cache": cache, "unchanged": outcome.unchanged, "diagnostics": diagnostics.diagnostics});
+    let report = serde_json::json!({"schema": 4, "success": outcome.success, "cache": cache, "unchanged": outcome.unchanged, "diagnostics": diagnostics.diagnostics});
     write_json(output, &report)
 }
 
@@ -923,7 +834,9 @@ fn print_success(output: &mut impl Write, success: &output::SuccessRecord) -> Re
         writeln!(
             output,
             "  external {} {}: {}",
-            requirement.package, requirement.package_version, requirement.reason
+            requirement.package,
+            requirement.package_version.as_deref().unwrap_or(""),
+            requirement.reason
         )
         .map_err(CliError::Output)?;
     }
@@ -1130,7 +1043,10 @@ fn print_metadata(output: &mut impl Write, metadata: &Metadata) -> Result<(), Cl
     writeln!(
         output,
         "{} {} -> {} ({})",
-        metadata.root.name, metadata.root.version, metadata.target, metadata.profile
+        metadata.root.name,
+        metadata.root.version.as_deref().unwrap_or(""),
+        metadata.target,
+        metadata.profile
     )
     .map_err(CliError::Output)?;
     writeln!(
@@ -1152,7 +1068,7 @@ fn print_metadata(output: &mut impl Write, metadata: &Metadata) -> Result<(), Cl
             output,
             "  {} {} [{}]",
             package.id.name,
-            package.id.version,
+            package.id.version.as_deref().unwrap_or(""),
             if package.id == metadata.root {
                 "workspace"
             } else {
@@ -1165,8 +1081,13 @@ fn print_metadata(output: &mut impl Write, metadata: &Metadata) -> Result<(), Cl
 }
 
 fn print_tree(output: &mut impl Write, metadata: &Metadata) -> Result<(), CliError> {
-    writeln!(output, "{} {}", metadata.root.name, metadata.root.version)
-        .map_err(CliError::Output)?;
+    writeln!(
+        output,
+        "{} {}",
+        metadata.root.name,
+        metadata.root.version.as_deref().unwrap_or("")
+    )
+    .map_err(CliError::Output)?;
     for edge in &metadata.dependencies {
         writeln!(
             output,
@@ -1209,7 +1130,7 @@ struct TreeView<'a> {
 impl<'a> From<&'a Metadata> for TreeView<'a> {
     fn from(metadata: &'a Metadata) -> Self {
         Self {
-            schema: 2,
+            schema: 3,
             root: &metadata.root,
             dependencies: &metadata.dependencies,
             scripts: &metadata.scripts,
@@ -1225,6 +1146,42 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("error[{}]: {error}", error.code());
             error.exit_code()
+        }
+    }
+}
+
+#[cfg(test)]
+mod declaration_command_tests {
+    use super::*;
+
+    #[test]
+    fn generation_requires_exactly_one_publication_destination() {
+        let arguments = [
+            "folio",
+            "declarations",
+            "generate",
+            "--source-root",
+            "sources",
+            "--source",
+            "local-api",
+        ];
+        assert!(Cli::try_parse_from(arguments).is_err());
+        let mut both = arguments.to_vec();
+        both.extend(["--output", "api.fdecl", "--repo", "mod/api"]);
+        assert!(Cli::try_parse_from(both).is_err());
+        for destination in [["--output", "api.fdecl"], ["--repo", "mod/api"]] {
+            let mut valid = arguments.to_vec();
+            valid.extend(destination);
+            let cli = Cli::try_parse_from(valid).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(ProjectCommand::Declarations {
+                    command: DeclarationsCommand::Generate {
+                        format: DeclarationOutputFormat::Binary,
+                        ..
+                    }
+                })
+            ));
         }
     }
 }

@@ -3,10 +3,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use folio_format_declarations::{
-    Compatibility, DeclarationBundle, Member, MemberKind, Naming, Package, Parameter,
-    SCHEMA_VERSION, Script, SourceLocation, State, validate,
+    DeclarationBundle, FORMAT, Member, MemberData, MemberKind, Origin, PROFILE, Parameter,
+    ParameterDefault, PropertyAccess, SCHEMA_VERSION, Script, SourceLocation, State, validate,
 };
 use folio_papyrus::{Declaration, PapyrusDialect, SyntaxKind, SyntaxNode, declarations, parse};
+
+mod pex;
+pub use pex::{ExtractedPex, PexInput, extract_pex};
 
 /// A source snapshot whose path is relative to the supplied source root.
 #[derive(Clone, Copy)]
@@ -15,10 +18,8 @@ pub struct SourceInput<'a> {
     pub text: &'a str,
 }
 
-/// Public package identity and reproducible origin label.
+/// Reproducible provenance label; output location belongs to the caller.
 pub struct GenerationOptions<'a> {
-    pub name: &'a str,
-    pub version: &'a str,
     pub source: &'a str,
 }
 
@@ -76,26 +77,17 @@ pub fn generate(
             .cmp(&b.name.to_ascii_lowercase())
     });
     let bundle = DeclarationBundle {
+        format: FORMAT.into(),
         schema: SCHEMA_VERSION,
-        package: Package {
-            name: options.name.to_owned(),
-            version: options.version.to_owned(),
+        profile: PROFILE.into(),
+        origin: Origin {
             source: options.source.to_owned(),
-            generator: format!("folio-declaration-tools/{}", env!("CARGO_PKG_VERSION")),
-            source_digest: Some(digest.finalize().to_hex().to_string()),
-        },
-        compatibility: Compatibility {
-            target: "skyrim-se".into(),
-            abi: "papyrus-skyrim".into(),
-        },
-        naming: Naming {
-            language: "papyrus".into(),
-            case_sensitive: false,
+            input_digest: Some(digest.finalize().to_hex().to_string()),
         },
         scripts,
     };
-    validate(&bundle).map_err(|cause| error("<package>", cause.to_string()))?;
-    tracing::info!(package = %bundle.package.name, scripts = bundle.scripts.len(), "generated declaration package");
+    validate(&bundle).map_err(|cause| error("<declarations>", cause.to_string()))?;
+    tracing::info!(source = %bundle.origin.source, scripts = bundle.scripts.len(), "generated declarations");
     Ok(bundle)
 }
 
@@ -136,15 +128,9 @@ fn extract(input: &SourceInput<'_>) -> Result<Script, GenerationError> {
                     .rsplit('/')
                     .next()
                     .unwrap_or(input.path)
-                    .strip_suffix(".psc")
-                    .or_else(|| {
-                        input
-                            .path
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or(input.path)
-                            .strip_suffix(".PSC")
-                    })
+                    .rsplit_once('.')
+                    .filter(|(_, extension)| extension.eq_ignore_ascii_case("psc"))
+                    .map(|(basename, _)| basename)
                     .ok_or_else(|| error(input.path, "expected .psc source file"))?;
                 if !name.eq_ignore_ascii_case(basename) {
                     return Err(error(
@@ -225,7 +211,7 @@ fn extract(input: &SourceInput<'_>) -> Result<Script, GenerationError> {
         script.ok_or_else(|| error(input.path, "missing ScriptName declaration"))?;
     let mut member_names = BTreeSet::new();
     for member in &members {
-        if !member_names.insert((member.name.to_ascii_lowercase(), member.kind)) {
+        if !member_names.insert((member.name.to_ascii_lowercase(), member.kind())) {
             return Err(error(
                 input.path,
                 format!("duplicate root member {}", member.name),
@@ -235,7 +221,7 @@ fn extract(input: &SourceInput<'_>) -> Result<Script, GenerationError> {
     for state in &states {
         let mut state_names = BTreeSet::new();
         for member in &state.members {
-            if !state_names.insert((member.name.to_ascii_lowercase(), member.kind)) {
+            if !state_names.insert((member.name.to_ascii_lowercase(), member.kind())) {
                 return Err(error(
                     input.path,
                     format!("duplicate member {} in state {}", member.name, state.name),
@@ -333,30 +319,49 @@ fn member(
             _ => None,
         })
         .collect::<BTreeSet<_>>();
-    let is_readable = kind == MemberKind::Property && (is_auto || accessors.contains("get"));
-    let is_writable =
-        kind == MemberKind::Property && (!is_read_only && (is_auto || accessors.contains("set")));
     // A nested literal in a binary expression is not the declaration's value.
     let initial_literal = node
         .children()
         .find(|child| is_expression(child.kind()))
         .filter(is_literal_expression)
         .map(|child| child.text().to_string());
-    Ok(Member {
-        name,
-        kind,
-        ty,
-        is_global: flags.iter().any(|flag| flag == "global"),
-        is_native: flags.iter().any(|flag| flag == "native"),
-        is_auto,
-        is_read_only,
-        is_readable,
-        is_writable,
-        flags,
-        initial_literal,
-        parameters,
-        unknown_defaults: false,
-    })
+    let global = flags.iter().any(|flag| flag == "global");
+    let native = flags.iter().any(|flag| flag == "native");
+    if global && kind != MemberKind::Function {
+        return Err(error(path, "only functions can be global"));
+    }
+    let data = match kind {
+        MemberKind::Function => MemberData::Function {
+            return_type: ty,
+            global,
+            native,
+            parameters,
+        },
+        MemberKind::Event => MemberData::Event { native, parameters },
+        MemberKind::Property => {
+            let access = if is_read_only {
+                PropertyAccess::AutoReadOnly
+            } else if is_auto {
+                PropertyAccess::Auto
+            } else {
+                PropertyAccess::Manual {
+                    readable: accessors.contains("get"),
+                    writable: accessors.contains("set"),
+                }
+            };
+            MemberData::Property {
+                ty: ty.expect("property type extracted"),
+                access,
+                initial_literal,
+            }
+        }
+        MemberKind::Variable => MemberData::Variable {
+            ty: ty.expect("variable type extracted"),
+            initial_literal,
+        },
+        MemberKind::UnknownCallable => unreachable!("PSC retains callable kinds"),
+    };
+    Ok(Member { name, flags, data })
 }
 
 fn is_expression(kind: SyntaxKind) -> bool {
@@ -392,7 +397,11 @@ fn parameter(source: &folio_papyrus::Parameter) -> Parameter {
     Parameter {
         name: source.name.clone(),
         ty: source.ty.clone(),
-        default_literal: source.default.clone(),
+        default: source
+            .default
+            .clone()
+            .map(ParameterDefault::Literal)
+            .unwrap_or(ParameterDefault::Required),
     }
 }
 
@@ -411,11 +420,7 @@ mod tests {
     fn extracts_state_variable_and_property_access() {
         let text = "ScriptName Sample Extends Quest Hidden\nImport Utility\nInt count = 3\nInt Property Value AutoReadOnly\nAuto State Busy\nEvent OnUpdate(Int ticks = 1)\nEndEvent\nEndState\n";
         let bundle = generate(
-            GenerationOptions {
-                name: "sample",
-                version: "1",
-                source: "fixture",
-            },
+            GenerationOptions { source: "fixture" },
             &[SourceInput {
                 path: "Sample.psc",
                 text,
@@ -427,23 +432,23 @@ mod tests {
         assert_eq!(script.imports, ["Utility"]);
         assert!(script.states[0].auto);
         assert_eq!(
-            script.states[0].members[0].parameters[0]
-                .default_literal
-                .as_deref(),
+            script.states[0].members[0].parameters()[0]
+                .default
+                .literal(),
             Some("1")
         );
         assert!(
             script
                 .members
                 .iter()
-                .any(|member| member.kind == MemberKind::Variable && member.name == "count")
+                .any(|member| member.kind() == MemberKind::Variable && member.name == "count")
         );
         let property = script
             .members
             .iter()
             .find(|member| member.name == "Value")
             .unwrap();
-        assert!(property.is_read_only && property.is_readable && !property.is_writable);
+        assert!(property.is_read_only() && property.is_readable() && !property.is_writable());
     }
 
     #[test]
@@ -456,11 +461,7 @@ mod tests {
             path: "B.psc",
             text: "ScriptName B\n",
         };
-        let options = || GenerationOptions {
-            name: "sample",
-            version: "1",
-            source: "fixture",
-        };
+        let options = || GenerationOptions { source: "fixture" };
         assert_eq!(
             generate(options(), &[first, second]).unwrap(),
             generate(options(), &[second, first]).unwrap()
@@ -481,11 +482,7 @@ mod tests {
     fn merges_reopened_states_and_keeps_variable_function_namespaces() {
         let text = "ScriptName Sample\nBool busy\nState Ready\nEndState\nState Ready\nFunction Wait()\nEndFunction\nEndState\nFunction Busy()\nEndFunction\n";
         let bundle = generate(
-            GenerationOptions {
-                name: "sample",
-                version: "1",
-                source: "fixture",
-            },
+            GenerationOptions { source: "fixture" },
             &[SourceInput {
                 path: "Sample.psc",
                 text,
@@ -509,11 +506,7 @@ mod tests {
     fn records_only_complete_literal_initializers() {
         let text = "ScriptName Sample\nInt plain = 7\nInt negative = -2\nInt calculated = 1 + 2\n";
         let bundle = generate(
-            GenerationOptions {
-                name: "sample",
-                version: "1",
-                source: "fixture",
-            },
+            GenerationOptions { source: "fixture" },
             &[SourceInput {
                 path: "Sample.psc",
                 text,
@@ -521,8 +514,8 @@ mod tests {
         )
         .unwrap();
         let members = &bundle.scripts[0].members;
-        assert_eq!(members[0].initial_literal.as_deref(), Some("7"));
-        assert_eq!(members[1].initial_literal.as_deref(), Some("-2"));
-        assert_eq!(members[2].initial_literal, None);
+        assert_eq!(members[0].initial_literal(), Some("7"));
+        assert_eq!(members[1].initial_literal(), Some("-2"));
+        assert_eq!(members[2].initial_literal(), None);
     }
 }

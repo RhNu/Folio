@@ -11,11 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
-encoding_rs.workspace = true
-flate2.workspace = true
 folio-build = { path = "../../project/build" }
 folio-diagnostics = { path = "../../foundation/diagnostics" }
-folio-declaration-tools = { path = "../../tooling/declarations" }
 folio-format-declarations = { path = "../../formats/declarations" }
 folio-format-pex = { path = "../../formats/pex" }
 folio-format = { path = "../../tooling/format" }

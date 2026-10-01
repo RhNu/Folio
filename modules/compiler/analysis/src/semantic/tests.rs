@@ -17,13 +17,13 @@ fn source(host: &mut AnalysisHost, id: u32, text: &str) {
     .unwrap();
 }
 
-fn sdk() -> folio_format_declarations::DeclarationBundle {
-    decode(br#"{"schema":1,"package":{"name":"qa","version":"1","source":"fixture","generator":"test"},"compatibility":{"target":"skyrim-se","abi":"papyrus-skyrim"},"naming":{"language":"papyrus","case_sensitive":false},"scripts":[{"name":"Quest","members":[{"name":"Start","kind":"function","ty":"Bool"}]},{"name":"Actor","members":[{"name":"GetLevel","kind":"function","ty":"Int"}]},{"name":"Debug","members":[{"name":"Notification","kind":"function","is_global":true,"parameters":[{"name":"message","ty":"String"}]}]}]}"#).unwrap()
+fn declarations() -> folio_format_declarations::DeclarationBundle {
+    decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Quest","members":[{"name":"Start","kind":"function","return_type":"Bool"}]},{"name":"Actor","members":[{"name":"GetLevel","kind":"function","return_type":"Int"}]},{"name":"Debug","members":[{"name":"Notification","kind":"function","parameters":[{"name":"message","ty":"String"}],"global":true}]}]}"#).unwrap()
 }
 
 #[test]
-fn external_schema_two_preserves_states_variables_and_property_access() {
-    let bundle = decode(br#"{"schema":2,"package":{"name":"sdk","version":"1","source":"fixture","generator":"test"},"compatibility":{"target":"skyrim-se","abi":"papyrus-skyrim"},"naming":{"language":"papyrus","case_sensitive":false},"scripts":[{"name":"Base","members":[{"name":"count","kind":"variable","ty":"Int"},{"name":"Value","kind":"property","ty":"Int","is_read_only":true,"is_readable":true}],"states":[{"name":"Busy","auto":true,"members":[{"name":"Pulse","kind":"function","ty":"Int"}]}]}]}"#).unwrap();
+fn external_declarations_preserve_states_variables_and_property_access() {
+    let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[{"name":"count","kind":"variable","ty":"Int"},{"name":"Value","kind":"property","ty":"Int","access":{"kind":"manual","readable":true,"writable":false}}],"states":[{"name":"Busy","auto":true,"members":[{"name":"Pulse","kind":"function","return_type":"Int"}]}]}]}"#).unwrap();
     let world = script_from_external(&bundle.scripts[0]);
     assert_eq!(world.variables["count"].kind, MemberKind::Variable);
     assert!(world.members["value"].read_only);
@@ -32,7 +32,7 @@ fn external_schema_two_preserves_states_variables_and_property_access() {
 
 #[test]
 fn external_property_and_function_can_share_a_name() {
-    let bundle = decode(br#"{"schema":2,"package":{"name":"sdk","version":"1","source":"fixture","generator":"test"},"compatibility":{"target":"skyrim-se","abi":"papyrus-skyrim"},"naming":{"language":"papyrus","case_sensitive":false},"scripts":[{"name":"Base","members":[{"name":"Check","kind":"property","ty":"Bool","is_auto":true,"is_readable":true,"is_writable":true},{"name":"Check","kind":"function","ty":"Bool"}]}]}"#).unwrap();
+    let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[{"name":"Check","kind":"property","ty":"Bool","access":{"kind":"auto"}},{"name":"Check","kind":"function","return_type":"Bool"}]}]}"#).unwrap();
     let external = script_from_external(&bundle.scripts[0]);
     assert_eq!(external.members["check"].kind, MemberKind::Property);
     assert_eq!(
@@ -56,7 +56,7 @@ fn external_property_and_function_can_share_a_name() {
 
 #[test]
 fn rejects_assignment_to_external_read_only_property() {
-    let bundle = decode(br#"{"schema":2,"package":{"name":"sdk","version":"1","source":"fixture","generator":"test"},"compatibility":{"target":"skyrim-se","abi":"papyrus-skyrim"},"naming":{"language":"papyrus","case_sensitive":false},"scripts":[{"name":"Base","members":[{"name":"Value","kind":"property","ty":"Int","is_auto":true,"is_read_only":true,"is_readable":true}]}]}"#).unwrap();
+    let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[{"name":"Value","kind":"property","ty":"Int","access":{"kind":"auto-read-only"}}]}]}"#).unwrap();
     let mut host = AnalysisHost::new();
     host.set_external_declarations(vec![bundle]);
     source(
@@ -75,7 +75,7 @@ fn rejects_assignment_to_external_read_only_property() {
 #[test]
 fn binds_inheritance_external_calls_and_local_definition() {
     let mut host = AnalysisHost::new();
-    host.set_external_declarations(vec![sdk()]);
+    host.set_external_declarations(vec![declarations()]);
     let text = "Scriptname Arena extends Quest\nActor Property PlayerRef Auto\nInt Function Reward(Int bonus)\nInt level = PlayerRef.GetLevel()\nStart()\nDebug.Notification(\"ready\")\nReturn level + bonus\nEndFunction\n";
     source(&mut host, 1, text);
     let view = host.view();
@@ -96,9 +96,8 @@ fn binds_inheritance_external_calls_and_local_definition() {
 }
 
 #[test]
-fn pex_callables_allow_explicit_calls_but_reject_unknown_defaults_and_overrides() {
-    let mut bundle = decode(br#"{"schema":2,"package":{"name":"binary","version":"local","source":"fixture","generator":"test"},"compatibility":{"target":"skyrim-se","abi":"papyrus-skyrim"},"naming":{"language":"papyrus","case_sensitive":false},"scripts":[{"name":"Base","members":[{"name":"GetValue","kind":"unknown-callable","ty":"Int","parameters":[{"name":"count","ty":"Int"}]}]}]}"#).unwrap();
-    bundle.scripts[0].members[0].unknown_defaults = true;
+fn unknown_callables_allow_explicit_calls_but_reject_unknown_defaults_and_overrides() {
+    let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[{"name":"GetValue","kind":"unknown-callable","parameters":[{"name":"count","ty":"Int","default":{"kind":"unknown"}}],"return_type":"Int"}]}]}"#).unwrap();
     let mut host = AnalysisHost::new();
     host.set_external_declarations(vec![bundle]);
     host.set_fill_missing_arguments(true);
@@ -128,13 +127,13 @@ fn pex_callables_allow_explicit_calls_but_reject_unknown_defaults_and_overrides(
         view.diagnostics(FileId(81))
             .unwrap()
             .iter()
-            .any(|item| item.code == "semantic.pex-default-unavailable")
+            .any(|item| item.code == "semantic.default-unavailable")
     );
     assert!(
         view.diagnostics(FileId(82))
             .unwrap()
             .iter()
-            .any(|item| item.code == "semantic.pex-override-ambiguous")
+            .any(|item| item.code == "semantic.override-ambiguous")
     );
 }
 
@@ -157,6 +156,57 @@ fn reports_local_errors_without_losing_sibling_facts() {
         Some(Type::Int)
     );
     assert_eq!(view.hir(FileId(2)).unwrap().bodies.len(), 2);
+}
+
+#[test]
+fn persisted_parameter_defaults_are_checked_individually() {
+    use folio_format_declarations::{DeclarationFormat, encode};
+    let declaration = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[{"name":"Target","kind":"function","parameters":[{"name":"required","ty":"Int"},{"name":"known","ty":"Int","default":{"kind":"literal","value":"7"}},{"name":"unknown","ty":"Int","default":{"kind":"unknown"}}]}]}]}"#).unwrap();
+    for format in [DeclarationFormat::Json, DeclarationFormat::Binary] {
+        let mut host = AnalysisHost::new();
+        host.set_external_declarations(vec![
+            decode(&encode(&declaration, format).unwrap()).unwrap(),
+        ]);
+        host.set_fill_missing_arguments(true);
+        source(
+            &mut host,
+            90,
+            "ScriptName Known Extends Base\nFunction Probe()\nTarget(unknown = 2)\nEndFunction\n",
+        );
+        source(
+            &mut host,
+            91,
+            "ScriptName Unknown Extends Base\nFunction Probe()\nTarget(required = 1)\nEndFunction\n",
+        );
+        let view = host.view();
+        let known = view.diagnostics(FileId(90)).unwrap();
+        assert_eq!(known.len(), 1, "{known:?}");
+        assert_eq!(known[0].code, "semantic.argument-defaulted");
+        let unknown = view.diagnostics(FileId(91)).unwrap();
+        assert_eq!(unknown.len(), 1, "{unknown:?}");
+        assert_eq!(unknown[0].code, "semantic.default-unavailable");
+        let script = view.hir(FileId(90)).unwrap();
+        let Statement::Expression(call) = &script.bodies[0].statements[0] else {
+            panic!("expected call");
+        };
+        let ExpressionKind::Call {
+            argument_ordinals,
+            parameter_defaults,
+            ..
+        } = &call.kind
+        else {
+            panic!("expected call");
+        };
+        assert_eq!(argument_ordinals, &[2]);
+        assert_eq!(
+            parameter_defaults,
+            &[
+                Some((Type::Int, "0".into())),
+                Some((Type::Int, "7".into())),
+                None
+            ]
+        );
+    }
 }
 
 #[test]
@@ -413,10 +463,10 @@ fn bool_coercion_does_not_allow_primitive_none_comparisons() {
 }
 
 #[test]
-fn compiler_state_intrinsics_take_precedence_over_conflicting_sdk_signatures() {
+fn compiler_state_intrinsics_take_precedence_over_conflicting_declarations_signatures() {
     let mut host = AnalysisHost::new();
-    let conflicting_sdk = decode(br#"{"schema":1,"package":{"name":"sdk","version":"1","source":"fixture","generator":"test"},"compatibility":{"target":"skyrim-se","abi":"papyrus-skyrim"},"naming":{"language":"papyrus","case_sensitive":false},"scripts":[{"name":"Base","members":[{"name":"GetState","kind":"function","ty":"Int","parameters":[{"name":"wrong","ty":"Int"}]},{"name":"GotoState","kind":"function","ty":"Int"}]}]}"#).unwrap();
-    host.set_external_declarations(vec![conflicting_sdk]);
+    let conflicting_declarations = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[{"name":"GetState","kind":"function","parameters":[{"name":"wrong","ty":"Int"}],"return_type":"Int"},{"name":"GotoState","kind":"function","return_type":"Int"}]}]}"#).unwrap();
+    host.set_external_declarations(vec![conflicting_declarations]);
     source(
         &mut host,
         12,
@@ -532,7 +582,7 @@ fn analyzes_state_accessors_named_arguments_arrays_and_casts() {
 }
 
 #[test]
-fn external_replacement_preserves_old_view_and_exposes_sdk_errors() {
+fn external_replacement_preserves_old_view_and_exposes_declaration_errors() {
     let mut host = AnalysisHost::new();
     source(
         &mut host,
@@ -547,7 +597,7 @@ fn external_replacement_preserves_old_view_and_exposes_sdk_errors() {
             .iter()
             .any(|item| item.code == "semantic.unknown-name")
     );
-    let bundle = decode(br#"{"schema":1,"package":{"name":"qa","version":"1","source":"fixture","generator":"test"},"compatibility":{"target":"skyrim-se","abi":"papyrus-skyrim"},"naming":{"language":"papyrus","case_sensitive":false},"scripts":[{"name":"Api","parent":"Absent","members":[{"name":"Fetch","kind":"function","ty":"Int","is_global":true}]}]}"#).unwrap();
+    let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Api","parent":"Absent","members":[{"name":"Fetch","kind":"function","return_type":"Int","global":true}]}]}"#).unwrap();
     host.set_external_declarations(vec![bundle]);
     let current = host.view();
     assert!(current.diagnostics(FileId(9)).unwrap().is_empty());
@@ -607,7 +657,7 @@ fn duplicate_script_does_not_replace_first_provider() {
 #[test]
 fn invalid_external_types_are_reported_without_a_source_span() {
     let mut host = AnalysisHost::new();
-    let bundle = decode(br#"{"schema":1,"package":{"name":"qa","version":"1","source":"fixture","generator":"test"},"compatibility":{"target":"skyrim-se","abi":"papyrus-skyrim"},"naming":{"language":"papyrus","case_sensitive":false},"scripts":[{"name":"Api","members":[{"name":"Fetch","kind":"function","ty":"MissingType"}]}]}"#).unwrap();
+    let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Api","members":[{"name":"Fetch","kind":"function","return_type":"MissingType"}]}]}"#).unwrap();
     host.set_external_declarations(vec![bundle]);
     let diagnostics = host.view().project_diagnostics();
     assert!(

@@ -1,7 +1,7 @@
 //! Project identities and resolved decisions, independent of file loading.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 
 /// Byte offsets in a named manifest or declaration carrier.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -11,32 +11,43 @@ pub struct SourceSpan {
     pub end: usize,
 }
 
-/// A package is named and versioned, while its source distinguishes duplicates.
+/// Root packages have versions; dependency aliases identify versionless API inputs.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct PackageId {
     pub name: String,
-    pub version: String,
+    pub version: Option<String>,
     pub source: SourceId,
 }
 
 /// Paths are portable, relative identities supplied by the declaring manifest.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(tag = "source_kind", rename_all = "kebab-case")]
 pub enum SourceId {
     Project,
-    Local { path: String },
-    DeclarationSdk { path: String, digest: String },
-    BinaryPex { path: String, digest: String },
+    Dependency {
+        index: usize,
+        kind: DependencyKind,
+        path: String,
+        digest: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DependencyKind {
-    Package,
-    Sdk,
-    Builtin,
     Psc,
     Pex,
+    Decl,
+    Repo,
+}
+
+/// Decoding applies equally to direct PSC dependencies and declaration generation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceEncoding {
+    #[default]
+    Utf8,
+    Windows1252,
 }
 
 /// A parsed single-package manifest with field-level source positions.
@@ -73,18 +84,19 @@ pub struct LocatedString {
     pub span: SourceSpan,
 }
 
-/// Kind controls whether a local source manifest or declaration carrier is loaded.
+/// Each dependency supplies leaf declarations; only PSC inputs have a text encoding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DependencySpec {
     pub name: LocatedString,
     pub kind: DependencyKind,
     pub path: LocatedString,
+    pub encoding: SourceEncoding,
 }
 
 /// A source file candidate recorded by the I/O shell, before Papyrus parsing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceFile {
-    /// Canonical, package-relative path used for identity.
+    /// Portable root-relative path used for identity.
     pub path: String,
     /// Original manifest-root spelling retained for explanation.
     pub display_path: String,
@@ -103,7 +115,7 @@ pub struct DeclaredScript {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DeclarationLocation {
     pub carrier_path: String,
-    pub script_index: usize,
+    pub script_name: String,
     pub source_path: Option<String>,
     pub line: Option<u32>,
     pub column: Option<u32>,
@@ -111,74 +123,24 @@ pub struct DeclarationLocation {
 
 /// All inputs to the pure resolver are supplied explicitly by the loading shell.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LoadedPackage {
+pub struct LoadedRoot {
     pub source_key: String,
     pub source_id: SourceId,
-    pub carrier: LoadedCarrier,
+    pub manifest: Manifest,
     pub source_files: Vec<SourceFile>,
-    pub links: Vec<LoadedLink>,
 }
 
 /// The source of one dependency, independent of how its scripts are selected.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LoadedCarrier {
-    Manifest(Manifest),
-    Declarations {
-        kind: DependencyKind,
-        sdk: LoadedSdk,
-    },
-}
-
-impl LoadedPackage {
-    pub fn manifest(&self) -> Option<&Manifest> {
-        match &self.carrier {
-            LoadedCarrier::Manifest(manifest) => Some(manifest),
-            LoadedCarrier::Declarations { .. } => None,
-        }
-    }
-
-    pub fn manifest_mut(&mut self) -> Option<&mut Manifest> {
-        match &mut self.carrier {
-            LoadedCarrier::Manifest(manifest) => Some(manifest),
-            LoadedCarrier::Declarations { .. } => None,
-        }
-    }
-
-    pub fn sdk(&self) -> Option<&LoadedSdk> {
-        match &self.carrier {
-            LoadedCarrier::Declarations { sdk, .. } => Some(sdk),
-            LoadedCarrier::Manifest(_) => None,
-        }
-    }
-
-    pub fn sdk_mut(&mut self) -> Option<&mut LoadedSdk> {
-        match &mut self.carrier {
-            LoadedCarrier::Declarations { sdk, .. } => Some(sdk),
-            LoadedCarrier::Manifest(_) => None,
-        }
-    }
-
-    pub fn kind(&self) -> DependencyKind {
-        match &self.carrier {
-            LoadedCarrier::Manifest(_) => DependencyKind::Package,
-            LoadedCarrier::Declarations { kind, .. } => *kind,
-        }
-    }
-}
-
-/// Explicitly associates one manifest dependency with a loaded source.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LoadedLink {
-    pub dependency_index: usize,
+pub struct LoadedDependency {
     pub source_key: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LoadedSdk {
+    pub source_id: SourceId,
+    pub kind: DependencyKind,
     pub name: String,
-    pub version: String,
-    pub target: String,
-    pub abi: String,
+    pub declared_path: String,
+    pub canonical_path: PathBuf,
+    pub declaration: SourceSpan,
+    pub profile: String,
     pub scripts: Vec<DeclaredScript>,
 }
 

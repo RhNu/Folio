@@ -2,7 +2,7 @@
   "name": "folio-vscode",
   "displayName": "Folio",
   "description": "Papyrus language support powered by the Folio language server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "folio-local",
   "private": true,
   "extensionKind": [

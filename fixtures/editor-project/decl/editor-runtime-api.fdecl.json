@@ -1,0 +1,114 @@
+{
+  "format": "folio-declarations",
+  "schema": 1,
+  "profile": "papyrus-skyrim",
+  "origin": {
+    "source": "self-authored-editor-example"
+  },
+  "scripts": [
+    {
+      "name": "Quest",
+      "is_native": true,
+      "members": [
+        {
+          "name": "Start",
+          "kind": "function",
+          "native": true
+        },
+        {
+          "name": "Stop",
+          "kind": "function",
+          "native": true
+        },
+        {
+          "name": "IsRunning",
+          "kind": "function",
+          "return_type": "Bool",
+          "native": true
+        }
+      ]
+    },
+    {
+      "name": "Actor",
+      "parent": "Form",
+      "is_native": true,
+      "members": [
+        {
+          "name": "GetLevel",
+          "kind": "function",
+          "return_type": "Int",
+          "native": true
+        },
+        {
+          "name": "IsDead",
+          "kind": "function",
+          "return_type": "Bool",
+          "native": true
+        },
+        {
+          "name": "AddItem",
+          "kind": "function",
+          "parameters": [
+            {
+              "name": "item",
+              "ty": "Form",
+              "default": {
+                "kind": "required"
+              }
+            },
+            {
+              "name": "count",
+              "ty": "Int",
+              "default": {
+                "kind": "literal",
+                "value": "1"
+              }
+            },
+            {
+              "name": "silent",
+              "ty": "Bool",
+              "default": {
+                "kind": "literal",
+                "value": "false"
+              }
+            }
+          ],
+          "native": true
+        }
+      ]
+    },
+    {
+      "name": "Form",
+      "is_native": true,
+      "members": [
+        {
+          "name": "GetFormID",
+          "kind": "function",
+          "return_type": "Int",
+          "native": true
+        }
+      ]
+    },
+    {
+      "name": "Debug",
+      "is_native": true,
+      "members": [
+        {
+          "name": "Notification",
+          "kind": "function",
+          "parameters": [
+            {
+              "name": "message",
+              "ty": "String",
+              "default": {
+                "kind": "required"
+              }
+            }
+          ],
+          "native": true,
+          "global": true
+        }
+      ]
+    }
+  ]
+}

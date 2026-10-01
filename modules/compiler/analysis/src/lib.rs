@@ -393,7 +393,7 @@ impl AnalysisView {
             .map(|fact| fact.ty.clone())
     }
 
-    /// Finds a source definition for a bound name; SDK declarations have no local span.
+    /// Finds a source definition for a bound name; external declarations have no local span.
     pub fn definition(&self, file: FileId, offset: usize) -> Option<SourceSpan> {
         let analysis = self.semantic();
         let script = &analysis.file(file)?.script;
@@ -425,7 +425,7 @@ mod tests {
         .unwrap();
         let unresolved = host.view();
         assert!(!unresolved.diagnostics(file).unwrap().is_empty());
-        let bundle = folio_format_declarations::decode(br#"{"schema":1,"package":{"name":"api","version":"1","source":"fixture","generator":"test"},"compatibility":{"target":"skyrim-se","abi":"papyrus-skyrim"},"naming":{"language":"papyrus","case_sensitive":false},"scripts":[{"name":"Base","members":[]}]}"#).unwrap();
+        let bundle = folio_format_declarations::decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[]}]}"#).unwrap();
         host.set_external_declarations(vec![bundle.clone()]);
         let resolved = host.view();
         assert!(resolved.diagnostics(file).unwrap().is_empty());

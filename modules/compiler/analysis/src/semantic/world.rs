@@ -11,14 +11,14 @@ pub(super) fn script_from_external(external: &ExternalScript) -> ScriptInfo {
     let mut members = BTreeMap::new();
     let mut callable_overloads = BTreeMap::new();
     for item in &external.members {
-        if item.kind == MemberKind::Variable {
+        if item.kind() == MemberKind::Variable {
             continue;
         }
         let name = key(&item.name);
         let info = member_from_external(item);
         match (
             members.get(&name).map(|prior: &MemberInfo| prior.kind),
-            item.kind,
+            item.kind(),
         ) {
             (
                 Some(MemberKind::Property),
@@ -40,7 +40,7 @@ pub(super) fn script_from_external(external: &ExternalScript) -> ScriptInfo {
     let variables = external
         .members
         .iter()
-        .filter(|item| item.kind == MemberKind::Variable)
+        .filter(|item| item.kind() == MemberKind::Variable)
         .map(|item| (key(&item.name), member_from_external(item)))
         .collect();
     let states = external
@@ -62,28 +62,23 @@ pub(super) fn script_from_external(external: &ExternalScript) -> ScriptInfo {
 fn member_from_external(member: &folio_format_declarations::Member) -> MemberInfo {
     MemberInfo {
         name: member.name.clone(),
-        ty: member
-            .ty
-            .as_deref()
-            .map(Type::from_spelling)
-            .unwrap_or(Type::Void),
-        kind: member.kind,
+        ty: member.ty().map(Type::from_spelling).unwrap_or(Type::Void),
+        kind: member.kind(),
         parameters: member
-            .parameters
+            .parameters()
             .iter()
             .map(|parameter| {
                 (
                     parameter.name.clone(),
                     Type::from_spelling(&parameter.ty),
-                    parameter.default_literal.clone(),
+                    parameter.default.clone(),
                 )
             })
             .collect(),
-        unknown_defaults: member.unknown_defaults,
-        global: member.is_global,
-        auto: member.is_auto,
-        read_only: member.is_read_only,
-        writable: !member.is_read_only && (!member.is_readable || member.is_writable),
+        global: member.is_global(),
+        auto: member.is_auto(),
+        read_only: member.is_read_only(),
+        writable: member.kind() != MemberKind::Property || member.is_writable(),
         definition: None,
     }
 }
@@ -112,7 +107,11 @@ pub(super) fn member_from_source(
                     (
                         parameter.name.clone(),
                         Type::from_spelling(&parameter.ty),
-                        parameter.default.clone(),
+                        parameter
+                            .default
+                            .clone()
+                            .map(ParameterDefault::Literal)
+                            .unwrap_or(ParameterDefault::Required),
                     )
                 })
                 .collect(),
@@ -146,7 +145,11 @@ pub(super) fn member_from_source(
                     (
                         parameter.name.clone(),
                         Type::from_spelling(&parameter.ty),
-                        parameter.default.clone(),
+                        parameter
+                            .default
+                            .clone()
+                            .map(ParameterDefault::Literal)
+                            .unwrap_or(ParameterDefault::Required),
                     )
                 })
                 .collect(),
@@ -165,7 +168,6 @@ pub(super) fn member_from_source(
         ty,
         kind,
         parameters,
-        unknown_defaults: false,
         global,
         auto: matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "auto" || flag == "autoreadonly")),
         read_only: matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "autoreadonly")),
@@ -385,7 +387,7 @@ pub(super) fn lookup_member<'a>(
     None
 }
 
-/// Calls prefer a callable with the same name as a property in legacy SDK sources.
+/// Calls prefer a callable with the same name as a property in external declaration sources.
 pub(super) fn lookup_callable_member<'a>(
     world: &'a World,
     script: &str,

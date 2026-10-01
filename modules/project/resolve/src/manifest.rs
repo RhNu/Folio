@@ -2,16 +2,15 @@
 
 use std::{collections::BTreeMap, ops::Range};
 
-use folio_project_model::{DependencyKind, DependencySpec, LocatedString, Manifest, SourceSpan};
+use folio_project_model::{
+    DependencyKind, DependencySpec, LocatedString, Manifest, SourceEncoding, SourceSpan,
+};
 use serde::Deserialize;
 use toml::Spanned;
-
-pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManifestErrorKind {
     Toml(String),
-    UnsupportedSchema(u32),
     InvalidValue { field: String, reason: &'static str },
 }
 
@@ -30,9 +29,6 @@ impl std::fmt::Display for ManifestError {
         }
         match &self.kind {
             ManifestErrorKind::Toml(reason) => write!(f, ": {reason}"),
-            ManifestErrorKind::UnsupportedSchema(value) => {
-                write!(f, ": unsupported manifest schema {value}")
-            }
             ManifestErrorKind::InvalidValue { field, reason } => {
                 write!(f, ": invalid {field}: {reason}")
             }
@@ -45,7 +41,6 @@ impl std::error::Error for ManifestError {}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawManifest {
-    schema: Spanned<u32>,
     package: RawPackage,
     #[serde(default)]
     paths: RawPaths,
@@ -106,6 +101,8 @@ struct RawDependency {
     name: Spanned<String>,
     kind: Spanned<DependencyKind>,
     path: Spanned<String>,
+    #[serde(default)]
+    encoding: Option<Spanned<SourceEncoding>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -129,16 +126,8 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
             span: error.span(),
             kind: ManifestErrorKind::Toml(error.to_string()),
         })?;
-    if *raw.schema.get_ref() != SCHEMA_VERSION {
-        return Err(ManifestError {
-            source: source.to_owned(),
-            span: Some(raw.schema.span()),
-            kind: ManifestErrorKind::UnsupportedSchema(*raw.schema.get_ref()),
-        });
-    }
 
     let mut fields = BTreeMap::new();
-    fields.insert("schema".into(), span(source, raw.schema.span()));
     for (field, value) in [
         ("package.name", &raw.package.name),
         ("package.version", &raw.package.version),
@@ -302,6 +291,7 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
             Ok(value.into_inner())
         })
         .collect::<Result<Vec<_>, ManifestError>>()?;
+    let mut dependency_names = std::collections::BTreeSet::new();
     let dependencies = raw
         .dependencies
         .into_iter()
@@ -310,6 +300,35 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
             let prefix = format!("dependencies[{index}]");
             nonempty(source, &format!("{prefix}.name"), &dep.name)?;
             relative(source, &format!("{prefix}.path"), &dep.path)?;
+            if !dependency_names.insert(dep.name.get_ref().clone()) {
+                return Err(invalid(
+                    source,
+                    &format!("{prefix}.name"),
+                    "duplicate dependency alias",
+                    Some(dep.name.span()),
+                ));
+            }
+            if *dep.kind.get_ref() == DependencyKind::Repo {
+                validate_repo_key(dep.path.get_ref()).map_err(|reason| {
+                    invalid(
+                        source,
+                        &format!("{prefix}.path"),
+                        reason,
+                        Some(dep.path.span()),
+                    )
+                })?;
+            }
+            if dep.encoding.is_some() && *dep.kind.get_ref() != DependencyKind::Psc {
+                return Err(invalid(
+                    source,
+                    &format!("{prefix}.encoding"),
+                    "encoding is only valid for PSC dependencies",
+                    dep.encoding.as_ref().map(Spanned::span),
+                ));
+            }
+            if let Some(value) = &dep.encoding {
+                fields.insert(format!("{prefix}.encoding"), span(source, value.span()));
+            }
             for (field, range) in [
                 ("name", dep.name.span()),
                 ("kind", dep.kind.span()),
@@ -321,6 +340,9 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
                 name: located(source, dep.name),
                 kind: dep.kind.into_inner(),
                 path: located(source, dep.path),
+                encoding: dep
+                    .encoding
+                    .map_or(SourceEncoding::Utf8, Spanned::into_inner),
             })
         })
         .collect::<Result<Vec<_>, ManifestError>>()?;
@@ -461,6 +483,53 @@ fn paths_overlap(source: &str, output: &str) -> bool {
         || output.starts_with(&format!("{source}/"))
 }
 
+/// Repository keys use a portable, normalized path and never traverse parents.
+pub fn validate_repo_key(key: &str) -> Result<(), &'static str> {
+    if key.is_empty()
+        || key.contains(['\\', ':', '*', '?', '<', '>', '|', '"'])
+        || key.chars().any(char::is_control)
+        || key.split('/').any(|part| {
+            part.is_empty()
+                || part == "."
+                || part == ".."
+                || part.ends_with(['.', ' '])
+                || matches!(
+                    part.split('.')
+                        .next()
+                        .unwrap_or("")
+                        .to_ascii_uppercase()
+                        .as_str(),
+                    "CON"
+                        | "PRN"
+                        | "AUX"
+                        | "NUL"
+                        | "COM1"
+                        | "COM2"
+                        | "COM3"
+                        | "COM4"
+                        | "COM5"
+                        | "COM6"
+                        | "COM7"
+                        | "COM8"
+                        | "COM9"
+                        | "LPT1"
+                        | "LPT2"
+                        | "LPT3"
+                        | "LPT4"
+                        | "LPT5"
+                        | "LPT6"
+                        | "LPT7"
+                        | "LPT8"
+                        | "LPT9"
+                )
+        })
+    {
+        Err("must be a normalized repository key using / without parent traversal")
+    } else {
+        Ok(())
+    }
+}
+
 fn invalid(
     source: &str,
     field: &str,
@@ -481,8 +550,7 @@ fn invalid(
 mod tests {
     use super::*;
 
-    const MINIMAL: &str = r#"schema = 3
-[package]
+    const MINIMAL: &str = r#"[package]
 name = "mod-a"
 version = "0.1.0"
 [languages.papyrus]
@@ -530,16 +598,6 @@ emit = ["pex"]
     }
 
     #[test]
-    fn accepts_explicit_builtin_dependency_identity() {
-        let input = format!(
-            "{MINIMAL}\n[[dependencies]]\nname = \"ck-1.6.1170\"\nkind = \"builtin\"\npath = \"ck-1.6.1170\"\n"
-        );
-        let manifest = parse("folio.toml", &input).unwrap();
-        assert_eq!(manifest.dependencies[0].kind, DependencyKind::Builtin);
-        assert_eq!(manifest.dependencies[0].path.value, "ck-1.6.1170");
-    }
-
-    #[test]
     fn pex_dependency_gate_is_explicit() {
         let dependency =
             "\n[[dependencies]]\nname = \"binary\"\nkind = \"pex\"\npath = \"../Binary/Scripts\"\n";
@@ -557,7 +615,7 @@ emit = ["pex"]
     #[test]
     fn keeps_declared_dependency_precedence() {
         let input = format!(
-            "{MINIMAL}\n[[dependencies]]\nname = \"ck\"\nkind = \"builtin\"\npath = \"ck\"\n[[dependencies]]\nname = \"skse\"\nkind = \"builtin\"\npath = \"skse\"\n"
+            "{MINIMAL}\n[[dependencies]]\nname = \"ck\"\nkind = \"repo\"\npath = \"ck\"\n[[dependencies]]\nname = \"skse\"\nkind = \"repo\"\npath = \"skse\"\n"
         );
         let manifest = parse("folio.toml", &input).unwrap();
         assert_eq!(
@@ -568,6 +626,58 @@ emit = ["pex"]
                 .collect::<Vec<_>>(),
             vec!["ck", "skse"]
         );
+    }
+
+    #[test]
+    fn aliases_are_local_and_repeated_carriers_keep_their_occurrences() {
+        let dependency =
+            "\n[[dependencies]]\nname = \"first\"\nkind = \"decl\"\npath = \"api.json\"\n";
+        let input = format!(
+            "{MINIMAL}{dependency}{}",
+            dependency.replace("first", "second")
+        );
+        let manifest = parse("folio.toml", &input).unwrap();
+        assert_eq!(manifest.dependencies.len(), 2);
+        let duplicate = format!("{MINIMAL}{dependency}{dependency}");
+        assert!(matches!(
+            parse("folio.toml", &duplicate).unwrap_err().kind,
+            ManifestErrorKind::InvalidValue { .. }
+        ));
+    }
+
+    #[test]
+    fn psc_encoding_is_explicit_and_located() {
+        let input = format!(
+            "{MINIMAL}\n[[dependencies]]\nname = \"api\"\nkind = \"psc\"\npath = \"../scripts\"\nencoding = \"windows1252\"\n"
+        );
+        let manifest = parse("folio.toml", &input).unwrap();
+        assert_eq!(
+            manifest.dependencies[0].encoding,
+            SourceEncoding::Windows1252
+        );
+        let location = &manifest.fields["dependencies[0].encoding"];
+        assert_eq!(&input[location.start..location.end], "\"windows1252\"");
+        let invalid_input = input.replace("kind = \"psc\"", "kind = \"decl\"");
+        assert!(parse("folio.toml", &invalid_input).is_err());
+    }
+
+    #[test]
+    fn repo_keys_are_portable_without_parent_traversal() {
+        for key in ["ck/1.6.1170.0", "skse/2.2.8.json"] {
+            assert!(validate_repo_key(key).is_ok());
+        }
+        for key in [
+            "../api",
+            "/api",
+            "api//v1",
+            "api/../v1",
+            "api\\v1",
+            "C:/api",
+            "con/file",
+            "api/v1.",
+        ] {
+            assert!(validate_repo_key(key).is_err(), "{key}");
+        }
     }
 
     #[test]

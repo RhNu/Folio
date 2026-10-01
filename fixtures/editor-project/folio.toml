@@ -1,4 +1,3 @@
-schema = 3
 
 [package]
 name = "folio-editor-example"
@@ -15,5 +14,5 @@ emit = ["pex"]
 
 [[dependencies]]
 name = "editor-runtime-api"
-kind = "sdk"
-path = "sdk/editor-runtime-api.json"
+kind = "decl"
+path = "decl/editor-runtime-api.fdecl.json"

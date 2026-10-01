@@ -10,7 +10,7 @@
 
 ## 类型、调用与转换
 
-分析层统一处理内建类型、脚本引用和数组。它解析继承、成员、函数调用、参数绑定和来源；未解析名称使用错误状态限制连锁诊断，不伪装成正常 `None`。外部 SDK 声明只提供可见 API，不能替代游戏或扩展的实际运行时。
+分析层统一处理内建类型、脚本引用和数组。它解析继承、成员、函数调用、参数绑定和来源；未解析名称使用错误状态限制连锁诊断，不伪装成正常 `None`。外部声明只提供可见 API，不能替代游戏或扩展的实际运行时。
 
 Skyrim 的 `If`、`ElseIf`、`While` 及 `&&`、`||`、`!` 接受 `Bool`，也允许 `Int`、`Float`、`String`、脚本引用、数组和 `None` 的隐式 Bool 转换。转换在语义结果中显式记录，生成时形成 MIR `Cast`。这不会放宽 `None` 比较：数值、`Bool` 和 `String` 不能因此与 `None` 比较。数组可用于条件和 `None` 比较，但两种写法的行为不据此视为等价。
 
@@ -20,6 +20,6 @@ Skyrim 的 `If`、`ElseIf`、`While` 及 `&&`、`||`、`!` 接受 `Bool`，也�
 
 ## Skyrim 内置操作
 
-`GetState()` 和 `GotoState(String)` 是编译器内置实例方法，Folio 为状态读取与迁移生成代码；迁移依次执行 `OnEndState()`、更新状态、`OnBeginState()`。数组的 `Length`、`Find` 和 `RFind` 使用目标数组操作。引擎 native 方法须经项目源码或 SDK 声明可见；内置状态和数组能力不使其他引擎脚本自动可见。
+`GetState()` 和 `GotoState(String)` 是编译器内置实例方法，Folio 为状态读取与迁移生成代码；迁移依次执行 `OnEndState()`、更新状态、`OnBeginState()`。数组的 `Length`、`Find` 和 `RFind` 使用目标数组操作。引擎 native 方法须经项目源码或外部声明可见；内置状态和数组能力不使其他引擎脚本自动可见。
 
 语义错误下，编辑器仍可取得已解析的局部类型、定义和诊断。`build` 只接受通过语义、目标与 MIR 验证的程序。具体阶段和求值顺序保证见[编译管线](architecture/compiler.md)；项目设置与依赖可见性见[项目与依赖](architecture/project-model.md)。

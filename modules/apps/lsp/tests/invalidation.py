@@ -24,8 +24,7 @@ def main():
     api.mkdir()
     parent = api / "Base.psc"
     parent.write_text("ScriptName Base\nInt Function Value(Int amount) Native\n")
-    manifest = '''schema = 3
-[package]
+    manifest = '''[package]
 name = "invalidation"
 version = "0.1.0"
 [languages.papyrus]
@@ -173,7 +172,7 @@ path = "../lsp-invalidation-api"
     assert outline()[0]["name"] == "Child"
 
     # Failed project loads clear stale results; fixing the input recovers the session.
-    manifest_path.write_text("schema = [broken\n")
+    manifest_path.write_text("[package]\nname = [broken\n")
     watch(manifest_path)
     assert outline() is None
     manifest_path.write_text(manifest)
