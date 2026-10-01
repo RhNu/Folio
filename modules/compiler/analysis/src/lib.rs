@@ -36,11 +36,19 @@ fn parsed(db: &dyn salsa::Database, input: SourceInput) -> Arc<Parse> {
 }
 
 #[salsa::tracked]
-fn declaration_summary(db: &dyn salsa::Database, input: SourceInput) -> Arc<Vec<Declaration>> {
+fn located_declarations(
+    db: &dyn salsa::Database,
+    input: SourceInput,
+) -> Arc<Vec<LocatedDeclaration>> {
     let parse = parsed(db, input);
-    let declarations = folio_papyrus::declarations(parse)
-        .into_iter()
-        .map(|item| item.declaration)
+    Arc::new(folio_papyrus::declarations(parse))
+}
+
+#[salsa::tracked]
+fn declaration_summary(db: &dyn salsa::Database, input: SourceInput) -> Arc<Vec<Declaration>> {
+    let declarations = located_declarations(db, input)
+        .iter()
+        .map(|item| item.declaration.clone())
         .collect::<Vec<_>>();
     tracing::trace!(
         count = declarations.len(),
@@ -106,6 +114,7 @@ pub struct AnalysisHost {
     external_declarations: Arc<Vec<DeclarationBundle>>,
     user_flags: Arc<Vec<String>>,
     fill_missing_arguments: bool,
+    view: OnceLock<AnalysisView>,
 }
 
 impl AnalysisHost {
@@ -115,19 +124,27 @@ impl AnalysisHost {
 
     /// Replaces the selected external API snapshots independently of editable files.
     pub fn set_external_declarations(&mut self, bundles: Vec<DeclarationBundle>) {
+        if *self.external_declarations == bundles {
+            return;
+        }
         tracing::info!(
             bundles = bundles.len(),
             "replaced analysis external declarations"
         );
         self.external_declarations = Arc::new(bundles);
         self.generation += 1;
+        self.view.take();
     }
 
     /// Replaces available project-defined flags; source references remain explicit.
     pub fn set_user_flags(&mut self, flags: Vec<String>) {
+        if *self.user_flags == flags {
+            return;
+        }
         tracing::info!(flags = flags.len(), "replaced analysis user flags");
         self.user_flags = Arc::new(flags);
         self.generation += 1;
+        self.view.take();
     }
 
     /// Updates the project call policy used by all later analysis views.
@@ -136,6 +153,7 @@ impl AnalysisHost {
             tracing::info!(enabled, "updated missing argument policy");
             self.fill_missing_arguments = enabled;
             self.generation += 1;
+            self.view.take();
         }
     }
 
@@ -222,6 +240,7 @@ impl AnalysisHost {
             self.last_revisions.insert(file, revision);
         }
         self.generation += 1;
+        self.view.take();
         tracing::info!(
             generation = self.generation,
             files = self.active.len(),
@@ -233,11 +252,16 @@ impl AnalysisHost {
     /// Materializes one coherent result set; it can outlive later host edits.
     #[tracing::instrument(skip(self), fields(generation = self.generation, phase = "analysis.query"))]
     pub fn view(&self) -> AnalysisView {
+        self.view.get_or_init(|| self.materialize_view()).clone()
+    }
+
+    /// Retains complete semantic facts until an actual host input changes.
+    fn materialize_view(&self) -> AnalysisView {
         let mut files = BTreeMap::new();
         for (&file, active) in &self.active {
             let parse = Arc::clone(parsed(&self.db, active.input));
             let declarations = Arc::clone(declaration_summary(&self.db, active.input));
-            let located = Arc::new(folio_papyrus::declarations(&parse));
+            let located = Arc::clone(located_declarations(&self.db, active.input));
             files.insert(
                 file,
                 ViewFile {
@@ -387,6 +411,71 @@ impl AnalysisView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unchanged_external_inputs_preserve_generation_and_changes_invalidate_semantics() {
+        let mut host = AnalysisHost::new();
+        let file = FileId(0);
+        host.upsert(
+            file,
+            Revision(1),
+            Arc::from("ScriptName Child Extends Base\n"),
+            PapyrusDialect::Skyrim,
+        )
+        .unwrap();
+        let unresolved = host.view();
+        assert!(!unresolved.diagnostics(file).unwrap().is_empty());
+        let bundle = folio_format_declarations::decode(br#"{"schema":1,"package":{"name":"api","version":"1","source":"fixture","generator":"test"},"compatibility":{"target":"skyrim-se","abi":"papyrus-skyrim"},"naming":{"language":"papyrus","case_sensitive":false},"scripts":[{"name":"Base","members":[]}]}"#).unwrap();
+        host.set_external_declarations(vec![bundle.clone()]);
+        let resolved = host.view();
+        assert!(resolved.diagnostics(file).unwrap().is_empty());
+        host.set_external_declarations(vec![bundle]);
+        host.set_user_flags(vec![]);
+        host.set_fill_missing_arguments(false);
+        assert_eq!(host.view().generation(), resolved.generation());
+        assert!(host.view().diagnostics(file).unwrap().is_empty());
+        host.set_external_declarations(vec![]);
+        assert!(host.view().generation() > resolved.generation());
+        assert!(!host.view().diagnostics(file).unwrap().is_empty());
+        assert!(resolved.diagnostics(file).unwrap().is_empty());
+        assert!(!unresolved.diagnostics(file).unwrap().is_empty());
+    }
+
+    #[test]
+    fn flag_and_call_policy_changes_invalidate_warmed_views() {
+        let mut host = AnalysisHost::new();
+        let file = FileId(0);
+        host.upsert(file, Revision(1), Arc::from("ScriptName Policy Custom\nFunction Required(Int value) Native\nFunction Run()\n Required()\nEndFunction\n"), PapyrusDialect::Skyrim).unwrap();
+        let original = host.view();
+        let errors = original.diagnostics(file).unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|diagnostic| diagnostic.severity == folio_diagnostics::Severity::Error)
+        );
+        host.set_user_flags(vec!["Custom".into()]);
+        host.set_fill_missing_arguments(true);
+        let allowed = host.view();
+        assert!(
+            allowed
+                .diagnostics(file)
+                .unwrap()
+                .iter()
+                .all(|diagnostic| diagnostic.severity != folio_diagnostics::Severity::Error)
+        );
+        host.set_user_flags(vec!["Custom".into()]);
+        host.set_fill_missing_arguments(true);
+        assert_eq!(host.view().generation(), allowed.generation());
+        host.set_fill_missing_arguments(false);
+        assert!(
+            host.view()
+                .diagnostics(file)
+                .unwrap()
+                .iter()
+                .any(|diagnostic| diagnostic.severity == folio_diagnostics::Severity::Error)
+        );
+        assert_eq!(original.diagnostics(file).unwrap(), errors);
+    }
 
     fn source(text: &str) -> Arc<str> {
         Arc::from(text)

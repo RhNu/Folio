@@ -6,15 +6,18 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use folio_build::{ProjectAnalysis, ProjectAnalysisView};
 use folio_diagnostics::Severity;
 use folio_format::format_source;
-use folio_ide::{Documents, Position, PositionEncoding, Range};
+use folio_ide::{Documents, Position, PositionEncoding, PositionIndex, Range};
 use folio_lint::{LintConfig, lint_script};
 use folio_papyrus::PapyrusDialect;
-use folio_project_model::{DependencyKind, Metadata, SourceFile, SourceId};
-use folio_project_resolve::{discover, io::LoadedSourceInput, load_and_resolve, resolve};
+use folio_project_model::{DependencyKind, LoadedCarrier, Metadata, SourceFile, SourceId};
+use folio_project_resolve::{
+    LoadedProject, discover, io::LoadedSourceInput, load_and_resolve, resolve,
+};
 use folio_source::{FileId, TextRange};
 use serde_json::{Value, json};
 
@@ -111,10 +114,15 @@ struct Server {
     output: Output,
     documents: Documents,
     project: ProjectAnalysis,
+    disk_project: Option<(LoadedProject, Metadata)>,
     view: Option<Arc<ProjectAnalysisView>>,
     metadata: Option<Arc<Metadata>>,
     paths: BTreeMap<PathBuf, FileId>,
     published: BTreeSet<String>,
+    diagnostics: BTreeMap<String, Vec<Value>>,
+    dynamic_watches: bool,
+    client_ready: bool,
+    watchers: Option<Value>,
     project_message: Option<String>,
     last_error: Option<String>,
     encoding: PositionEncoding,
@@ -133,10 +141,15 @@ impl Server {
             output,
             documents: Documents::default(),
             project: ProjectAnalysis::new(),
+            disk_project: None,
             view: None,
             metadata: None,
             paths: BTreeMap::new(),
             published: BTreeSet::new(),
+            diagnostics: BTreeMap::new(),
+            dynamic_watches: false,
+            client_ready: false,
+            watchers: None,
             project_message: None,
             last_error: None,
             encoding: PositionEncoding::Utf16,
@@ -149,6 +162,13 @@ impl Server {
     }
 
     fn handle(&mut self, message: Value) -> Result<bool, LspError> {
+        let started = Instant::now();
+        if message.get("method").is_none() {
+            if let Some(error) = message.get("error") {
+                tracing::warn!(id = ?message.get("id"), %error, "LSP client request failed");
+            }
+            return Ok(false);
+        }
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let id = message.get("id").cloned();
         let params = &message["params"];
@@ -156,6 +176,9 @@ impl Server {
         match method {
             "initialize" => {
                 self.encoding = negotiate_encoding(params);
+                let watches = &params["capabilities"]["workspace"]["didChangeWatchedFiles"];
+                self.dynamic_watches = watches["dynamicRegistration"].as_bool() == Some(true)
+                    && watches["relativePatternSupport"].as_bool() == Some(true);
                 if self.manifest_path.is_none() {
                     if let Some(uri) = params["rootUri"].as_str() {
                         self.cwd = uri_to_path(uri).unwrap_or_else(|| self.cwd.clone());
@@ -175,9 +198,11 @@ impl Server {
                     )?;
                 }
                 tracing::info!(encoding = name, "LSP initialized");
-                self.reload_report()?;
             }
-            "initialized" => {}
+            "initialized" => {
+                self.client_ready = true;
+                self.reload_report(true)?;
+            }
             "shutdown" => {
                 self.shutdown = true;
                 self.generation.fetch_add(1, Ordering::SeqCst);
@@ -211,7 +236,7 @@ impl Server {
                 ) && let (Some(path), Ok(version)) = (uri_to_path(uri), i32::try_from(version))
                 {
                     match self.documents.open(&path, version, Arc::from(text)) {
-                        Ok(()) => self.reload_report()?,
+                        Ok(()) => self.update_document(&path)?,
                         Err(error) => tracing::warn!(?error, uri, "ignored document open"),
                     }
                 }
@@ -240,7 +265,7 @@ impl Server {
                             .documents
                             .change(&path, version, &parsed, self.encoding)
                         {
-                            Ok(()) => self.reload_report()?,
+                            Ok(()) => self.update_document(&path)?,
                             Err(error) => {
                                 tracing::warn!(?error, uri, "ignored document change")
                             }
@@ -254,12 +279,13 @@ impl Server {
                 {
                     if let Err(error) = self.documents.close(&path) {
                         tracing::warn!(?error, uri, "ignored document close");
+                    } else {
+                        self.close_document(&path)?;
                     }
-                    self.reload_report()?;
                 }
             }
-            "textDocument/didSave" => self.reload_report()?,
-            "workspace/didChangeWatchedFiles" => self.reload_report()?,
+            "textDocument/didSave" => self.reload_report(true)?,
+            "workspace/didChangeWatchedFiles" => self.reload_report(true)?,
             "textDocument/hover" | "textDocument/definition" | "textDocument/declaration" => {
                 if let Some(id) = id {
                     self.navigation(id, method, params)?;
@@ -280,6 +306,11 @@ impl Server {
             _ if id.is_some() => self.error(id.unwrap(), -32601, "method not found")?,
             _ => {}
         }
+        tracing::debug!(
+            method,
+            elapsed_us = started.elapsed().as_micros(),
+            "handled LSP message"
+        );
         Ok(false)
     }
 
@@ -296,10 +327,11 @@ impl Server {
         )
     }
 
-    fn reload_report(&mut self) -> Result<(), LspError> {
-        if let Err(error) = self.reload() {
+    fn reload_report(&mut self, refresh_disk: bool) -> Result<(), LspError> {
+        if let Err(error) = self.reload(refresh_disk) {
             tracing::error!(%error, "LSP project analysis unavailable");
             self.clear_view()?;
+            self.disk_project = None;
             let message = error.to_string();
             if self.last_error.as_ref() != Some(&message) {
                 send(
@@ -326,22 +358,79 @@ impl Server {
             )?;
         }
         self.published.clear();
+        self.diagnostics.clear();
         Ok(())
     }
 
-    fn reload(&mut self) -> Result<(), LspError> {
+    /// Buffer lifecycle alone does not change semantic inputs or invalidate requests.
+    fn update_document(&mut self, path: &Path) -> Result<(), LspError> {
+        let unchanged = self
+            .paths
+            .get(path)
+            .and_then(|file| self.view.as_ref()?.analysis.text(*file))
+            .is_some_and(|text| Some(text) == self.documents.text(&path.to_path_buf()));
+        if unchanged {
+            let uri = path_to_uri(path);
+            if let Some(diagnostics) = self.diagnostics.get(&uri) {
+                send(
+                    &self.output,
+                    &json!({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":uri,"version":self.documents.version(&path.to_path_buf()),"diagnostics":diagnostics}}),
+                )?;
+            }
+            tracing::debug!(path = %path.display(), "reused unchanged LSP project view");
+            return Ok(());
+        }
+        self.reload_report(false)
+    }
+
+    /// Re-read the closed file so discarding a buffer restores even unwatched disk edits.
+    fn close_document(&mut self, path: &Path) -> Result<(), LspError> {
+        if let Some((loaded, _)) = self.disk_project.as_mut()
+            && let Some(source) = loaded
+                .source_inputs
+                .iter_mut()
+                .find(|source| source.canonical_path == path)
+            && let Ok(text) = std::fs::read_to_string(path)
+        {
+            source.text = Arc::from(text);
+            self.documents
+                .disk_update(path.to_path_buf(), Arc::clone(&source.text));
+            return self.update_document(path);
+        }
+        // New unsaved files and removed files require rebuilding provider selection.
+        self.reload_report(true)
+    }
+
+    fn reload(&mut self, refresh_disk: bool) -> Result<(), LspError> {
         if !self.initialized || self.shutdown {
             return Ok(());
         }
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let (mut loaded, mut metadata) =
+        let started = Instant::now();
+        if refresh_disk || self.disk_project.is_none() {
             match load_and_resolve(&self.cwd, self.manifest_path.as_deref()) {
-                Ok(project) => project,
+                Ok(project) => self.disk_project = Some(project),
                 Err(error) => {
                     tracing::error!(%error, "LSP project reload failed");
                     return Err(LspError::Project(error.to_string()));
                 }
-            };
+            }
+        }
+        let (mut loaded, mut metadata) = self
+            .disk_project
+            .as_ref()
+            .expect("loaded disk project")
+            .clone();
+        if refresh_disk {
+            self.register_file_watches(generation)?;
+        }
+        tracing::debug!(
+            generation,
+            elapsed_us = started.elapsed().as_micros(),
+            phase = "load",
+            "LSP project phase complete"
+        );
+        let started = Instant::now();
         let mut disk_paths = BTreeSet::new();
         for source in &loaded.source_inputs {
             disk_paths.insert(source.canonical_path.clone());
@@ -363,6 +452,12 @@ impl Server {
             self.project
                 .sync_project(&loaded, &metadata)
                 .map_err(|error| LspError::Project(error.to_string()))?,
+        );
+        tracing::debug!(
+            generation,
+            elapsed_us = started.elapsed().as_micros(),
+            phase = "projection",
+            "LSP project phase complete"
         );
         self.metadata = Some(Arc::new(metadata));
         self.paths = view
@@ -387,6 +482,72 @@ impl Server {
             LintConfig::from_rules(&rules).map_err(|error| LspError::Project(error.to_string()))?;
         self.publish(view.clone(), generation, &loaded.root_key, &lint)?;
         self.view = Some(view);
+        Ok(())
+    }
+
+    /// The resolver owns dependency paths, including carriers outside the editor folder.
+    fn register_file_watches(&mut self, generation: u64) -> Result<(), LspError> {
+        // Capability registration is allowed only after the initialized notification.
+        if !self.dynamic_watches || !self.client_ready {
+            return Ok(());
+        }
+        let Some((loaded, _)) = &self.disk_project else {
+            return Ok(());
+        };
+        let mut patterns = BTreeSet::new();
+        for package in &loaded.packages {
+            let path = Path::new(&package.source_key);
+            match &package.carrier {
+                LoadedCarrier::Manifest(manifest) => {
+                    if let Some(base) = path.parent() {
+                        patterns.insert((path_to_uri(base), "folio.toml"));
+                        patterns
+                            .insert((path_to_uri(&base.join(&manifest.source_path.value)), "**/*"));
+                    }
+                }
+                LoadedCarrier::Declarations {
+                    kind: DependencyKind::Builtin,
+                    ..
+                } => {}
+                LoadedCarrier::Declarations {
+                    kind: DependencyKind::Psc | DependencyKind::Pex,
+                    ..
+                } => {
+                    patterns.insert((path_to_uri(path), "**/*"));
+                }
+                LoadedCarrier::Declarations { .. } => {
+                    if let Some(base) = path.parent() {
+                        patterns.insert((path_to_uri(base), "*"));
+                    }
+                }
+            }
+        }
+        let watchers = json!(
+            patterns
+                .into_iter()
+                .map(|(base, pattern)| {
+                    json!({"globPattern":{"baseUri":base,"pattern":pattern},"kind":7})
+                })
+                .collect::<Vec<_>>()
+        );
+        if self.watchers.as_ref() == Some(&watchers) {
+            return Ok(());
+        }
+        if self.watchers.is_some() {
+            send(
+                &self.output,
+                &json!({"jsonrpc":"2.0","id":format!("folio/watch/unregister/{generation}"),"method":"client/unregisterCapability","params":{"unregisterations":[{"id":"folio-project-files","method":"workspace/didChangeWatchedFiles"}]}}),
+            )?;
+        }
+        tracing::debug!(
+            count = watchers.as_array().map_or(0, Vec::len),
+            "registered LSP project file watches"
+        );
+        send(
+            &self.output,
+            &json!({"jsonrpc":"2.0","id":format!("folio/watch/register/{generation}"),"method":"client/registerCapability","params":{"registrations":[{"id":"folio-project-files","method":"workspace/didChangeWatchedFiles","registerOptions":{"watchers":watchers}}]}}),
+        )?;
+        self.watchers = Some(watchers);
         Ok(())
     }
 
@@ -468,11 +629,22 @@ impl Server {
         root_key: &str,
         lint: &LintConfig,
     ) -> Result<(), LspError> {
+        let started = Instant::now();
+        let current = view
+            .sources
+            .values()
+            .map(|source| path_to_uri(&source.canonical_path))
+            .collect::<BTreeSet<_>>();
         let mut grouped: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         for source in view.sources.values() {
             grouped.insert(path_to_uri(&source.canonical_path), Vec::new());
         }
         let mut project_messages = Vec::new();
+        let positions = view
+            .sources
+            .iter()
+            .map(|(&file, source)| (file, PositionIndex::new(&source.text)))
+            .collect::<BTreeMap<_, _>>();
         let mut diagnostics = view.diagnostics();
         for (&file, source) in &view.sources {
             if source.package_key == root_key
@@ -481,6 +653,13 @@ impl Server {
                 diagnostics.extend(lint_script(&script, lint));
             }
         }
+        tracing::debug!(
+            generation,
+            elapsed_us = started.elapsed().as_micros(),
+            phase = "diagnostics",
+            "LSP project phase complete"
+        );
+        let started = Instant::now();
         for diagnostic in diagnostics {
             let Some(span) = diagnostic.primary else {
                 project_messages.push(format!("{}: {}", diagnostic.code, diagnostic.message));
@@ -489,7 +668,7 @@ impl Server {
             let Some(source) = view.sources.get(&span.file) else {
                 continue;
             };
-            let Some(range) = folio_ide::range(&source.text, span.range, self.encoding) else {
+            let Some(range) = positions[&span.file].range(span.range, self.encoding) else {
                 continue;
             };
             let severity = match diagnostic.severity {
@@ -514,10 +693,11 @@ impl Server {
                 &json!({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":uri,"version":version,"diagnostics":diagnostics}}),
             )?;
         }
-        self.published = grouped
-            .into_keys()
-            .filter(|uri| self.paths.keys().any(|path| path_to_uri(path) == *uri))
+        self.diagnostics = grouped
+            .into_iter()
+            .filter(|(uri, _)| current.contains(uri))
             .collect();
+        self.published = current;
         let project_message = (!project_messages.is_empty()).then(|| project_messages.join("\n"));
         if project_message != self.project_message {
             if let Some(message) = &project_message {
@@ -528,6 +708,12 @@ impl Server {
             }
             self.project_message = project_message;
         }
+        tracing::debug!(
+            generation,
+            elapsed_us = started.elapsed().as_micros(),
+            phase = "publish",
+            "LSP project phase complete"
+        );
         Ok(())
     }
 
@@ -664,6 +850,7 @@ impl Server {
 
     /// Answers editor symbol requests from one coherent project generation.
     fn symbol_request(&self, id: Value, method: &str, params: &Value) -> Result<(), LspError> {
+        let started = Instant::now();
         let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
         let file = uri_to_path(uri).and_then(|path| self.paths.get(&path).copied());
         let Some(view) = &self.view else {
@@ -688,16 +875,29 @@ impl Server {
             }
             "textDocument/documentSymbol" => {
                 let symbols = folio_ide::document_symbols(view, file);
+                let positions = PositionIndex::new(text);
+                tracing::debug!(
+                    method,
+                    elapsed_us = started.elapsed().as_micros(),
+                    phase = "symbols",
+                    "LSP query phase complete"
+                );
                 tracing::debug!(?file, count = symbols.len(), "collected document symbols");
                 json!(
                     symbols
                         .iter()
-                        .filter_map(|item| document_symbol_json(text, item, self.encoding))
+                        .filter_map(|item| document_symbol_json(&positions, item, self.encoding))
                         .collect::<Vec<_>>()
                 )
             }
             "textDocument/semanticTokens/full" => {
                 let tokens = folio_ide::semantic_tokens(view, file);
+                tracing::debug!(
+                    method,
+                    elapsed_us = started.elapsed().as_micros(),
+                    phase = "tokens",
+                    "LSP query phase complete"
+                );
                 tracing::debug!(?file, count = tokens.len(), "collected semantic tokens");
                 json!({"data":encode_semantic_tokens(text, &tokens, self.encoding)})
             }
@@ -713,13 +913,14 @@ fn encode_semantic_tokens(
     tokens: &[folio_ide::SemanticToken],
     encoding: PositionEncoding,
 ) -> Vec<u32> {
+    let positions = PositionIndex::new(text);
     let mut data = Vec::with_capacity(tokens.len() * 5);
     let mut previous = Position {
         line: 0,
         character: 0,
     };
     for item in tokens {
-        let Some(range) = folio_ide::range(text, item.range, encoding) else {
+        let Some(range) = positions.range(item.range, encoding) else {
             continue;
         };
         if range.start.line != range.end.line {
@@ -755,19 +956,19 @@ fn encode_semantic_tokens(
 }
 
 fn document_symbol_json(
-    text: &str,
+    positions: &PositionIndex<'_>,
     item: &folio_ide::DocumentSymbol,
     encoding: PositionEncoding,
 ) -> Option<Value> {
     let children = item
         .children
         .iter()
-        .filter_map(|child| document_symbol_json(text, child, encoding))
+        .filter_map(|child| document_symbol_json(positions, child, encoding))
         .collect::<Vec<_>>();
     Some(
         json!({"name":item.name,"detail":item.detail,"kind":item.kind,
-        "range":range_json(folio_ide::range(text, item.range, encoding)?),
-        "selectionRange":range_json(folio_ide::range(text, item.selection_range, encoding)?),
+        "range":range_json(positions.range(item.range, encoding)?),
+        "selectionRange":range_json(positions.range(item.selection_range, encoding)?),
         "children":children}),
     )
 }

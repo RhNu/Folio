@@ -1,6 +1,9 @@
 # Rust build artifacts
 target/
 
+# Python protocol probes
+__pycache__/
+
 # Temporary files
 /temp/
 

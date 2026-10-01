@@ -72,7 +72,7 @@ path = "../OtherMod/Source/Scripts"
 
 实验性的 PEX 目录依赖需在根项目显式开启 `[experimental] pex-dependencies = true`。PEX 只提供二进制中可还原的 API，具体限制见[项目与构建](docs/architecture/project-model.md)。
 
-Folio 当前接受的语言构造及 Skyrim 行为见[Papyrus 规范](docs/papyrus.md)。格式化、lint，以及 VS Code 的 `.psc` 文件图标、语法与语义高亮、签名提示和符号跳转见[工具与编辑器](docs/architecture/tooling.md)。
+Folio 当前接受的语言构造及 Skyrim 行为见[Papyrus 规范](docs/papyrus.md)。格式化、lint，以及 VS Code 的 `.psc` 文件图标、语法与语义高亮、签名提示和符号跳转见[工具与编辑器](docs/architecture/tooling.md)。LSP 在会话内复用未变化的项目与语义视图，打开和重开同一内容不重新分析全项目；保存与文件监控事件刷新磁盘输入。
 
 ## 开发指南
 

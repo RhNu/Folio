@@ -16,3 +16,4 @@ folio-diagnostics = { path = "../../foundation/diagnostics" }
 folio-format-declarations = { path = "../../formats/declarations" }
 salsa.workspace = true
 tracing.workspace = true
+rowan.workspace = true

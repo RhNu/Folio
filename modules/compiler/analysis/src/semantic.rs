@@ -158,10 +158,23 @@ fn source_declaration_node(
     range: TextRange,
 ) -> Option<SyntaxNode> {
     let parse = view.parse(file)?;
-    parse.syntax().descendants().find(|node| {
-        let node_range = node.text_range();
-        usize::from(node_range.start()) == range.start && usize::from(node_range.end()) == range.end
-    })
+    let root = parse.syntax();
+    let range = rowan::TextRange::new(
+        u32::try_from(range.start).ok()?.into(),
+        u32::try_from(range.end).ok()?.into(),
+    );
+    if !root.text_range().contains_range(range) {
+        return None;
+    }
+    let element = root.covering_element(range);
+    let node = match element {
+        rowan::NodeOrToken::Node(node) => node,
+        rowan::NodeOrToken::Token(token) => token.parent()?,
+    };
+    // Equal-range wrappers must retain the outermost match used by the tree walk.
+    node.ancestors()
+        .filter(|node| node.text_range() == range)
+        .last()
 }
 
 /// Builds the selected source and SDK symbol environment, then analyzes each source independently.
@@ -174,6 +187,7 @@ pub(super) fn analyze_with_cancel(
     view: &AnalysisView,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Analysis, AnalysisCancelled> {
+    let started = std::time::Instant::now();
     if cancelled() {
         return Err(AnalysisCancelled);
     }
@@ -748,6 +762,7 @@ pub(super) fn analyze_with_cancel(
         return Err(AnalysisCancelled);
     }
     tracing::debug!(
+        elapsed_us = started.elapsed().as_micros(),
         files = analysis.files.len(),
         external_scripts = world.scripts.len() - file_scripts.len(),
         "semantic analysis complete"

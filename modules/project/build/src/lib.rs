@@ -327,7 +327,7 @@ impl ProjectAnalysis {
 
     #[tracing::instrument(
         name = "project.analysis.sync",
-        skip(self, project),
+        skip(self, project, metadata),
         fields(phase = "analysis.update")
     )]
     pub fn sync_project(

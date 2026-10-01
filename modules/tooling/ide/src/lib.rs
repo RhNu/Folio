@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use folio_build::ProjectAnalysisView;
 use folio_hir::Type;
-use folio_source::{FileId, SourceSpan, TextRange};
+use folio_source::{FileId, LineIndex, SourceSpan, TextRange};
 
 mod symbols;
 pub use symbols::{
@@ -32,6 +32,44 @@ pub struct Position {
 pub struct Range {
     pub start: Position,
     pub end: Position,
+}
+
+/// Indexes one immutable text for repeated protocol conversions without prefix scans.
+pub struct PositionIndex<'a> {
+    text: &'a str,
+    lines: LineIndex,
+}
+
+impl<'a> PositionIndex<'a> {
+    pub fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            lines: LineIndex::new(text),
+        }
+    }
+
+    pub fn position(&self, offset: usize, encoding: PositionEncoding) -> Option<Position> {
+        let (line, byte_col) = self.lines.line_col(offset)?;
+        let start = offset - byte_col;
+        let character = match encoding {
+            PositionEncoding::Utf8 => byte_col,
+            PositionEncoding::Utf16 => self.text[start..offset].encode_utf16().count(),
+        };
+        Some(Position {
+            line: u32::try_from(line).ok()?,
+            character: u32::try_from(character).ok()?,
+        })
+    }
+
+    pub fn range(&self, bytes: TextRange, encoding: PositionEncoding) -> Option<Range> {
+        if bytes.start > bytes.end {
+            return None;
+        }
+        Some(Range {
+            start: self.position(bytes.start, encoding)?,
+            end: self.position(bytes.end, encoding)?,
+        })
+    }
 }
 
 /// Converts a protocol position to a UTF-8 byte offset without splitting a scalar value.
@@ -344,6 +382,67 @@ pub fn definition(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_positions_preserve_unicode_crlf_eof_and_invalid_boundaries() {
+        let text = "🦊雪\r\nA\n";
+        let index = PositionIndex::new(text);
+        assert_eq!(
+            index.position(4, PositionEncoding::Utf16),
+            Some(Position {
+                line: 0,
+                character: 2
+            })
+        );
+        assert_eq!(
+            index.position(7, PositionEncoding::Utf16),
+            Some(Position {
+                line: 0,
+                character: 3
+            })
+        );
+        assert_eq!(
+            index.position(7, PositionEncoding::Utf8),
+            Some(Position {
+                line: 0,
+                character: 7
+            })
+        );
+        assert_eq!(
+            index.position(9, PositionEncoding::Utf16),
+            Some(Position {
+                line: 1,
+                character: 0
+            })
+        );
+        assert_eq!(
+            index.position(11, PositionEncoding::Utf16),
+            Some(Position {
+                line: 2,
+                character: 0
+            })
+        );
+        for offset in [1, 2, 3, 5, 6, 12] {
+            assert_eq!(index.position(offset, PositionEncoding::Utf16), None);
+        }
+        assert_eq!(
+            index.range(TextRange { start: 7, end: 4 }, PositionEncoding::Utf16),
+            None
+        );
+        assert_eq!(
+            index.range(TextRange { start: 4, end: 7 }, PositionEncoding::Utf16),
+            Some(Range {
+                start: Position {
+                    line: 0,
+                    character: 2
+                },
+                end: Position {
+                    line: 0,
+                    character: 3
+                }
+            })
+        );
+    }
 
     #[test]
     fn positions_handle_non_bmp_and_crlf() {

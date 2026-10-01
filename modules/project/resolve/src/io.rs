@@ -24,6 +24,7 @@ use scan::{canonical_file, collect_pex_files, collect_sources, io, path_key};
 pub const MANIFEST_FILE: &str = "folio.toml";
 
 /// Loaded declarations stay intact here for a later project-to-analysis projection.
+#[derive(Clone)]
 pub struct LoadedProject {
     pub root_key: String,
     pub packages: Vec<LoadedPackage>,
@@ -32,6 +33,7 @@ pub struct LoadedProject {
 }
 
 /// Source text and canonical host identity provided to the analysis adapter.
+#[derive(Clone)]
 pub struct LoadedSourceInput {
     pub package_key: String,
     pub canonical_path: PathBuf,

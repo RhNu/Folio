@@ -1,5 +1,6 @@
 .gitignore
 src/**
+tests/**
 tsconfig.json
 package-lock.json
 out/**/*.map

@@ -295,6 +295,7 @@ dependencies = [
  "folio-hir",
  "folio-papyrus",
  "folio-source",
+ "rowan",
  "salsa",
  "tracing",
 ]
