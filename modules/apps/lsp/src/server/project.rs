@@ -68,7 +68,7 @@ impl Server {
         if !self.initialized || self.shutdown {
             return Ok(());
         }
-        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let generation = self.advance_generation()?;
         let started = Instant::now();
         if refresh_disk || self.disk_project.is_none() {
             // Register candidate paths before reading carriers so missing or ambiguous
@@ -109,7 +109,13 @@ impl Server {
         }
         self.documents.retain_disk_paths(&disk_paths);
         self.add_unsaved_sources(&mut loaded, &disk_paths)?;
-        if loaded.source_inputs.len() != disk_paths.len() {
+        let overlays = self
+            .documents
+            .overlays()
+            .map(|(path, text)| (path.clone(), Arc::<str>::from(text)))
+            .collect::<BTreeMap<_, _>>();
+        let dependency_changed = overlays::apply_dependency_overlays(&mut loaded, &overlays)?;
+        if loaded.source_inputs.len() != disk_paths.len() || dependency_changed {
             metadata = resolve(&loaded.root, &loaded.dependencies)
                 .map_err(|error| LspError::Project(error.to_string()))?;
         }
@@ -145,6 +151,34 @@ impl Server {
             LintConfig::from_rules(&rules).map_err(|error| LspError::Project(error.to_string()))?;
         self.publish(view.clone(), generation, &loaded.root_key, &lint)?;
         self.view = Some(view);
+        self.projected_inputs = Some(loaded);
+        self.refresh_editor()?;
+        Ok(())
+    }
+
+    /// Refresh optional client UI only after its backing snapshot has been published.
+    pub(super) fn refresh_editor(&self) -> Result<(), LspError> {
+        if !self.client_ready {
+            return Ok(());
+        }
+        let generation = self.generation.load(Ordering::SeqCst);
+        if self.declaration_documents {
+            send(
+                &self.output,
+                &json!({"jsonrpc":"2.0","method":"folio/projectChanged","params":{"generation":generation}}),
+            )?;
+        }
+        for (supported, feature) in [
+            (self.code_lens_refresh, "codeLens"),
+            (self.inlay_hint_refresh, "inlayHint"),
+        ] {
+            if supported {
+                send(
+                    &self.output,
+                    &json!({"jsonrpc":"2.0","id":format!("folio/refresh/{feature}/{generation}"),"method":format!("workspace/{feature}/refresh")}),
+                )?;
+            }
+        }
         Ok(())
     }
 

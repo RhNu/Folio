@@ -8,9 +8,22 @@ use folio_build::ProjectAnalysisView;
 use folio_hir::Type;
 use folio_source::{FileId, LineIndex, SourceSpan, TextRange};
 
+mod assist;
 mod external;
+mod navigation;
+mod presentation;
+mod rename;
 mod symbols;
-pub use external::{external_declaration_range, referenced_symbol, symbol_script};
+pub use assist::{CompletionItem, InlayHint, completion, inlay_hints};
+pub use external::{
+    external_declaration_range, external_declaration_symbol, referenced_symbol, symbol_script,
+};
+pub use navigation::{
+    SymbolOccurrence, WorkspaceSymbol, definition_of, document_highlights, implementation_symbols,
+    implementations, implementations_of, references, references_of, symbol_at, workspace_symbols,
+};
+pub use presentation::{DeclarationDocument, declaration_document, hover_symbol};
+pub use rename::{RenameEdit, RenameError, RenameTarget, prepare_rename, rename};
 pub use symbols::{
     DocumentSymbol, SemanticToken, SemanticTokenKind, SignatureInfo, document_symbols,
     semantic_tokens, signature_help, source_declaration,
@@ -294,12 +307,24 @@ impl Documents {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Hover {
     pub content: String,
-    pub span: SourceSpan,
+    pub symbol: Option<folio_hir::Symbol>,
+    pub declaration: String,
+    pub documentation: Option<String>,
+    pub details: Vec<String>,
+    pub span: Option<SourceSpan>,
     pub owner_script: Option<String>,
 }
 
 /// Returns a typed hover from the same semantic facts used by project checks.
 pub fn hover(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Option<Hover> {
+    if let Some(occurrence) = symbol_at(view, file, byte) {
+        if let Some(mut result) =
+            presentation::hover_at_definition(view, &occurrence.symbol, occurrence.definition)
+        {
+            result.span = Some(occurrence.span);
+            return Some(result);
+        }
+    }
     let script = view.analysis.hir(file)?;
     if let Some(name) = &script.name
         && name.span.range.start <= byte
@@ -310,8 +335,12 @@ pub fn hover(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Option<Ho
             .as_ref()
             .map_or(String::new(), |parent| format!(" extends {}", parent.text));
         return Some(Hover {
+            symbol: None,
+            declaration: format!("script {}{parent}", name.text),
+            documentation: None,
+            details: Vec::new(),
             content: format!("script {}{parent}", name.text),
-            span: name.span,
+            span: Some(name.span),
             owner_script: Some(name.text.clone()),
         });
     }
@@ -320,8 +349,12 @@ pub fn hover(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Option<Ho
         && byte < parent.span.range.end
     {
         return Some(Hover {
+            symbol: None,
+            declaration: format!("script {}", parent.text),
+            documentation: None,
+            details: Vec::new(),
             content: format!("script {}", parent.text),
-            span: parent.span,
+            span: Some(parent.span),
             owner_script: Some(parent.text.clone()),
         });
     }
@@ -330,21 +363,67 @@ pub fn hover(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Option<Ho
     }) {
         let content = symbols::describe_symbol(&script, &declaration.symbol, &declaration.ty);
         return Some(Hover {
+            symbol: Some(declaration.symbol.clone()),
+            declaration: content.clone(),
+            documentation: None,
+            details: Vec::new(),
             content,
-            span: declaration.span,
+            span: Some(declaration.span),
             owner_script: symbols::owner_script(&declaration.symbol),
         });
     }
     if let Some((name, span)) = symbols::script_reference(view, file, byte) {
         return Some(Hover {
+            symbol: None,
+            declaration: format!("script {name}"),
+            documentation: None,
+            details: Vec::new(),
             content: format!("script {name}"),
-            span,
+            span: Some(span),
             owner_script: Some(name),
         });
+    }
+    if let Some(parse) = view.analysis.parse(file) {
+        for node in parse
+            .syntax()
+            .descendants()
+            .filter(|node| node.kind() == folio_papyrus::SyntaxKind::StateDecl)
+        {
+            let Some(token) = node
+                .children_with_tokens()
+                .filter_map(|item| item.into_token())
+                .filter(|token| token.kind() == folio_papyrus::SyntaxKind::Ident)
+                .find(|token| {
+                    !token.text().eq_ignore_ascii_case("state")
+                        && !token.text().eq_ignore_ascii_case("auto")
+                })
+            else {
+                continue;
+            };
+            let range = symbols::token_range(&token);
+            if range.start <= byte && byte < range.end {
+                let declaration = folio_papyrus::declaration_header(&node);
+                return Some(Hover {
+                    content: declaration.clone(),
+                    declaration,
+                    documentation: folio_papyrus::declaration_documentation(&node),
+                    details: vec!["Runtime state".into()],
+                    symbol: None,
+                    span: Some(SourceSpan { file, range }),
+                    owner_script: script.name.as_ref().map(|item| item.text.clone()),
+                });
+            }
+        }
     }
     let fact = script.expression_at(byte)?;
     if fact.ty == Type::Error {
         return None;
+    }
+    if let folio_hir::ExpressionKind::Member { owner, name } = &fact.kind {
+        if let Some(mut hover) = presentation::intrinsic_hover(&name.text, Some(&owner.ty)) {
+            hover.span = Some(name.span);
+            return Some(hover);
+        }
     }
     let content = fact.binding.as_ref().map_or_else(
         || display_type(&fact.ty),
@@ -355,8 +434,12 @@ pub fn hover(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Option<Ho
         .as_ref()
         .map_or(fact.span, |binding| binding.name.span);
     Some(Hover {
+        symbol: fact.binding.as_ref().map(|binding| binding.symbol.clone()),
+        declaration: content.clone(),
+        documentation: None,
+        details: Vec::new(),
         content,
-        span,
+        span: Some(span),
         owner_script: fact
             .binding
             .as_ref()

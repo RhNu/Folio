@@ -19,7 +19,7 @@ fn node_range(node: &SyntaxNode) -> TextRange {
     }
 }
 
-fn token_range(token: &folio_papyrus::SyntaxToken) -> TextRange {
+pub(crate) fn token_range(token: &folio_papyrus::SyntaxToken) -> TextRange {
     let range = token.text_range();
     TextRange {
         start: usize::from(range.start()),
@@ -51,7 +51,7 @@ fn symbol_name(symbol: &Symbol) -> &str {
     }
 }
 
-fn find_member<'a>(script: &'a Script, symbol: &Symbol) -> Option<&'a MemberFact> {
+pub(crate) fn find_member<'a>(script: &'a Script, symbol: &Symbol) -> Option<&'a MemberFact> {
     script
         .members
         .iter()
@@ -60,7 +60,7 @@ fn find_member<'a>(script: &'a Script, symbol: &Symbol) -> Option<&'a MemberFact
         .find(|member| &member.symbol == symbol)
 }
 
-fn signature(member: &MemberFact) -> String {
+pub(crate) fn signature(member: &MemberFact) -> String {
     let name = symbol_name(&member.symbol);
     let args = member
         .parameters
@@ -86,7 +86,7 @@ fn signature(member: &MemberFact) -> String {
         MemberKind::Function { .. } => {
             format!("{} Function {name}({args})", display_type(&member.ty))
         }
-        MemberKind::Property { .. } => format!("{} {name} Property", display_type(&member.ty)),
+        MemberKind::Property { .. } => format!("{} Property {name}", display_type(&member.ty)),
         MemberKind::Variable => format!("{} {name}", display_type(&member.ty)),
     };
     if member.flags.is_empty() {
@@ -104,12 +104,11 @@ pub(crate) fn describe_symbol(script: &Script, symbol: &Symbol, ty: &Type) -> St
     } else {
         match symbol {
             Symbol::Script(name) => format!("script {name}"),
-            Symbol::Intrinsic { name } if name.eq_ignore_ascii_case("GetState") => {
-                "String Function GetState()".into()
-            }
-            Symbol::Intrinsic { name } if name.eq_ignore_ascii_case("GotoState") => {
-                "Function GotoState(String stateName)".into()
-            }
+            Symbol::Intrinsic { name } => crate::presentation::intrinsic_hover(name, None)
+                .map_or_else(
+                    || format!("{name}: {}", display_type(ty)),
+                    |hover| hover.declaration,
+                ),
             _ => format!("{}: {}", symbol_name(symbol), display_type(ty)),
         }
     };
@@ -316,6 +315,13 @@ pub fn semantic_tokens(view: &ProjectAnalysisView, file: FileId) -> Vec<Semantic
         add(declaration.span.range, kind, true, readonly);
     }
     for expression in &script.expressions {
+        if let ExpressionKind::Member { owner, name } = &expression.kind {
+            if folio_analysis::intrinsic_signature(&name.text, Some(&owner.ty))
+                .is_some_and(|signature| !signature.callable)
+            {
+                add(name.span.range, SemanticTokenKind::Property, false, true);
+            }
+        }
         if let Some(binding) = &expression.binding {
             let kind = classify(&script, &binding.symbol);
             let readonly = find_member(&script, &binding.symbol).is_some_and(|item| {
@@ -329,6 +335,17 @@ pub fn semantic_tokens(view: &ProjectAnalysisView, file: FileId) -> Vec<Semantic
             });
             add(binding.name.span.range, kind, false, readonly);
         }
+    }
+    for occurrence in crate::navigation::occurrences(view, file)
+        .into_iter()
+        .filter(|item| matches!(item.symbol, Symbol::Parameter { .. }))
+    {
+        add(
+            occurrence.span.range,
+            SemanticTokenKind::Parameter,
+            occurrence.definition == Some(occurrence.span),
+            false,
+        );
     }
     tokens.into_values().collect()
 }
@@ -457,6 +474,8 @@ pub struct SignatureInfo {
     pub label: String,
     pub parameters: Vec<String>,
     pub active_parameter: usize,
+    pub documentation: Option<String>,
+    pub symbol: Option<Symbol>,
 }
 
 /// Uses the innermost typed call and its declaration-order argument map.
@@ -485,7 +504,8 @@ pub fn signature_help(
         return None;
     };
     let binding = callee.binding.as_ref()?;
-    let member = find_member(&script, &binding.symbol)?;
+    let intrinsic = crate::presentation::intrinsic_call_member(callee);
+    let member = find_member(&script, &binding.symbol).or(intrinsic.as_ref())?;
     if !matches!(member.kind, MemberKind::Function { .. }) {
         return None;
     }
@@ -498,8 +518,22 @@ pub fn signature_help(
         .copied()
         .unwrap_or(source_index)
         .min(member.parameters.len().saturating_sub(1));
+    let presentation = crate::hover_symbol(view, &binding.symbol);
+    let documentation = presentation.as_ref().and_then(|hover| {
+        let mut parts = hover.documentation.iter().cloned().collect::<Vec<_>>();
+        parts.extend(
+            hover
+                .details
+                .iter()
+                .filter(|detail| detail.contains("not recoverable"))
+                .cloned(),
+        );
+        (!parts.is_empty()).then(|| parts.join("\n\n"))
+    });
     Some(SignatureInfo {
-        label: signature(member),
+        documentation,
+        symbol: Some(binding.symbol.clone()),
+        label: presentation.map_or_else(|| signature(member), |hover| hover.declaration),
         parameters: member
             .parameters
             .iter()

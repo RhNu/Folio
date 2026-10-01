@@ -143,16 +143,11 @@ impl<'a> Scope<'a> {
         name: &NameRef,
     ) -> (Type, Option<Binding>) {
         if let Type::Array(_) = &owner.ty
-            && name.text.eq_ignore_ascii_case("length")
-        {
-            return (Type::Int, None);
-        }
-        if let Type::Array(_) = &owner.ty
-            && (name.text.eq_ignore_ascii_case("find") || name.text.eq_ignore_ascii_case("rfind"))
+            && let Some(signature) = crate::intrinsic_signature(&name.text, Some(&owner.ty))
         {
             return (
-                Type::Int,
-                Some(Binding {
+                signature.result,
+                signature.callable.then(|| Binding {
                     name: name.clone(),
                     symbol: Symbol::Intrinsic {
                         name: name.text.clone(),

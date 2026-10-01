@@ -18,7 +18,7 @@ Salsa reuses queries within a process; the disk cache reuses artifacts across pr
 
 Disk fingerprints cover compiler identity, root source text, normalized declaration APIs, dependency entry order and provider selection, target rules, user flags, and settings that affect output. Parameter defaults and unknown API facts are part of the declaration API digest.
 
-Provenance labels, historical source locations, carrier encoding, semantically irrelevant script or member ordering, and absolute host paths are excluded from the API digest. Invalidation remains conservative: one changed semantic input may rebuild the entire build instance. Corrupt cache entries or mismatched digests are discarded and rebuilt.
+Provenance labels, historical source locations, declaration documentation, schema-only upgrades, carrier encoding, semantically irrelevant script or member ordering, and absolute host paths are excluded from the API digest. Root source text still contributes in full. Invalidation remains conservative: one changed semantic input may rebuild the entire build instance. Corrupt cache entries or mismatched digests are discarded and rebuilt.
 
 ## Physical snapshots and publication checks
 

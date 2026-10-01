@@ -22,6 +22,7 @@ pub(super) struct FileAnalysis {
 pub(super) struct Analysis {
     files: BTreeMap<FileId, FileAnalysis>,
     pub project_diagnostics: Vec<Diagnostic>,
+    world: World,
 }
 
 impl Analysis {
@@ -63,13 +64,7 @@ fn key(name: &str) -> String {
 }
 
 fn state_runtime_intrinsic_type(name: &str) -> Option<Type> {
-    if name.eq_ignore_ascii_case("GetState") {
-        Some(Type::String)
-    } else if name.eq_ignore_ascii_case("GotoState") {
-        Some(Type::Void)
-    } else {
-        None
-    }
+    crate::intrinsic_signature(name, None).map(|signature| signature.result)
 }
 
 fn span(file: FileId, node: &SyntaxNode) -> SourceSpan {
@@ -193,6 +188,9 @@ pub(super) fn analyze_with_cancel(
     let mut analysis = Analysis {
         files: BTreeMap::new(),
         project_diagnostics: Vec::new(),
+        world: World {
+            scripts: BTreeMap::new(),
+        },
     };
     let mut world = World {
         scripts: BTreeMap::new(),
@@ -766,6 +764,7 @@ pub(super) fn analyze_with_cancel(
         external_scripts = world.scripts.len() - file_scripts.len(),
         "semantic analysis complete"
     );
+    analysis.world = world;
     Ok(analysis)
 }
 
@@ -834,9 +833,11 @@ fn direct_expressions(node: &SyntaxNode) -> impl Iterator<Item = SyntaxNode> + '
     node.children().filter(|child| is_expression(child.kind()))
 }
 
+mod editor;
 mod file;
 mod scope;
 mod world;
+pub(super) use editor::completion_candidates;
 
 use file::analyze_file;
 use world::*;

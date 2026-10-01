@@ -39,10 +39,31 @@
         "path": "./syntaxes/papyrus.tmLanguage.json"
       }
     ],
+    "semanticTokenScopes": [
+      {
+        "language": "papyrus",
+        "scopes": {
+          "class": ["entity.name.type.class.papyrus"],
+          "type": ["storage.type.papyrus"],
+          "namespace": ["entity.name.namespace.papyrus"],
+          "function": ["entity.name.function.papyrus"],
+          "method": ["entity.name.function.papyrus"],
+          "event": ["entity.name.function.event.papyrus"],
+          "property": ["variable.other.property.papyrus"],
+          "variable": ["variable.other.readwrite.papyrus"],
+          "variable.readonly": ["variable.other.constant.papyrus"],
+          "parameter": ["variable.parameter.papyrus"]
+        }
+      }
+    ],
     "commands": [
       {
         "command": "folio.restartServer",
         "title": "Folio: Restart Language Server"
+      },
+      {
+        "command": "folio.showOutput",
+        "title": "Folio: Show Language Server Output"
       }
     ],
     "configuration": {
@@ -65,6 +86,34 @@
           "default": "info",
           "scope": "resource",
           "description": "Rust tracing filter passed to folio lsp; logs are written to stderr."
+        },
+        "folio.editor.hover.documentation": {
+          "type": "boolean", "default": true, "scope": "resource",
+          "description": "Show Papyrus documentation in hover and completion details. Applies without restarting the language server."
+        },
+        "folio.editor.hover.details": {
+          "type": "boolean", "default": true, "scope": "resource",
+          "description": "Show the symbol owner, selected provider, source and navigation links in hover. Applies without restarting the language server."
+        },
+        "folio.editor.codeLens.enabled": {
+          "type": "boolean", "default": true, "scope": "resource",
+          "description": "Show Folio CodeLens above declarations. Applies without restarting the language server."
+        },
+        "folio.editor.codeLens.references": {
+          "type": "boolean", "default": true, "scope": "resource",
+          "description": "Show project reference counts in Folio CodeLens."
+        },
+        "folio.editor.codeLens.implementations": {
+          "type": "boolean", "default": true, "scope": "resource",
+          "description": "Show inheritance and implementation navigation in Folio CodeLens."
+        },
+        "folio.editor.codeLens.source": {
+          "type": "boolean", "default": true, "scope": "resource",
+          "description": "Show source and declaration links in Folio CodeLens."
+        },
+        "folio.editor.inlayHints.parameterNames": {
+          "type": "boolean", "default": true, "scope": "resource",
+          "description": "Show parameter name hints for positional Papyrus call arguments. VS Code's editor.inlayHints.enabled setting also applies."
         }
       }
     }
@@ -72,6 +121,7 @@
   "scripts": {
     "compile": "tsc -p .",
     "check": "tsc -p . --noEmit",
+    "test": "npm run compile && node --test tests/editorOptions.cjs",
     "vscode:prepublish": "npm run compile",
     "package": "vsce package",
     "publish": "vsce publish"

@@ -10,7 +10,17 @@ use folio_papyrus::{Declaration, LocatedDeclaration, PapyrusDialect, Parse};
 use folio_source::{FileId, LineIndex, Revision, SourceSpan};
 use salsa::Setter as _;
 
+mod intrinsics;
 mod semantic;
+pub use intrinsics::{IntrinsicSignature, intrinsic_signature};
+
+/// Visible semantic name with an optional real source definition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompletionCandidate {
+    pub symbol: folio_hir::Symbol,
+    pub ty: Type,
+    pub definition: Option<SourceSpan>,
+}
 
 /// An analysis request was abandoned before its result was published to the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,6 +321,28 @@ pub struct AnalysisView {
 }
 
 impl AnalysisView {
+    /// Selected immutable API snapshots, including documentation and provenance.
+    pub fn external_declarations(&self) -> &[DeclarationBundle] {
+        &self.external_declarations
+    }
+
+    pub fn user_flags(&self) -> &[String] {
+        &self.user_flags
+    }
+    pub fn fill_missing_arguments(&self) -> bool {
+        self.fill_missing_arguments
+    }
+
+    /// Enumerates names through the same selected world and lookup precedence as checking.
+    pub fn completion_candidates(
+        &self,
+        file: FileId,
+        byte: usize,
+        receiver: Option<&Type>,
+        global: bool,
+    ) -> Vec<CompletionCandidate> {
+        semantic::completion_candidates(self, file, byte, receiver, global)
+    }
     fn semantic(&self) -> &semantic::Analysis {
         self.semantic.get_or_init(|| semantic::analyze(self))
     }

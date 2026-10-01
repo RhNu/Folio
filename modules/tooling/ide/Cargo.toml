@@ -6,6 +6,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+folio-analysis = { path = "../../compiler/analysis" }
+folio-format-declarations = { path = "../../formats/declarations" }
+folio-diagnostics = { path = "../../foundation/diagnostics" }
 folio-build = { path = "../../project/build" }
 folio-hir = { path = "../../compiler/hir" }
 folio-papyrus = { path = "../../languages/papyrus" }

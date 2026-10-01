@@ -26,6 +26,8 @@ pub struct Origin {
 pub struct Script {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     #[serde(default)]
     pub is_native: bool,
@@ -46,6 +48,8 @@ pub struct Script {
 #[serde(deny_unknown_fields)]
 pub struct State {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<String>,
     #[serde(default)]
     pub auto: bool,
     #[serde(default)]
@@ -56,6 +60,8 @@ pub struct State {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flags: Vec<String>,
     #[serde(flatten)]

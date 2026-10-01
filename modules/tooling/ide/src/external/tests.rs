@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn inverse_declaration_navigation_preserves_state_and_type_owner() {
+    let text = "Scriptname Child Extends Base\nBase Property Owner Auto\nState Busy\n Function Work()\n EndFunction\nEndState\n";
+    assert_eq!(
+        external_declaration_symbol(text, text.find("Work").unwrap()),
+        Some(Symbol::StateMember {
+            script: "Child".into(),
+            state: "Busy".into(),
+            name: "Work".into()
+        })
+    );
+    assert_eq!(
+        external_declaration_symbol(text, text.find("Base").unwrap()),
+        Some(Symbol::Script("Base".into()))
+    );
+    assert_eq!(
+        external_declaration_symbol(text, text.find("Owner").unwrap()),
+        Some(Symbol::Member {
+            script: "Child".into(),
+            name: "Owner".into()
+        })
+    );
+}
+
+#[test]
 fn locates_inherited_member_in_its_state_and_ignores_body_locals() {
     let text = "ScriptName Base\nFunction Pulse()\n Int value\nEndFunction\nState Busy\n Function Pulse() Native\nEndState\n";
     let symbol = Symbol::StateMember {

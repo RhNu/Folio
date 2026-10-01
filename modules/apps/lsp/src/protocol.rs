@@ -129,7 +129,7 @@ pub(super) fn path_to_uri(path: &Path) -> String {
     result
 }
 
-fn percent_decode(text: &str) -> Option<String> {
+pub(super) fn percent_decode(text: &str) -> Option<String> {
     let mut bytes = Vec::with_capacity(text.len());
     let source = text.as_bytes();
     let mut index = 0;

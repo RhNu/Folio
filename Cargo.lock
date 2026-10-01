@@ -419,7 +419,10 @@ dependencies = [
 name = "folio-ide"
 version = "0.2.0"
 dependencies = [
+ "folio-analysis",
  "folio-build",
+ "folio-diagnostics",
+ "folio-format-declarations",
  "folio-hir",
  "folio-papyrus",
  "folio-source",
@@ -452,9 +455,13 @@ dependencies = [
 name = "folio-lsp"
 version = "0.2.0"
 dependencies = [
+ "folio-analysis",
  "folio-build",
+ "folio-declaration-tools",
  "folio-diagnostics",
  "folio-format",
+ "folio-format-declarations",
+ "folio-hir",
  "folio-ide",
  "folio-lint",
  "folio-papyrus",

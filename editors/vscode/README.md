@@ -1,6 +1,6 @@
 # Folio for VS Code
 
-This extension provides Papyrus `.psc` file icons and syntax highlighting, and connects to `folio lsp` for diagnostics, hover with provider information, definition and declaration navigation, signature help, document symbols, semantic highlighting, and document formatting.
+This extension provides Papyrus `.psc` file icons and syntax highlighting, and connects to `folio lsp` for diagnostics, rich declaration hover, completion, signature help, references, inheritance navigation, CodeLens, parameter hints, verified rename, document and workspace symbols, semantic highlighting, and document formatting.
 
 TextMate highlighting uses conventional scopes. The server refines resolved functions, events, types, properties, parameters, and variables with standard VS Code semantic token types. The packaged `icons/papyrus-psc.svg` is the default Papyrus language icon; a theme's specific `.psc` or Papyrus icon takes precedence, and the theme must allow language icons for the default to appear.
 
@@ -24,7 +24,19 @@ Open a folder containing `folio.toml`. One client session serves `.psc` files in
 
 The server also registers watches for resolved manifests, source directories, and declaration carriers outside the folder, updating registrations after dependency changes. Watches include local repository files and candidate paths that do not yet exist. Opening or reopening identical text reuses the session's semantic view; saves and watch events refresh disk inputs.
 
-Definition and declaration navigation in root sources and PSC directory dependencies leads to the selected real `.psc` source. Declaration files, repository entries, and PEX dependencies expose provider information without treating historical source locations as files on the local machine.
+Definition and declaration navigation in root sources and PSC directory dependencies leads to the selected real `.psc` source. Unsaved edits to existing PSC dependency declarations update their API and navigation positions without analyzing dependency bodies. Declaration files, repository entries, and PEX dependencies open a read-only API view with selected provider information. Historical generation paths are descriptive and never treated as files on the local machine. Open declaration views refresh when project inputs change or the server reconnects.
+
+## Editor information and navigation
+
+Hover begins with the owning script and selected package/source, followed by a complete declaration colored by the current theme. Declaration documentation, extra facts, and navigation links have separate sections. Papyrus `{ ... }` documentation is available from local sources, direct PSC dependencies, and newly generated declaration files. Existing PEX documentation strings are also preserved. Old declaration files remain readable; regenerate them to recover documentation from the original sources.
+
+CodeLens above script headers shows source context, parent navigation, derived scripts, and project references. Above members it shows references and callable overrides. Clicking a count opens the corresponding locations. Reference counts cover root project code and open root buffers; they do not count runtime calls or dependency bodies.
+
+Completion follows visible local, inherited, imported, and selected dependency declarations. Signature help includes defaults and documentation. Parameter-name hints omit named arguments and obvious labels. Use the normal VS Code definition, references, implementation, symbol search, and rename actions.
+
+Rename handles locals, parameters, and verifiable root members after checking conflicts and reanalyzing the proposed changes. Scripts, state members, native/event APIs, inherited or overridden APIs, dependency declarations, and unresolved projects are rejected. Runtime strings and consumers outside the project still require review.
+
+The Folio status item opens the output panel. **Folio: Show Language Server Output** and **Folio: Restart Language Server** are also available in the Command Palette.
 
 ## Settings
 
@@ -33,8 +45,15 @@ Definition and declaration navigation in root sources and PSC directory dependen
 | `folio.server.path` | Absolute path to the Folio executable or its directory; lookup continues to `PATH` if unavailable |
 | `folio.server.manifestPath` | Optional manifest path, absolute or relative to the open folder; empty uses the folder's `folio.toml` |
 | `folio.server.logFilter` | Server logging filter; defaults to `info` |
+| `folio.editor.hover.documentation` | Show declaration documentation; defaults to `true` |
+| `folio.editor.hover.details` | Show provider facts, limitations, and navigation links; defaults to `true` |
+| `folio.editor.codeLens.enabled` | Enable Folio CodeLens; defaults to `true` |
+| `folio.editor.codeLens.references` | Show project reference counts; defaults to `true` |
+| `folio.editor.codeLens.implementations` | Show parent, derived-script, and override navigation; defaults to `true` |
+| `folio.editor.codeLens.source` | Show script source context; defaults to `true` |
+| `folio.editor.inlayHints.parameterNames` | Show parameter-name hints; defaults to `true` |
 
-Changing these settings restarts the server. Lookup checks `folio.server.path` and then `PATH`. Only an extension development session falls back to the repository's `target/debug/folio` or `folio.exe`.
+Changing `folio.server.*` settings restarts the server. Editor settings apply live. VS Code's own `editor.codeLens` and `editor.inlayHints.enabled` settings also control visibility. Lookup checks `folio.server.path` and then `PATH`. Only an extension development session falls back to the repository's `target/debug/folio` or `folio.exe`.
 
 If the configured location is unavailable, the output panel records the source actually used. LSP messages use stdout and logs use stderr. Projects outside the repository can use a Folio executable on `PATH` or an explicit `folio.server.path`.
 
@@ -51,4 +70,4 @@ Restart the F5 session after changing extension or Rust code. **Folio: Restart L
 
 `npm run publish` compiles the client and invokes `vsce publish` to upload it to the VS Code Marketplace. The `folio-local` publisher in `package.json` is a local testing placeholder. Before publishing, select a registered publisher ID, update the version, and configure authentication according to the [VS Code publishing guide](https://code.visualstudio.com/api/working-with-extensions/publishing-extension). Publishing credentials are not stored in this repository.
 
-The shared server behavior and protocol boundaries are described in [Tools and editor services](../../docs/architecture/tooling.md).
+The shared server behavior and protocol boundaries are described in `docs/architecture/tooling.md` in the Folio repository.

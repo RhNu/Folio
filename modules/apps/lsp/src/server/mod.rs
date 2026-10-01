@@ -20,8 +20,12 @@ use std::{
 };
 
 mod diagnostics;
+mod editor;
+mod overlays;
+mod presentation;
 mod project;
 mod requests;
+mod settings;
 
 /// Session inputs and publication state shared by handlers and navigation workers.
 pub(super) struct Server {
@@ -32,6 +36,7 @@ pub(super) struct Server {
     documents: Documents,
     project: ProjectAnalysis,
     disk_project: Option<(LoadedProject, Metadata)>,
+    projected_inputs: Option<LoadedProject>,
     view: Option<Arc<ProjectAnalysisView>>,
     metadata: Option<Arc<Metadata>>,
     paths: BTreeMap<PathBuf, FileId>,
@@ -44,10 +49,17 @@ pub(super) struct Server {
     last_error: Option<String>,
     encoding: PositionEncoding,
     generation: Arc<AtomicU64>,
+    publication: Arc<Mutex<()>>,
     cancelled: Arc<Mutex<BTreeSet<String>>>,
     pending: Arc<Mutex<BTreeSet<String>>>,
     initialized: bool,
     shutdown: bool,
+    editor_settings: settings::EditorSettings,
+    markdown: bool,
+    client_commands: bool,
+    declaration_documents: bool,
+    code_lens_refresh: bool,
+    inlay_hint_refresh: bool,
 }
 
 impl Server {
@@ -65,6 +77,7 @@ impl Server {
             documents: Documents::default(),
             project: ProjectAnalysis::new(),
             disk_project: None,
+            projected_inputs: None,
             view: None,
             metadata: None,
             paths: BTreeMap::new(),
@@ -77,10 +90,17 @@ impl Server {
             last_error: None,
             encoding: PositionEncoding::Utf16,
             generation: Arc::new(AtomicU64::new(0)),
+            publication: Arc::new(Mutex::new(())),
             cancelled: Arc::new(Mutex::new(BTreeSet::new())),
             pending: Arc::new(Mutex::new(BTreeSet::new())),
             initialized: false,
             shutdown: false,
+            editor_settings: settings::EditorSettings::default(),
+            markdown: false,
+            client_commands: false,
+            declaration_documents: false,
+            code_lens_refresh: false,
+            inlay_hint_refresh: false,
         }
     }
 
@@ -99,6 +119,27 @@ impl Server {
         match method {
             "initialize" => {
                 self.encoding = negotiate_encoding(params);
+                self.editor_settings =
+                    settings::EditorSettings::read(&params["initializationOptions"]);
+                self.client_commands = params["initializationOptions"]["folio"]["clientCommands"]
+                    .as_bool()
+                    == Some(true);
+                self.declaration_documents =
+                    params["initializationOptions"]["folio"]["declarationDocuments"].as_bool()
+                        == Some(true);
+                self.markdown = params["capabilities"]["textDocument"]["hover"]["contentFormat"]
+                    .as_array()
+                    .is_some_and(|formats| {
+                        formats
+                            .iter()
+                            .any(|format| format.as_str() == Some("markdown"))
+                    });
+                self.code_lens_refresh =
+                    params["capabilities"]["workspace"]["codeLens"]["refreshSupport"].as_bool()
+                        == Some(true);
+                self.inlay_hint_refresh =
+                    params["capabilities"]["workspace"]["inlayHint"]["refreshSupport"].as_bool()
+                        == Some(true);
                 let watches = &params["capabilities"]["workspace"]["didChangeWatchedFiles"];
                 self.dynamic_watches = watches["dynamicRegistration"].as_bool() == Some(true)
                     && watches["relativePatternSupport"].as_bool() == Some(true);
@@ -117,7 +158,7 @@ impl Server {
                 if let Some(id) = id {
                     send(
                         &self.output,
-                        &json!({"jsonrpc":"2.0","id":id,"result":{"capabilities":{"positionEncoding":name,"textDocumentSync":{"openClose":true,"change":2,"save":{"includeText":false}},"hoverProvider":true,"definitionProvider":true,"declarationProvider":true,"documentSymbolProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","],"retriggerCharacters":[","]},"semanticTokensProvider":{"legend":{"tokenTypes":["class","type","namespace","function","method","event","property","variable","parameter"],"tokenModifiers":["declaration","readonly"]},"full":true},"documentFormattingProvider":true},"serverInfo":{"name":"Folio","version":env!("CARGO_PKG_VERSION")}}}),
+                        &json!({"jsonrpc":"2.0","id":id,"result":{"capabilities":{"positionEncoding":name,"textDocumentSync":{"openClose":true,"change":2,"save":{"includeText":false}},"hoverProvider":true,"definitionProvider":true,"declarationProvider":true,"implementationProvider":true,"referencesProvider":true,"documentHighlightProvider":true,"workspaceSymbolProvider":true,"completionProvider":{"triggerCharacters":[".","("],"resolveProvider":true},"renameProvider":{"prepareProvider":true},"codeLensProvider":{"resolveProvider":true},"inlayHintProvider":true,"documentSymbolProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","],"retriggerCharacters":[","]},"semanticTokensProvider":{"legend":{"tokenTypes":["class","type","namespace","function","method","event","property","variable","parameter"],"tokenModifiers":["declaration","readonly"]},"full":true},"documentFormattingProvider":true},"serverInfo":{"name":"Folio","version":env!("CARGO_PKG_VERSION")}}}),
                     )?;
                 }
                 tracing::info!(encoding = name, "LSP initialized");
@@ -128,13 +169,17 @@ impl Server {
             }
             "shutdown" => {
                 self.shutdown = true;
-                self.generation.fetch_add(1, Ordering::SeqCst);
+                self.advance_generation()?;
                 if let Some(id) = id {
                     self.reply(id, Value::Null)?;
                 }
             }
             "exit" => return Ok(true),
             "$/cancelRequest" => {
+                let _publication = self
+                    .publication
+                    .lock()
+                    .map_err(|_| LspError::Protocol("publication lock poisoned".into()))?;
                 if let Some(id) = params.get("id") {
                     let key = id.to_string();
                     let pending = self
@@ -209,16 +254,36 @@ impl Server {
             }
             "textDocument/didSave" => self.reload_report(true)?,
             "workspace/didChangeWatchedFiles" => self.reload_report(true)?,
-            "textDocument/hover" | "textDocument/definition" | "textDocument/declaration" => {
+            "workspace/didChangeConfiguration" => {
+                self.editor_settings = settings::EditorSettings::read(&params["settings"]);
+                self.advance_generation()?;
+                self.refresh_editor()?;
+                tracing::debug!(?self.editor_settings, "updated editor presentation settings");
+            }
+            "textDocument/hover"
+            | "textDocument/definition"
+            | "textDocument/declaration"
+            | "textDocument/implementation"
+            | "textDocument/references"
+            | "textDocument/documentHighlight"
+            | "workspace/symbol"
+            | "textDocument/completion"
+            | "completionItem/resolve"
+            | "textDocument/codeLens"
+            | "codeLens/resolve"
+            | "textDocument/inlayHint"
+            | "textDocument/prepareRename"
+            | "textDocument/rename"
+            | "folio/declarationContent" => {
                 if let Some(id) = id {
-                    self.navigation(id, method, params)?;
+                    self.editor_request(id, method, params)?;
                 }
             }
             "textDocument/signatureHelp"
             | "textDocument/documentSymbol"
             | "textDocument/semanticTokens/full" => {
                 if let Some(id) = id {
-                    self.symbol_request(id, method, params)?;
+                    self.editor_request(id, method, params)?;
                 }
             }
             "textDocument/formatting" => {
@@ -242,6 +307,15 @@ impl Server {
             &self.output,
             &json!({"jsonrpc":"2.0","id":id,"result":result}),
         )
+    }
+
+    /// Invalidation and final worker publication share a barrier to close the stale-send race.
+    fn advance_generation(&self) -> Result<u64, LspError> {
+        let _publication = self
+            .publication
+            .lock()
+            .map_err(|_| LspError::Protocol("publication lock poisoned".into()))?;
+        Ok(self.generation.fetch_add(1, Ordering::SeqCst) + 1)
     }
 
     fn error(&self, id: Value, code: i32, message: &str) -> Result<(), LspError> {

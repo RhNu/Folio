@@ -57,33 +57,41 @@
           }
         },
         {
-          "match": "(?i)\\b(Event)\\s+([A-Za-z_][A-Za-z_0-9]*)",
+          "begin": "(?i)\\b(Event)[ \\t]+([A-Za-z_][A-Za-z_0-9]*)[ \\t]*(\\()",
+          "end": "\\)|(?i)(?=\\bEndEvent\\b)",
+          "beginCaptures": {
+            "1": { "name": "keyword.declaration.function.papyrus" },
+            "2": { "name": "entity.name.function.event.papyrus" },
+            "3": { "name": "punctuation.section.parameters.begin.papyrus" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.section.parameters.end.papyrus" } },
+          "patterns": [{ "include": "#parameters" }]
+        },
+        {
+          "begin": "(?i)(?:(\\b[A-Za-z_][A-Za-z_0-9]*(?:[ \\t]*\\[[ \\t]*\\])?)[ \\t]+)?\\b(Function)[ \\t]+([A-Za-z_][A-Za-z_0-9]*)[ \\t]*(\\()",
+          "end": "\\)|(?i)(?=\\bEndFunction\\b)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.papyrus" },
+            "2": { "name": "keyword.declaration.function.papyrus" },
+            "3": { "name": "entity.name.function.papyrus" },
+            "4": { "name": "punctuation.section.parameters.begin.papyrus" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.section.parameters.end.papyrus" } },
+          "patterns": [{ "include": "#parameters" }]
+        },
+        {
+          "match": "(?i)\\b([A-Za-z_][A-Za-z_0-9]*(?:[ \\t]*\\[[ \\t]*\\])?)[ \\t]+(Property)[ \\t]+([A-Za-z_][A-Za-z_0-9]*)\\b",
+          "captures": {
+            "1": { "name": "storage.type.papyrus" },
+            "2": { "name": "keyword.declaration.papyrus" },
+            "3": { "name": "variable.other.property.papyrus" }
+          }
+        },
+        {
+          "match": "(?i)\\b(Function|Event)[ \\t]+([A-Za-z_][A-Za-z_0-9]*)",
           "captures": {
             "1": { "name": "keyword.declaration.function.papyrus" },
             "2": { "name": "entity.name.function.papyrus" }
-          }
-        },
-        {
-          "match": "(?i)(?:(\\b[A-Za-z_][A-Za-z_0-9]*(?:\\[\\])?)\\s+)?\\b(Function)\\s+([A-Za-z_][A-Za-z_0-9]*)",
-          "captures": {
-            "1": { "name": "storage.type.papyrus" },
-            "2": { "name": "keyword.declaration.function.papyrus" },
-            "3": { "name": "entity.name.function.papyrus" }
-          }
-        },
-        {
-          "match": "(?i)\\b([A-Za-z_][A-Za-z_0-9]*(?:\\[\\])?)\\s+([A-Za-z_][A-Za-z_0-9]*)\\s+(Property)\\b",
-          "captures": {
-            "1": { "name": "storage.type.papyrus" },
-            "2": { "name": "variable.other.property.papyrus" },
-            "3": { "name": "keyword.declaration.papyrus" }
-          }
-        },
-        {
-          "match": "(?i)(?<=\\(|,)\\s*([A-Za-z_][A-Za-z_0-9]*(?:\\[\\])?)\\s+([A-Za-z_][A-Za-z_0-9]*)(?=\\s*(?:[,=)]))",
-          "captures": {
-            "1": { "name": "storage.type.papyrus" },
-            "2": { "name": "variable.parameter.papyrus" }
           }
         },
         {
@@ -93,6 +101,24 @@
             "2": { "name": "variable.other.readwrite.papyrus" }
           }
         }
+      ]
+    },
+    "parameters": {
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#strings" },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z_0-9]*(?:[ \\t]*\\[[ \\t]*\\])?)[ \\t]+([A-Za-z_][A-Za-z_0-9]*)(?=[ \\t]*(?:[,=)]|\\\\|$))",
+          "captures": {
+            "1": { "name": "storage.type.papyrus" },
+            "2": { "name": "variable.parameter.papyrus" }
+          }
+        },
+        { "name": "punctuation.separator.parameters.papyrus", "match": "," },
+        { "name": "punctuation.separator.continuation.papyrus", "match": "\\\\$" },
+        { "include": "#keywords" },
+        { "include": "#numbers" },
+        { "include": "#operators" }
       ]
     },
     "keywords": {

@@ -23,7 +23,7 @@ pub fn validate(bundle: &DeclarationBundle) -> Result<(), DecodeError> {
     if bundle.format != FORMAT {
         return Err(invalid("format", "expected folio-declarations"));
     }
-    if bundle.schema != SCHEMA_VERSION {
+    if !matches!(bundle.schema, 1 | SCHEMA_VERSION) {
         return Err(DecodeError::UnsupportedSchema(bundle.schema));
     }
     if bundle.profile != PROFILE {
@@ -58,6 +58,7 @@ pub fn validate(bundle: &DeclarationBundle) -> Result<(), DecodeError> {
     for (index, script) in bundle.scripts.iter().enumerate() {
         let field = format!("scripts[{index}]");
         text(&format!("{field}.name"), &script.name)?;
+        documentation(&field, &script.documentation, bundle.schema)?;
         if !names.insert(script.name.to_ascii_lowercase()) {
             return Err(invalid(field, "duplicate script identity"));
         }
@@ -93,6 +94,7 @@ pub fn validate(bundle: &DeclarationBundle) -> Result<(), DecodeError> {
             &format!("{field}.members"),
             &script.members,
             false,
+            bundle.schema,
             &mut values,
         )?;
         container(&format!("{field}.states"), script.states.len())?;
@@ -101,6 +103,7 @@ pub fn validate(bundle: &DeclarationBundle) -> Result<(), DecodeError> {
         for (index, state) in script.states.iter().enumerate() {
             let field = format!("{field}.states[{index}]");
             text(&format!("{field}.name"), &state.name)?;
+            documentation(&field, &state.documentation, bundle.schema)?;
             if !states.insert(state.name.to_ascii_lowercase()) {
                 return Err(invalid(field, "duplicate state identity"));
             }
@@ -112,6 +115,7 @@ pub fn validate(bundle: &DeclarationBundle) -> Result<(), DecodeError> {
                 &format!("{field}.members"),
                 &state.members,
                 true,
+                bundle.schema,
                 &mut values,
             )?;
         }
@@ -126,6 +130,7 @@ fn validate_members(
     field: &str,
     members: &[Member],
     state: bool,
+    schema: u32,
     values: &mut usize,
 ) -> Result<(), DecodeError> {
     container(field, members.len())?;
@@ -133,6 +138,7 @@ fn validate_members(
     for (index, member) in members.iter().enumerate() {
         let field = format!("{field}[{index}]");
         text(&format!("{field}.name"), &member.name)?;
+        documentation(&field, &member.documentation, schema)?;
         // All callables share a namespace; properties and variables remain separate.
         let namespace = match member.data {
             MemberData::Property { .. } => 1,
@@ -173,6 +179,17 @@ fn validate_members(
         if *values > MAX_VALUES {
             return Err(invalid(field, "too many declaration values"));
         }
+    }
+    Ok(())
+}
+
+fn documentation(field: &str, value: &Option<String>, schema: u32) -> Result<(), DecodeError> {
+    if let Some(value) = value {
+        let field = format!("{field}.documentation");
+        if schema == 1 {
+            return Err(invalid(field, "documentation requires schema 2"));
+        }
+        text(&field, value)?;
     }
     Ok(())
 }

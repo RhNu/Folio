@@ -76,7 +76,7 @@ path = "../OtherMod/Source/Scripts"
 
 [Skyrim Papyrus](docs/papyrus.md) 描述 Folio 接受和检查的语言行为。[工具与编辑器服务](docs/architecture/tooling.md) 介绍格式化、lint、诊断、导航及语言服务器的项目模型。
 
-VS Code 客户端提供 `.psc` 文件图标、语法与语义高亮、hover、签名提示、符号导航和格式化。它优先使用配置的 Folio 可执行文件或目录，然后搜索 `PATH`。在 `editors/vscode` 运行 `npm ci` 和 `npm run package` 可打包客户端。VSIX 不包含 Folio 可执行文件。安装、调试和发布方式见[扩展 README](editors/vscode/README.md)。
+VS Code 客户端提供 `.psc` 文件图标、语法与语义高亮、带文档和来源链接的声明 hover、补全、签名提示、引用查询、继承导航、CodeLens、参数提示、经过验证的项目符号重命名、符号搜索和格式化。没有 PSC 源码的依赖以只读 API 声明视图打开。它优先使用配置的 Folio 可执行文件或目录，然后搜索 `PATH`。在 `editors/vscode` 运行 `npm ci` 和 `npm run package` 可打包客户端。VSIX 不包含 Folio 可执行文件。安装、设置、调试和发布方式见[扩展 README](editors/vscode/README.md)。
 
 ## 开发指南
 

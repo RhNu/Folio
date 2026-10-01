@@ -1,6 +1,7 @@
-//! Schema 1 binary wire types. Tuple order and numeric tags are protocol data.
+//! Schema 2 binary wire types. Documentation is appended to schema 1 tuples.
 
 mod guards;
+mod legacy;
 pub(crate) use guards::guard_json;
 
 use crate::{codec::binary, *};
@@ -18,9 +19,10 @@ struct WireScript(
     Vec<WireMember>,
     Vec<WireState>,
     Option<WireSource>,
+    Option<String>,
 );
 #[derive(Serialize, Deserialize)]
-struct WireState(String, bool, Vec<WireMember>);
+struct WireState(String, bool, Vec<WireMember>, Option<String>);
 #[derive(Serialize, Deserialize)]
 struct WireSource(String, u32, u32);
 #[derive(Serialize, Deserialize)]
@@ -33,6 +35,7 @@ struct WireMember(
     u8,
     Option<String>,
     Vec<WireParameter>,
+    Option<String>,
 );
 #[derive(Serialize, Deserialize)]
 struct WireParameter(String, String, u8, Option<String>);
@@ -51,10 +54,13 @@ pub(crate) fn encode(bundle: &DeclarationBundle) -> Result<Vec<u8>, DecodeError>
     Ok(payload)
 }
 
-pub(crate) fn decode(input: &[u8]) -> Result<DeclarationBundle, DecodeError> {
+pub(crate) fn decode(input: &[u8], schema: u32) -> Result<DeclarationBundle, DecodeError> {
     guards::guard_messagepack(input)?;
-    let Bundle(schema, profile, source, input_digest, scripts) =
-        rmp_serde::from_slice(input).map_err(binary)?;
+    let Bundle(schema, profile, source, input_digest, scripts) = match schema {
+        1 => legacy::decode(input)?,
+        SCHEMA_VERSION => rmp_serde::from_slice(input).map_err(binary)?,
+        _ => return Err(DecodeError::UnsupportedSchema(schema)),
+    };
     Ok(DeclarationBundle {
         format: FORMAT.into(),
         schema,
@@ -86,6 +92,7 @@ fn script_to_wire(script: &Script) -> WireScript {
                     state.name.clone(),
                     state.auto,
                     state.members.iter().map(member_to_wire).collect(),
+                    state.documentation.clone(),
                 )
             })
             .collect(),
@@ -93,13 +100,16 @@ fn script_to_wire(script: &Script) -> WireScript {
             .source
             .as_ref()
             .map(|source| WireSource(source.path.clone(), source.line, source.column)),
+        script.documentation.clone(),
     )
 }
 
 fn script_from_wire(wire: WireScript) -> Result<Script, DecodeError> {
-    let WireScript(name, parent, is_native, flags, imports, members, states, source) = wire;
+    let WireScript(name, parent, is_native, flags, imports, members, states, source, documentation) =
+        wire;
     Ok(Script {
         name,
+        documentation,
         parent,
         is_native,
         flags,
@@ -110,9 +120,10 @@ fn script_from_wire(wire: WireScript) -> Result<Script, DecodeError> {
             .collect::<Result<_, _>>()?,
         states: states
             .into_iter()
-            .map(|WireState(name, auto, members)| {
+            .map(|WireState(name, auto, members, documentation)| {
                 Ok(State {
                     name,
+                    documentation,
                     auto,
                     members: members
                         .into_iter()
@@ -170,11 +181,22 @@ fn member_to_wire(member: &Member) -> WireMember {
                 WireParameter(parameter.name.clone(), parameter.ty.clone(), tag, literal)
             })
             .collect(),
+        member.documentation.clone(),
     )
 }
 
 fn member_from_wire(wire: WireMember) -> Result<Member, DecodeError> {
-    let WireMember(name, tag, flags, ty, attributes, access, initial_literal, parameters) = wire;
+    let WireMember(
+        name,
+        tag,
+        flags,
+        ty,
+        attributes,
+        access,
+        initial_literal,
+        parameters,
+        documentation,
+    ) = wire;
     if attributes & !3 != 0 {
         return Err(binary("unknown callable attribute bits"));
     }
@@ -250,7 +272,12 @@ fn member_from_wire(wire: WireMember) -> Result<Member, DecodeError> {
         }
         _ => return Err(binary("unknown member kind tag")),
     };
-    Ok(Member { name, flags, data })
+    Ok(Member {
+        name,
+        documentation,
+        flags,
+        data,
+    })
 }
 
 #[cfg(test)]

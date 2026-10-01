@@ -64,6 +64,9 @@ pub fn encode(
     format: DeclarationFormat,
 ) -> Result<Vec<u8>, DecodeError> {
     validate(bundle)?;
+    let mut upgraded = bundle.clone();
+    upgraded.schema = SCHEMA_VERSION;
+    let bundle = &upgraded;
     let bytes = match format {
         DeclarationFormat::Json => {
             serde_json::to_vec_pretty(bundle).map_err(DecodeError::Syntax)?
@@ -108,7 +111,7 @@ fn decode_binary(input: &[u8]) -> Result<DeclarationBundle, DecodeError> {
         return Err(binary("truncated header"));
     }
     let schema = u32::from_le_bytes(input[8..12].try_into().expect("header checked"));
-    if schema != SCHEMA_VERSION {
+    if !matches!(schema, 1 | SCHEMA_VERSION) {
         return Err(DecodeError::UnsupportedSchema(schema));
     }
     let raw_len = u64::from_le_bytes(input[12..20].try_into().expect("header checked"));
@@ -142,7 +145,7 @@ fn decode_binary(input: &[u8]) -> Result<DeclarationBundle, DecodeError> {
     if blake3::hash(&payload).as_bytes() != &input[28..60] {
         return Err(binary("payload digest mismatch"));
     }
-    let bundle = wire::decode(&payload)?;
+    let bundle = wire::decode(&payload, schema)?;
     if bundle.schema != schema {
         return Err(binary("payload/header schema mismatch"));
     }

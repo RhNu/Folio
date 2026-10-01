@@ -1,5 +1,27 @@
 use super::*;
 
+pub(crate) fn project(texts: &[(&str, &str)]) -> ProjectAnalysisView {
+    let mut project = folio_build::ProjectAnalysis::new();
+    project
+        .sync_sources(texts.iter().map(|(name, text)| folio_build::ProjectSource {
+            package_key: "root".into(),
+            canonical_path: PathBuf::from(format!("{name}.psc")),
+            display_path: format!("{name}.psc"),
+            script_candidate: (*name).into(),
+            dialect: folio_papyrus::PapyrusDialect::Skyrim,
+            text: Arc::from(*text),
+        }))
+        .unwrap()
+}
+pub(crate) fn file(view: &ProjectAnalysisView, name: &str) -> FileId {
+    *view
+        .sources
+        .iter()
+        .find(|(_, source)| source.script_candidate == name)
+        .unwrap()
+        .0
+}
+
 #[test]
 fn indexed_positions_preserve_unicode_crlf_eof_and_invalid_boundaries() {
     let text = "🦊雪\r\nA\n";

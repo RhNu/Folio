@@ -22,44 +22,25 @@ impl<'a> Scope<'a> {
                 name,
             } => lookup_state_member(self.world, script, state, name).map(|(_, member)| member),
             Symbol::Intrinsic { name } => {
-                let (result, params): (Type, Vec<(String, Type, ParameterDefault)>) = if name
-                    .eq_ignore_ascii_case("GetState")
-                {
-                    (Type::String, Vec::new())
-                } else if name.eq_ignore_ascii_case("GotoState") {
-                    (
-                        Type::Void,
-                        vec![("newState".into(), Type::String, ParameterDefault::Required)],
-                    )
-                } else if name.eq_ignore_ascii_case("Find") || name.eq_ignore_ascii_case("RFind") {
-                    let element = match &callee.kind {
-                        ExpressionKind::Member { owner, .. } => match &owner.ty {
-                            Type::Array(element) => *element.clone(),
-                            _ => Type::Error,
-                        },
-                        _ => Type::Error,
-                    };
-                    (
-                        Type::Int,
-                        vec![
-                            ("value".into(), element, ParameterDefault::Required),
-                            (
-                                "startIndex".into(),
-                                Type::Int,
-                                ParameterDefault::Literal(
-                                    if name.eq_ignore_ascii_case("Find") {
-                                        "0"
-                                    } else {
-                                        "-1"
-                                    }
-                                    .into(),
-                                ),
-                            ),
-                        ],
-                    )
-                } else {
-                    (Type::Error, Vec::new())
+                let receiver = match &callee.kind {
+                    ExpressionKind::Member { owner, .. } => Some(&owner.ty),
+                    _ => None,
                 };
+                let Some(signature) = crate::intrinsic_signature(name, receiver) else {
+                    return CheckedCall::error();
+                };
+                let result = signature.result;
+                let params = signature
+                    .parameters
+                    .into_iter()
+                    .map(|(name, ty, default)| {
+                        (
+                            name,
+                            ty,
+                            default.map_or(ParameterDefault::Required, ParameterDefault::Literal),
+                        )
+                    })
+                    .collect();
                 let intrinsic = MemberInfo {
                     name: name.clone(),
                     ty: result,

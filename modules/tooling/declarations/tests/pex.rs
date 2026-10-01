@@ -18,10 +18,13 @@ fn extracts_callable_signature_without_inventing_event_or_defaults() {
     let count = file.intern("count").unwrap();
     let value = file.intern("Value").unwrap();
     let backing = file.intern("::Value_var").unwrap();
+    let script_doc = file.intern("Actor docs").unwrap();
+    let property_doc = file.intern("Value docs").unwrap();
+    let callable_doc = file.intern("GetValue docs").unwrap();
     file.objects.push(PexObject {
         name: actor,
         parent_class_name: empty,
-        documentation_string: empty,
+        documentation_string: script_doc,
         user_flags: 0,
         auto_state_name: empty,
         variables: vec![PexVariable {
@@ -33,7 +36,7 @@ fn extracts_callable_signature_without_inventing_event_or_defaults() {
         properties: vec![PexProperty {
             name: value,
             type_name: int,
-            documentation_string: empty,
+            documentation_string: property_doc,
             user_flags: 0,
             is_readable: true,
             is_writable: true,
@@ -47,7 +50,7 @@ fn extracts_callable_signature_without_inventing_event_or_defaults() {
             functions: vec![PexFunction {
                 name: get_value,
                 return_type_name: int,
-                documentation_string: empty,
+                documentation_string: callable_doc,
                 user_flags: 0,
                 is_global: false,
                 is_native: true,
@@ -75,6 +78,21 @@ fn extracts_callable_signature_without_inventing_event_or_defaults() {
         .find(|item| item.name == "GetValue")
         .unwrap();
     assert_eq!(extracted.bundle.scripts[0].name, "Actor");
+    assert_eq!(
+        extracted.bundle.scripts[0].documentation.as_deref(),
+        Some("Actor docs")
+    );
+    assert_eq!(member.documentation.as_deref(), Some("GetValue docs"));
+    assert_eq!(
+        extracted.bundle.scripts[0]
+            .members
+            .iter()
+            .find(|item| item.name == "Value")
+            .unwrap()
+            .documentation
+            .as_deref(),
+        Some("Value docs")
+    );
     assert_eq!(extracted.paths, ["Actor.pex"]);
     assert_eq!(member.kind(), MemberKind::UnknownCallable);
     assert_eq!(member.ty(), Some("Int"));

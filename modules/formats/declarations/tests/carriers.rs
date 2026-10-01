@@ -30,6 +30,7 @@ fn rejects_unknown_fields_and_cross_callable_duplicates() {
     let mut bundle = sample();
     bundle.scripts[0].members.push(Member {
         name: "read".into(),
+        documentation: None,
         flags: vec![],
         data: MemberData::Event {
             native: false,
@@ -40,6 +41,7 @@ fn rejects_unknown_fields_and_cross_callable_duplicates() {
     bundle.scripts[0].members.pop();
     bundle.scripts[0].members.push(Member {
         name: "read".into(),
+        documentation: None,
         flags: vec![],
         data: MemberData::Property {
             ty: "Int".into(),
@@ -53,10 +55,10 @@ fn rejects_unknown_fields_and_cross_callable_duplicates() {
 #[test]
 fn rejects_unsupported_schema() {
     let mut bundle = sample();
-    bundle.schema = 2;
+    bundle.schema = 3;
     assert!(matches!(
         validate(&bundle),
-        Err(DecodeError::UnsupportedSchema(2))
+        Err(DecodeError::UnsupportedSchema(3))
     ));
 }
 
@@ -88,7 +90,7 @@ fn rejects_nonportable_origins_and_sources() {
 
 #[test]
 fn carriers_preserve_states_flags_and_each_member_variant() {
-    let declaration = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","flags":["hidden"],"imports":["Utility"],"members":[{"name":"Run","kind":"function","global":true,"native":true},{"name":"OnInit","kind":"event"},{"name":"count","kind":"variable","ty":"Int","initial_literal":"3"},{"name":"Value","kind":"property","ty":"Int","access":{"kind":"manual","readable":false,"writable":true}}],"states":[{"name":"Busy","auto":true,"members":[{"name":"Pulse","kind":"event","native":true}]}]}]}"#).unwrap();
+    let declaration = decode(br#"{"format":"folio-declarations","schema":2,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","flags":["hidden"],"imports":["Utility"],"members":[{"name":"Run","kind":"function","global":true,"native":true},{"name":"OnInit","kind":"event"},{"name":"count","kind":"variable","ty":"Int","initial_literal":"3"},{"name":"Value","kind":"property","ty":"Int","access":{"kind":"manual","readable":false,"writable":true}}],"states":[{"name":"Busy","auto":true,"members":[{"name":"Pulse","kind":"event","native":true}]}]}]}"#).unwrap();
     for format in [DeclarationFormat::Json, DeclarationFormat::Binary] {
         let actual = decode(&encode(&declaration, format).unwrap()).unwrap();
         assert!(actual.scripts[0].members[0].is_global());

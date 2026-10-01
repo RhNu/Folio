@@ -1,12 +1,19 @@
 //! Deterministic declaration extraction from supplied Papyrus source text.
 
+// Share the in-memory public API fixtures with the unit-only verification target.
+#[cfg(test)]
+extern crate self as folio_declaration_tools;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use folio_format_declarations::{
     DeclarationBundle, FORMAT, Member, MemberData, MemberKind, Origin, PROFILE, Parameter,
     ParameterDefault, PropertyAccess, SCHEMA_VERSION, Script, SourceLocation, State, validate,
 };
-use folio_papyrus::{Declaration, PapyrusDialect, SyntaxKind, SyntaxNode, declarations, parse};
+use folio_papyrus::{
+    Declaration, PapyrusDialect, SyntaxKind, SyntaxNode, declaration_documentation, declarations,
+    parse,
+};
 
 mod pex;
 pub use pex::{ExtractedPex, PexInput, extract_pex};
@@ -144,6 +151,7 @@ fn extract(input: &SourceInput<'_>) -> Result<Script, GenerationError> {
                     name.clone(),
                     parent.clone(),
                     flags.clone(),
+                    declaration_documentation(&node),
                     SourceLocation {
                         path: input.path.to_owned(),
                         line,
@@ -192,10 +200,14 @@ fn extract(input: &SourceInput<'_>) -> Result<Script, GenerationError> {
                     .find(|state: &&mut State| state.name.eq_ignore_ascii_case(name))
                 {
                     existing.auto |= flags.iter().any(|flag| flag == "auto");
+                    if existing.documentation.is_none() {
+                        existing.documentation = declaration_documentation(&node);
+                    }
                     existing.members.extend(state_members);
                 } else {
                     states.push(State {
                         name: name.clone(),
+                        documentation: declaration_documentation(&node),
                         auto: flags.iter().any(|flag| flag == "auto"),
                         members: state_members,
                     });
@@ -207,7 +219,7 @@ fn extract(input: &SourceInput<'_>) -> Result<Script, GenerationError> {
             _ => {}
         }
     }
-    let (name, parent, flags, source) =
+    let (name, parent, flags, documentation, source) =
         script.ok_or_else(|| error(input.path, "missing ScriptName declaration"))?;
     let mut member_names = BTreeSet::new();
     for member in &members {
@@ -238,6 +250,7 @@ fn extract(input: &SourceInput<'_>) -> Result<Script, GenerationError> {
     );
     Ok(Script {
         name,
+        documentation,
         parent,
         is_native: false,
         flags,
@@ -361,7 +374,12 @@ fn member(
         },
         MemberKind::UnknownCallable => unreachable!("PSC retains callable kinds"),
     };
-    Ok(Member { name, flags, data })
+    Ok(Member {
+        name,
+        documentation: declaration_documentation(node),
+        flags,
+        data,
+    })
 }
 
 fn is_expression(kind: SyntaxKind) -> bool {
@@ -411,3 +429,6 @@ fn line_column(text: &str, byte: usize) -> (u32, u32) {
     let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() as u32 + 1;
     (line, column)
 }
+
+#[cfg(test)]
+mod tests;

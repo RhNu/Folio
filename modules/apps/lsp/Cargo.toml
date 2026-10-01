@@ -8,7 +8,10 @@ publish.workspace = true
 [dependencies]
 folio-build = { path = "../../project/build" }
 folio-diagnostics = { path = "../../foundation/diagnostics" }
+folio-declaration-tools = { path = "../../tooling/declarations" }
 folio-format = { path = "../../tooling/format" }
+folio-format-declarations = { path = "../../formats/declarations" }
+folio-hir = { path = "../../compiler/hir" }
 folio-ide = { path = "../../tooling/ide" }
 folio-lint = { path = "../../tooling/lint" }
 folio-papyrus = { path = "../../languages/papyrus" }
@@ -17,6 +20,9 @@ folio-project-resolve = { path = "../../project/resolve" }
 folio-source = { path = "../../foundation/source" }
 serde_json.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+folio-analysis = { path = "../../compiler/analysis" }
 
 [lints]
 workspace = true

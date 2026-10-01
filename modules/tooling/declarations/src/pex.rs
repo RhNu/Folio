@@ -53,6 +53,7 @@ pub fn extract_pex(source: &str, inputs: &[PexInput<'_>]) -> Result<ExtractedPex
                 }
                 members.push(Member {
                     name: variable_name.into(),
+                    documentation: None,
                     flags: Vec::new(),
                     data: MemberData::Variable {
                         ty: string(&file, variable.type_name).into(),
@@ -63,6 +64,7 @@ pub fn extract_pex(source: &str, inputs: &[PexInput<'_>]) -> Result<ExtractedPex
             for property in &object.properties {
                 members.push(Member {
                     name: string(&file, property.name).into(),
+                    documentation: documentation(&file, property.documentation_string),
                     flags: Vec::new(),
                     data: MemberData::Property {
                         ty: string(&file, property.type_name).into(),
@@ -94,6 +96,7 @@ pub fn extract_pex(source: &str, inputs: &[PexInput<'_>]) -> Result<ExtractedPex
                 } else {
                     states.push(State {
                         name: state_name.into(),
+                        documentation: None,
                         auto: state_name.eq_ignore_ascii_case(auto_state),
                         members: functions,
                     });
@@ -102,6 +105,7 @@ pub fn extract_pex(source: &str, inputs: &[PexInput<'_>]) -> Result<ExtractedPex
             scripts.push((
                 Script {
                     name,
+                    documentation: documentation(&file, object.documentation_string),
                     parent: (!parent.is_empty()).then(|| parent.into()),
                     is_native: false,
                     flags: Vec::new(),
@@ -147,6 +151,7 @@ fn callable(file: &PexFile, function: &PexFunction) -> Member {
     let return_type = string(file, function.return_type_name);
     Member {
         name: string(file, function.name).into(),
+        documentation: documentation(file, function.documentation_string),
         flags: Vec::new(),
         data: MemberData::UnknownCallable {
             return_type: (!return_type.eq_ignore_ascii_case("none")).then(|| return_type.into()),
@@ -163,4 +168,9 @@ fn callable(file: &PexFile, function: &PexFunction) -> Member {
                 .collect(),
         },
     }
+}
+
+fn documentation(file: &PexFile, id: folio_format_pex::PexStringId) -> Option<String> {
+    let text = string(file, id).trim();
+    (!text.is_empty()).then(|| text.to_owned())
 }

@@ -1,12 +1,11 @@
 //! Formatting and symbol requests with the existing cancellation and scheduling.
 use super::*;
-use crate::protocol::{parse_position, path_to_uri, range_json};
+use crate::protocol::range_json;
 use folio_format::format_source;
 use folio_ide::{Position, PositionIndex};
 use folio_papyrus::PapyrusDialect;
 use folio_project_model::{DependencyKind, SourceId};
 use folio_source::TextRange;
-use std::thread;
 
 impl Server {
     /// Returns edits only for the current buffer generation and negotiated encoding.
@@ -55,183 +54,10 @@ impl Server {
         tracing::debug!(uri, version, "document formatting edits computed");
         self.reply(id, json!([{"range":range_json(range),"newText":formatted}]))
     }
-
-    pub(super) fn navigation(
-        &self,
-        id: Value,
-        method: &str,
-        params: &Value,
-    ) -> Result<(), LspError> {
-        let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
-        let file = uri_to_path(uri).and_then(|path| self.paths.get(&path).copied());
-        let at = parse_position(&params["position"]);
-        let view = self.view.clone();
-        let metadata = self.metadata.clone();
-        let disk_project = self.disk_project.as_ref().map(|(loaded, _)| loaded.clone());
-        let generation = self.generation.load(Ordering::SeqCst);
-        let active = Arc::clone(&self.generation);
-        let cancelled = Arc::clone(&self.cancelled);
-        let pending = Arc::clone(&self.pending);
-        let output = Arc::clone(&self.output);
-        let encoding = self.encoding;
-        let hover = method == "textDocument/hover";
-        pending
-            .lock()
-            .map_err(|_| LspError::Protocol("pending lock poisoned".into()))?
-            .insert(id.to_string());
-        thread::spawn(move || {
-            let key = id.to_string();
-            let is_cancelled = || {
-                request_stale(
-                    generation,
-                    active.load(Ordering::SeqCst),
-                    cancelled.lock().is_ok_and(|set| set.contains(&key)),
-                )
-            };
-            if is_cancelled() {
-                let _ = send(
-                    &output,
-                    &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32800,"message":"request cancelled"}}),
-                );
-                if let Ok(mut set) = pending.lock() {
-                    set.remove(&key);
-                    if let Ok(mut cancelled) = cancelled.lock() {
-                        cancelled.remove(&key);
-                    }
-                }
-                return;
-            }
-            let result = (|| {
-                let view = view.as_ref()?;
-                if view.analysis.try_warm_semantics(is_cancelled).is_err() {
-                    tracing::debug!(request = %key, "stopped obsolete semantic query");
-                    return None;
-                }
-                let file = file?;
-                let text = view.analysis.text(file)?;
-                let byte = folio_ide::offset(text, at?, encoding)?;
-                if hover {
-                    let mut item = folio_ide::hover(view, file, byte)?;
-                    if let (Some(metadata), Some(owner)) = (metadata.as_deref(), item.owner_script.as_deref())
-                        && let Some(origin) = symbol_origin(metadata, owner)
-                    {
-                        item.content.push_str("\nSource: ");
-                        item.content.push_str(&origin);
-                    }
-                    tracing::debug!(request = %key, file = ?file, "resolved hover symbol");
-                    Some(json!({"contents":{"kind":"plaintext","value":item.content},"range":range_json(folio_ide::range(text, item.span.range, encoding)?)}))
-                } else {
-                    if let Some(span) = folio_ide::source_declaration(view, file, byte) {
-                        let source = view.sources.get(&span.file)?;
-                        let target = view.analysis.text(span.file)?;
-                        tracing::debug!(request = %key, source_file = ?file, target_file = ?span.file, "resolved source declaration");
-                        return Some(json!({"uri":path_to_uri(&source.canonical_path),"range":range_json(folio_ide::range(target, span.range, encoding)?)}));
-                    }
-                    // Only direct PSC dependencies have verified local source snapshots.
-                    let symbol = folio_ide::referenced_symbol(view, file, byte)?;
-                    let owner = folio_ide::symbol_script(&symbol)?;
-                    let metadata = metadata.as_deref()?;
-                    let loaded = disk_project.as_ref()?;
-                    let selected = &metadata.scripts.iter().find(|selection| selection.script.eq_ignore_ascii_case(owner))?.selected;
-                    let dependency = loaded.dependencies.iter().find(|dependency| dependency.source_id == selected.package.source && dependency.kind == DependencyKind::Psc)?;
-                    let location = selected.declaration.as_ref()?;
-                    let source_path = dependency.canonical_path.join(location.source_path.as_ref()?);
-                    let bytes = loaded.input_snapshots.iter().find_map(|snapshot| match snapshot {
-                        folio_project_resolve::io::InputSnapshot::File { path, bytes } if path == &source_path => Some(bytes),
-                        _ => None,
-                    })?;
-                    let SourceId::Dependency { index, .. } = &dependency.source_id else { return None; };
-                    let source_encoding = loaded.root.manifest.dependencies.get(*index)?.encoding;
-                    let target = folio_project_resolve::io::decode_source(bytes, source_encoding).ok()?;
-                    let range = folio_ide::external_declaration_range(&target, &symbol)?;
-                    tracing::debug!(request = %key, path = %source_path.display(), "resolved PSC dependency declaration");
-                    Some(json!({"uri":path_to_uri(&source_path),"range":range_json(folio_ide::range(&target, range, encoding)?)}))
-                }
-            })().unwrap_or(Value::Null);
-            let response = if is_cancelled() {
-                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32800,"message":"request cancelled"}})
-            } else {
-                json!({"jsonrpc":"2.0","id":id,"result":result})
-            };
-            if let Err(error) = send(&output, &response) {
-                tracing::error!(%error, "failed to send LSP navigation response");
-            }
-            if let Ok(mut set) = pending.lock() {
-                set.remove(&key);
-                if let Ok(mut cancelled) = cancelled.lock() {
-                    cancelled.remove(&key);
-                }
-            }
-        });
-        Ok(())
-    }
-
-    /// Answers editor symbol requests from one coherent project generation.
-    pub(super) fn symbol_request(
-        &self,
-        id: Value,
-        method: &str,
-        params: &Value,
-    ) -> Result<(), LspError> {
-        let started = Instant::now();
-        let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
-        let file = uri_to_path(uri).and_then(|path| self.paths.get(&path).copied());
-        let Some(view) = &self.view else {
-            return self.reply(id, Value::Null);
-        };
-        let Some(file) = file else {
-            return self.reply(id, Value::Null);
-        };
-        let Some(text) = view.analysis.text(file) else {
-            return self.reply(id, Value::Null);
-        };
-        let result = match method {
-            "textDocument/signatureHelp" => {
-                let info = parse_position(&params["position"])
-                    .and_then(|position| folio_ide::offset(text, position, self.encoding))
-                    .and_then(|byte| folio_ide::signature_help(view, file, byte));
-                info.map_or(Value::Null, |info| {
-                    tracing::debug!(?file, active_parameter = info.active_parameter, "resolved signature help");
-                    let parameters = info.parameters.iter().map(|label| json!({"label":label})).collect::<Vec<_>>();
-                    json!({"signatures":[{"label":info.label,"parameters":parameters}],"activeSignature":0,"activeParameter":info.active_parameter})
-                })
-            }
-            "textDocument/documentSymbol" => {
-                let symbols = folio_ide::document_symbols(view, file);
-                let positions = PositionIndex::new(text);
-                tracing::debug!(
-                    method,
-                    elapsed_us = started.elapsed().as_micros(),
-                    phase = "symbols",
-                    "LSP query phase complete"
-                );
-                tracing::debug!(?file, count = symbols.len(), "collected document symbols");
-                json!(
-                    symbols
-                        .iter()
-                        .filter_map(|item| document_symbol_json(&positions, item, self.encoding))
-                        .collect::<Vec<_>>()
-                )
-            }
-            "textDocument/semanticTokens/full" => {
-                let tokens = folio_ide::semantic_tokens(view, file);
-                tracing::debug!(
-                    method,
-                    elapsed_us = started.elapsed().as_micros(),
-                    phase = "tokens",
-                    "LSP query phase complete"
-                );
-                tracing::debug!(?file, count = tokens.len(), "collected semantic tokens");
-                json!({"data":encode_semantic_tokens(text, &tokens, self.encoding)})
-            }
-            _ => Value::Null,
-        };
-        self.reply(id, result)
-    }
 }
 
 /// Encodes sorted identifier spans in the position units negotiated by the client.
-fn encode_semantic_tokens(
+pub(super) fn encode_semantic_tokens(
     text: &str,
     tokens: &[folio_ide::SemanticToken],
     encoding: PositionEncoding,
@@ -278,7 +104,7 @@ fn encode_semantic_tokens(
     data
 }
 
-fn document_symbol_json(
+pub(super) fn document_symbol_json(
     positions: &PositionIndex<'_>,
     item: &folio_ide::DocumentSymbol,
     encoding: PositionEncoding,
@@ -296,7 +122,7 @@ fn document_symbol_json(
     )
 }
 
-fn symbol_origin(metadata: &Metadata, script: &str) -> Option<String> {
+pub(super) fn symbol_origin(metadata: &Metadata, script: &str) -> Option<String> {
     let selected = &metadata
         .scripts
         .iter()
@@ -332,7 +158,11 @@ fn symbol_origin(metadata: &Metadata, script: &str) -> Option<String> {
 }
 
 /// Results tied to an older project generation are never sent as current answers.
-fn request_stale(request_generation: u64, current_generation: u64, cancelled: bool) -> bool {
+pub(super) fn request_stale(
+    request_generation: u64,
+    current_generation: u64,
+    cancelled: bool,
+) -> bool {
     cancelled || request_generation != current_generation
 }
 

@@ -1,6 +1,7 @@
 //! Lossless, error-tolerant Papyrus syntax and declaration facts.
 
 mod ast;
+mod documentation;
 mod lexer;
 mod parser;
 
@@ -8,6 +9,7 @@ use folio_source::TextRange;
 use rowan::{GreenNode, Language};
 
 pub use ast::{FunctionAst, ScriptAst};
+pub use documentation::{declaration_documentation, declaration_header};
 pub use lexer::{LexToken, lex};
 pub use parser::parse;
 

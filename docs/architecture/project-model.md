@@ -125,20 +125,22 @@ Corrupt PEX and formats unsupported by the codec are rejected. PEX and pregenera
 
 ## Declaration model
 
-The declaration protocol uses schema 1 and accepts only the current format. JSON contains a format identifier, schema version, language/ABI profile, generation provenance, and scripts. Provenance does not determine package identity or runtime capability.
+The declaration writer uses schema 2. Readers accept schema 1 JSON and its original binary tuple layout as well as schema 2. JSON contains a format identifier, schema version, language/ABI profile, generation provenance, and scripts. Provenance does not determine package identity or runtime capability.
 
 ```json
 {
   "format": "folio-declarations",
-  "schema": 1,
+  "schema": 2,
   "profile": "papyrus-skyrim",
   "origin": { "source": "self-authored-api" },
   "scripts": [
     {
       "name": "Example",
+      "documentation": "An example API.",
       "members": [
         {
           "name": "Run",
+          "documentation": "Run the requested number of iterations.",
           "kind": "function",
           "return_type": "Int",
           "native": true,
@@ -153,6 +155,10 @@ The declaration protocol uses schema 1 and accepts only the current format. JSON
 ```
 
 `origin.source` is a portable descriptive label. The source generator also writes `input_digest`, covering sorted relative input paths and decoded source text. Script records can include inheritance, native status, flags, imports, states, members, and relative source locations. Those locations record generation history; consumers must not treat them as navigable paths on their machine. The semantic layer resolves type names.
+
+Schema 2 adds optional `documentation` to scripts, states, and members. PSC extraction associates Papyrus `{ ... }` documentation immediately following a declaration header; ordinary comments and documentation after executable statements are excluded. PEX extraction preserves existing script, property, and callable documentation strings. It does not invent documentation for states or variables, callable kinds, or parameter defaults.
+
+Old carriers remain usable but cannot supply documentation they never retained. Regenerate from the original PSC inputs to add it. Encoding a schema 1 model writes schema 2; older Folio readers require an upgrade before consuming new carriers. Documentation and a schema-only upgrade are excluded from semantic API identity.
 
 Member variants retain facts appropriate to `function`, `event`, `unknown-callable`, `property`, or `variable`. Omitting a function's `return_type` means it returns no value. Property `access` is `auto`, `auto-read-only`, or `manual` with `readable` and `writable` fields. Parameter defaults are `required`, `literal` with Papyrus literal text, or `unknown`. An omitted `default` means `required`. Parameter order is semantically significant.
 
@@ -173,6 +179,8 @@ The binary payload uses MessagePack arrays with fixed field positions and numeri
 The decoder checks lengths, the digest, complete stream consumption, structure, and tags; it rejects unknown tags and trailing data. Both the carrier and decompressed data are limited to 128 MiB, individual strings to 1 MiB, containers to 100,000 entries, and nesting to 64 levels. The decoder also limits the total number of values.
 
 Array ordering and tag definitions belong to `modules/formats/declarations`. Rust memory layout is not the file protocol.
+
+Schema 2 appends documentation fields to the script, state, and member arrays. Schema 1 is decoded with its own exact tuple definitions; missing fields are not inferred by accepting truncated schema 2 arrays.
 
 ## Generating declarations
 

@@ -8,6 +8,7 @@ use folio_lint::{LintConfig, lint_script};
 impl Server {
     pub(super) fn clear_view(&mut self) -> Result<(), LspError> {
         self.view = None;
+        self.projected_inputs = None;
         self.metadata = None;
         self.paths.clear();
         self.project_message = None;
@@ -19,6 +20,7 @@ impl Server {
         }
         self.published.clear();
         self.diagnostics.clear();
+        self.refresh_editor()?;
         Ok(())
     }
 
