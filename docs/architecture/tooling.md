@@ -4,7 +4,13 @@ CLI 与 LSP 使用同一项目解析和分析视图。工具层不复制 Papyrus
 
 ## 仓库维护命令
 
-`modules/apps/xtask` 是开发维护入口，不属于面向 Papyrus 项目的 `folio` 命令。仓库根目录的 Cargo alias 允许运行 `cargo xtask lines`。该命令扫描 `modules` 中的 `.rs` 文件，按含 Rust 内容的行计数；空行和纯注释行不计，代码后的注释不使该行被排除，字符串字面量中的内容计入代码。单文件超过 650 行为 warning，超过 1200 行为 error 并返回状态 2；warning 不影响退出状态。结果按路径排序并给出汇总。超过硬限制时按职责拆成子模块；若内嵌测试使文件触及阈值，可把测试移到独立测试子模块。
+`modules/apps/xtask` 是开发维护入口，不属于面向 Papyrus 项目的 `folio` 命令。仓库根目录的 Cargo alias 允许运行 `cargo xtask check-lines`。命令入口、纯逻辑计数和 workspace 扫描分别维护；Cargo metadata 定位 workspace 根与配置的构建目录，不依赖调用目录或 crate 的目录深度。`--manifest-path <Cargo.toml 路径>` 可指定其他 workspace。
+
+扫描覆盖 workspace 内的 `.rs` 文件，包括测试、未启用 feature 的源码和 xtask；排除 Cargo 配置的构建目录以及任意层级的 `.git`、`target`、`node_modules`、`.folio` 目录，不跟随符号链接。文件读取或 metadata 失败返回状态 1，不把部分扫描当作成功。
+
+计数使用 [rustc 词法器的发布包 `ra-ap-rustc_lexer`](https://crates.io/crates/ra-ap-rustc_lexer/0.175.0)，来源为 `rust-lang/rust`，许可为 MIT 或 Apache-2.0，通过 Cargo 依赖使用；workspace 固定兼容的 `unicode-ident` 版本，满足词法器要求的 Unicode 字符表版本一致约束。按含非空白、非注释 token 内容的物理行计数，每行只计一次；空白行、纯注释行、UTF-8 BOM 和 shebang 不计，代码后的注释不使该行被排除。嵌套块注释、字符与生命周期、普通/原始/字节/C 字符串由词法器识别；多行字面量中的非空白内容计入代码，空白行不计。计数不要求语法合法。
+
+单文件超过 650 行为 warning，超过 1200 行为 error 并返回状态 2；warning 不影响退出状态。默认只列出超限文件，`--all` 列出全部文件；结果按路径排序并汇总文件数、最大代码行数、warning 与 error 数量。超过硬限制时按职责拆成子模块；若内嵌测试使文件触及阈值，可把测试移到独立测试子模块。
 
 ## CLI 与机器输出
 

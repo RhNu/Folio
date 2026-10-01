@@ -80,7 +80,7 @@ Folio 当前接受的语言构造及 Skyrim 行为见[Papyrus 规范](docs/papyr
 
 VS Code 客户端可在 `editors/vscode` 运行 `npm ci`、`npm run package` 生成本地安装的 VSIX；发布命令为 `npm run publish`，具体前提和安装步骤见[扩展说明](editors/vscode/README.md)。VSIX 不含 `folio` 可执行文件。
 
-仓库维护命令通过 `cargo xtask` 运行。`cargo xtask lines` 统计 `modules` 下各 Rust 源文件的非空、非纯注释行；超过 650 行提示警告，超过 1200 行报错并返回非零状态。行尾注释所在的代码行仍计入。超过硬限制时应按职责拆入子模块，较大的内嵌测试也可移入测试子模块。
+仓库维护命令通过 `cargo xtask` 运行。`cargo xtask check-lines` 使用 Rust 词法器检查整个 workspace 的 Rust 源文件，排除生成目录、注释与空白行；超过 650 行提示警告，超过 1200 行报错并返回状态 2。默认只列出超限文件，`--all` 显示全部文件，`--manifest-path <Cargo.toml 路径>` 可指定 workspace。行尾注释所在的代码行仍计入，多行字符串中的空白行不计。超过硬限制时应按职责拆入子模块，较大的内嵌测试也可移入测试子模块。详见[仓库维护命令](docs/architecture/tooling.md#仓库维护命令)。
 
 ## 许可与来源
 
