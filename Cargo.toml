@@ -46,10 +46,10 @@ tracing-subscriber = { version = "0.3.23", features = [
     "fmt",
     "json",
 ] }
-rowan = "0.16.1"
+rowan = "0.17.0"
 encoding_rs = "0.8"
 flate2 = "1"
-salsa = "0.28.4"
+salsa = "0.28.5"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
