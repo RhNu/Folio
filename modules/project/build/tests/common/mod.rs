@@ -7,7 +7,7 @@ use folio_project_model::{
 use folio_project_resolve::{LoadedProject, io::LoadedSourceInput};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
-pub(super) fn fixture(text: &str, name: &str) -> LoadedProject {
+pub(crate) fn fixture(text: &str, name: &str) -> LoadedProject {
     let manifest = folio_project_resolve::manifest::parse(
         "folio.toml",
         r#"
@@ -56,7 +56,7 @@ emit = ["pex"]
     }
 }
 
-pub(super) fn add_declarations(project: &mut LoadedProject, name: &str, bundle: DeclarationBundle) {
+pub(crate) fn add_declarations(project: &mut LoadedProject, name: &str, bundle: DeclarationBundle) {
     let index = project.dependencies.len();
     let path = format!("{name}.json");
     let key = format!("dependency:{index}");
@@ -110,10 +110,10 @@ pub(super) fn add_declarations(project: &mut LoadedProject, name: &str, bundle: 
     project.declaration_bundles.insert(key, bundle);
 }
 
-pub(super) fn declarations() -> DeclarationBundle {
+pub(crate) fn declarations() -> DeclarationBundle {
     folio_format_declarations::decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"self-authored"},"scripts":[{"name":"Sky"},{"name":"Actor"}]}"#).unwrap()
 }
 
-pub(super) fn resolve(project: &LoadedProject) -> folio_project_model::Metadata {
+pub(crate) fn resolve(project: &LoadedProject) -> folio_project_model::Metadata {
     folio_project_resolve::graph::resolve(&project.root, &project.dependencies).unwrap()
 }

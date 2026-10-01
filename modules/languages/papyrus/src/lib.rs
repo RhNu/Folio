@@ -396,6 +396,3 @@ fn typed_member(node: &SyntaxNode) -> Option<(String, String, Vec<String>)> {
         .collect();
     Some((name, ty, flags))
 }
-
-#[cfg(test)]
-mod tests;

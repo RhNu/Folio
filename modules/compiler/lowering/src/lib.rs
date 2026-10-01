@@ -528,4 +528,4 @@ mod function;
 use function::FunctionLowerer;
 
 #[cfg(test)]
-mod synthetic_tests;
+mod tests;

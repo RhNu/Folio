@@ -4,6 +4,8 @@ CLI and LSP use the same project resolution and analysis view. Tooling does not 
 
 ## CLI and machine output
 
+The CLI keeps command arguments and error classification in `main.rs`. Internal modules separate command coordination (`commands.rs`), text and JSON reports (`reporting.rs`), and project creation (`scaffold.rs`). They use the same shared project services and process logging boundary.
+
 `folio` accepts global `--manifest-path`, `--log-filter`, and `--log-format` options. Commands include `init`, `new`, `metadata`, `tree`, `check`, `build`, `fmt`, `lint`, `inspect`, `lsp`, and `declarations`. Consult `folio --help` and each subcommand's help for its arguments.
 
 `metadata` defaults to JSON. `tree`, `check`, `build`, `lint`, and `inspect` default to text and can select JSON. Project metadata, dependency trees, and build results have versioned schemas. Stdout carries the requested data and stderr carries logs. For `folio lsp`, stdout carries LSP messages only.
@@ -27,6 +29,8 @@ The rule reports diagnostics without modifying source. Configure its severity as
 ## Language server capabilities
 
 `folio lsp` serves project diagnostics, hover, definition and declaration navigation, signature help, document symbols, semantic tokens, and whole-document formatting over stdio.
+
+The LSP adapter separates its public entry point in `lib.rs` and message framing, URI conversion, and position encoding in `protocol.rs`. One `Server` in `server/mod.rs` owns session state and message dispatch; child modules handle project and buffer lifecycle, diagnostics, and editor requests. Navigation requests use the existing background worker, while formatting and symbol requests remain synchronous. All handlers share the same project generation, cancellation state, and output lock.
 
 Hover includes the symbol name, type or callable signature, owning script, and selected provider's package and source. Signature help uses resolved calls and parameter order. Document symbols include scripts, states, and members.
 
@@ -84,4 +88,14 @@ A physical line counts once if it contains non-whitespace, non-comment token con
 
 Files above 650 code lines produce warnings; files above 1,200 produce errors and status 2. Warnings do not change the exit status. By default, output lists only files over a threshold; `--all` lists every file. Results are sorted by path and summarize the file count, maximum code line count, warnings, and errors.
 
-Split files that exceed the hard limit by responsibility. Large inline test modules can move to separate test submodules.
+Split files that exceed the hard limit by responsibility. The same line thresholds apply to production code, test entries, child test modules, and shared test helpers.
+
+## Rust test organization
+
+Unit tests of individual functions, module behavior, or private implementation details use a separate child module file named `tests.rs`. The parent declares `#[cfg(test)] mod tests;`; alternative entry names and inline unit test modules are not used. Crate-root units use `src/tests.rs`. Units for another module use `<module>/tests.rs`, such as `src/manifest/tests.rs` for `src/manifest.rs`.
+
+When a unit suite grows too large, keep `tests.rs` as its entry and declare responsibility-based child modules in the corresponding `tests/` directory. For example, `src/manifest/tests.rs` can declare `mod parsing;` to load `src/manifest/tests/parsing.rs`.
+
+Comprehensive tests that cover a crate's complete public workflow belong in its `tests/` directory beside `src/`. Each entry is a Cargo test target named for its responsibility and imports the crate's public API. Public parser and codec contracts, semantic analysis, HIR-to-MIR lowering, PEX emission, and project resolution and planning are tested this way with in-memory inputs. Private function and boundary units remain inside their owning source modules. Mixed suites are split according to what each case exercises, without dropping assertions or exposing private production APIs solely for testing.
+
+Shared fixtures and independent test evaluators live under the test trees, normally `tests/common/mod.rs`. An internal unit suite can reference a shared fixture through a test-only helper module. Helpers are not standalone Cargo test entries or production APIs. Unit and comprehensive suites can both test pure logic; their placement alone does not imply real filesystem, process, protocol, editor, or game coverage. External verification still requires the separately authorized workflow and any unresolved results remain in the roadmap.

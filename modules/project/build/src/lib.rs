@@ -5,9 +5,6 @@ pub mod fingerprint;
 pub mod output;
 pub mod plan;
 
-#[cfg(test)]
-mod test_support;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

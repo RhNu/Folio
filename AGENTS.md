@@ -27,8 +27,10 @@
 
 ## Repository conventions
 
+- Put every Rust unit test module in a separate child module file named `tests.rs`; do not define unit test modules inline or use alternative entry names. The parent declares `#[cfg(test)] mod tests;`. Use `src/tests.rs` for crate-root units and `<module>/tests.rs` for units of other modules. Split large suites into responsibility-based child files under the owning `tests/` module directory, with `tests.rs` as their entry.
+- Put comprehensive tests of a crate's public workflows in that crate's `tests/` directory beside `src/`, grouped by responsibility. Split mixed suites according to coverage: private implementation units remain in `tests.rs`, while complete public API flows use external Cargo test targets. Keep helpers in the test trees and do not widen production visibility solely for tests. Test placement does not establish or authorize external I/O, process, editor, or game verification.
 - Libraries emit structured `tracing` events; process entry points initialize subscribers. Build logs identify the package, target, revision, and stage. Reserve LSP stdout for protocol messages.
-- Pure logic unit tests do not establish real CLI, file watcher, editor, or game compatibility. Keep unresolved external verification in the roadmap.
+- Pure logic tests do not establish real CLI, file watcher, editor, or game compatibility. Keep unresolved external verification in the roadmap.
 - Reuse knowledge and minimal behavioral examples from older projects without importing their coupled CLI, workspace, or compiler structure wholesale.
 - Before adding third-party source, declarations, or assets, verify use and distribution terms and retain auditable provenance, licensing, and attribution in the owning directory.
 - The root workspace owns the Rust toolchain and dependencies. Repository configuration is authoritative for their versions.

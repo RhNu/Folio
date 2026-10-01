@@ -1,4 +1,5 @@
-use super::*;
+//! Public crate behavior over in-memory inputs.
+use folio_format_pex::*;
 
 // Hand-assembled Skyrim PEX header and empty tables. This is deliberately
 // independent of the writer so a shared encoder/decoder bug cannot pass it.

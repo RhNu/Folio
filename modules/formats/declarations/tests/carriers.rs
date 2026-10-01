@@ -1,8 +1,7 @@
-use super::*;
-
-fn sample() -> DeclarationBundle {
-    decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","source":{"path":"Base.psc","line":1,"column":1},"members":[{"name":"Read","kind":"unknown-callable","return_type":"Int","parameters":[{"name":"required","ty":"Int"},{"name":"known","ty":"Int","default":{"kind":"literal","value":"7"}},{"name":"unknown","ty":"Int","default":{"kind":"unknown"}}]},{"name":"Value","kind":"property","ty":"Int","access":{"kind":"auto-read-only"}}]}]}"#).unwrap()
-}
+//! Public declaration carriers, validation, and semantic identity contracts.
+mod common;
+use common::sample;
+use folio_format_declarations::*;
 
 #[test]
 fn both_carriers_preserve_unknown_and_known_facts() {
@@ -59,32 +58,6 @@ fn rejects_unsupported_schema() {
         validate(&bundle),
         Err(DecodeError::UnsupportedSchema(2))
     ));
-}
-
-#[test]
-fn binary_checks_header_hash_truncation_and_trailing_data() {
-    let good = encode(&sample(), DeclarationFormat::Binary).unwrap();
-    for cutoff in [0, 5, 59, good.len() - 1] {
-        assert!(decode(&good[..cutoff]).is_err());
-    }
-    let mut bad = good.clone();
-    bad[28] ^= 1;
-    assert!(decode(&bad).is_err());
-    let mut bad = good.clone();
-    bad[12..20].copy_from_slice(&u64::MAX.to_le_bytes());
-    assert!(decode(&bad).is_err());
-    let mut bad = good.clone();
-    bad.push(0);
-    assert!(decode(&bad).is_err());
-    // Even a matching outer length cannot conceal data after the DEFLATE stream.
-    let length = (bad.len() - codec::HEADER_SIZE) as u64;
-    bad[20..28].copy_from_slice(&length.to_le_bytes());
-    assert!(decode(&bad).is_err());
-    let mut truncated = good;
-    truncated.pop();
-    let length = (truncated.len() - codec::HEADER_SIZE) as u64;
-    truncated[20..28].copy_from_slice(&length.to_le_bytes());
-    assert!(decode(&truncated).is_err());
 }
 
 #[test]

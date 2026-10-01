@@ -8,6 +8,8 @@ The Papyrus frontend combines a handwritten scanner, recursive descent parsing, 
 
 Declaration summaries are independent of function body contents. Resolved names, types, call targets, and conversions enter HIR with source locations. Symbol identity includes the owning script, state, or property accessor so equally named members do not accidentally share scope.
 
+Local body analysis uses one semantic `Scope`. Its implementation is divided between parameter and statement checking in `semantic/scope.rs`, and child modules for expression analysis, name and member resolution, and call checking. These phases share local bindings, HIR facts, diagnostics, and cancellation state; module boundaries do not introduce separate analysis passes.
+
 Salsa manages analysis inputs and queries. The host validates and applies file additions, replacements, and removals in batches, keeping text, revision, CST, and semantic facts consistent within a query view. Unchanged source text and dialect can reuse parsing and declaration summaries with source locations. Unchanged host inputs reuse the same immutable view and completed semantic facts.
 
 External declarations, user flags, and argument filling policy invalidate the view only when their contents change. Existing views retain their original results. Inputs that affect semantics, including targets, visible APIs, and language policy, contribute to query identity. Salsa's internal keys do not cross CLI, LSP, or disk cache boundaries.
@@ -25,6 +27,8 @@ Generation strictly checks unresolved symbols, error types, and target constrain
 The current generation target is the Skyrim SE Papyrus ABI. After type and context checks, each feature use is implemented directly, lowered equivalently, or rejected. Visible APIs, runtime requirements, target instruction capabilities, and build settings remain separate concerns.
 
 Lowering converts typed HIR into MIR with source locations. MIR explicitly represents storage, calls, conversions, and labeled control flow. Validation checks storage references, write destinations, labels, termination of reachable paths, native function bodies, and property accessors. Inherited fields enter validation through external storage slots supplied by analysis; unknown names cannot pass as valid fields.
+
+`function.rs` owns the shared `FunctionLowerer` state, lifecycle, and temporary and label allocation. Its child modules handle statements and assignment places, expressions and conversions, and calls with capture optimization. Each phase writes to the same instruction sequence and retains the original source mappings.
 
 The PEX backend does not resolve names or infer types again. Target rejections retain the original location and a specific reason. The compiler does not discard operations or invent values to make unsupported behavior compile.
 

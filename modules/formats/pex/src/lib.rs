@@ -85,8 +85,6 @@ mod errors;
 mod model;
 mod opcode;
 mod reader;
-#[cfg(test)]
-mod tests;
 mod validation;
 mod writer;
 

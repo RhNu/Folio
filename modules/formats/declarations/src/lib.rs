@@ -48,6 +48,3 @@ fn normalize_members(members: &mut [Member]) {
     }
     members.sort_by_key(|member| (member.name.to_ascii_lowercase(), member.kind()));
 }
-
-#[cfg(test)]
-mod tests;

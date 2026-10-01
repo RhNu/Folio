@@ -1,4 +1,6 @@
-use super::*;
+//! Public crate behavior over in-memory inputs.
+use folio_papyrus::*;
+use folio_source::TextRange;
 
 #[test]
 fn keeps_every_byte_while_recovering_later_declarations() {

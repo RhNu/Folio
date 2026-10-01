@@ -152,3 +152,6 @@ fn decode_binary(input: &[u8]) -> Result<DeclarationBundle, DecodeError> {
 pub(crate) fn binary(error: impl std::fmt::Display) -> DecodeError {
     DecodeError::Binary(error.to_string())
 }
+
+#[cfg(test)]
+mod tests;
