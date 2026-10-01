@@ -1,6 +1,6 @@
 # Folio for VS Code
 
-This extension provides Papyrus `.psc` file icons and syntax highlighting, and connects to `folio lsp` for diagnostics, rich declaration hover, completion, signature help, references, inheritance navigation, CodeLens, parameter hints, verified rename, document and workspace symbols, semantic highlighting, and document formatting.
+This extension provides Papyrus `.psc` file icons and syntax highlighting, and connects to `folio lsp` for diagnostics, rich declaration and language hover, completion, signature help, references, inheritance navigation, CodeLens, parameter hints, verified rename, document and workspace symbols, semantic highlighting, and document formatting.
 
 TextMate highlighting uses conventional scopes. The server refines resolved functions, events, types, properties, parameters, and variables with standard VS Code semantic token types. The packaged `icons/papyrus-psc.svg` is the default Papyrus language icon; a theme's specific `.psc` or Papyrus icon takes precedence, and the theme must allow language icons for the default to appear.
 
@@ -30,6 +30,8 @@ Definition and declaration navigation in root sources and PSC directory dependen
 
 Hover begins with the owning script and selected package/source, followed by a complete declaration colored by the current theme. Declaration documentation, extra facts, and navigation links have separate sections. Papyrus `{ ... }` documentation is available from local sources, direct PSC dependencies, and newly generated declaration files. Existing PEX documentation strings are also preserved. Old declaration files remain readable; regenerate them to recover documentation from the original sources.
 
+Hover also explains Skyrim keywords, standard declaration flags, built-in types, literals, and operators. It includes brief descriptions, applicable examples, and Creation Kit reference links without network requests. Literal hover shows the source value, including signed numbers, hexadecimal integers, and decoded string escapes; it does not evaluate arbitrary expressions or predict Skyrim's runtime string casing. `Self` and `Parent` retain their analyzed types, and array `Length` retains its intrinsic signature. Language help is available in root sources, selected PSC dependencies, and read-only API documents, including incomplete code. Comments and whitespace do not trigger it. The documentation setting controls descriptions, examples, and reference links; the details setting controls literal values and other extra facts.
+
 CodeLens above script headers shows source context, parent navigation, derived scripts, and project references. Above members it shows references and callable overrides. Clicking a count opens the corresponding locations. Reference counts cover root project code and open root buffers; they do not count runtime calls or dependency bodies.
 
 Completion follows visible local, inherited, imported, and selected dependency declarations. Signature help includes defaults and documentation. Parameter-name hints omit named arguments and obvious labels. Use the normal VS Code definition, references, implementation, symbol search, and rename actions.
@@ -45,8 +47,8 @@ The Folio status item opens the output panel. **Folio: Show Language Server Outp
 | `folio.server.path` | Absolute path to the Folio executable or its directory; lookup continues to `PATH` if unavailable |
 | `folio.server.manifestPath` | Optional manifest path, absolute or relative to the open folder; empty uses the folder's `folio.toml` |
 | `folio.server.logFilter` | Server logging filter; defaults to `info` |
-| `folio.editor.hover.documentation` | Show declaration documentation; defaults to `true` |
-| `folio.editor.hover.details` | Show provider facts, limitations, and navigation links; defaults to `true` |
+| `folio.editor.hover.documentation` | Show declaration/language documentation, language examples, and reference links; defaults to `true` |
+| `folio.editor.hover.details` | Show literal values, provider facts, limitations, and navigation links; defaults to `true` |
 | `folio.editor.codeLens.enabled` | Enable Folio CodeLens; defaults to `true` |
 | `folio.editor.codeLens.references` | Show project reference counts; defaults to `true` |
 | `folio.editor.codeLens.implementations` | Show parent, derived-script, and override navigation; defaults to `true` |

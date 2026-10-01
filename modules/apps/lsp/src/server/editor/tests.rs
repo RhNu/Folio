@@ -4,6 +4,8 @@ use folio_build::ProjectSource;
 use folio_papyrus::PapyrusDialect;
 use folio_source::Revision;
 
+mod language_hover;
+
 const SOURCE: &str = "ScriptName Demo\n{Demo documentation.}\nInt Function Add(Int left, Int right = 2)\n{Adds values.}\n Return left + right\nEndFunction\nInt Function Use()\n Return Add(1)\nEndFunction\n";
 
 fn context() -> QueryContext {

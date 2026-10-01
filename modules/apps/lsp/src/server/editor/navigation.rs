@@ -113,17 +113,33 @@ impl QueryContext {
                 folio_ide::range(view.analysis.text(file)?, item.span?.range, self.encoding)?;
             (item, range)
         } else {
-            let symbol = self.occurrence(params)?;
             let text = self.document_source(uri)?;
             let byte =
                 folio_ide::offset(&text, parse_position(&params["position"])?, self.encoding)?;
-            let token = folio_papyrus::lex(&text)
-                .into_iter()
-                .find(|token| token.range.start <= byte && byte < token.range.end)?;
-            (
-                folio_ide::hover_symbol(view, &symbol)?,
-                folio_ide::range(&text, token.range, self.encoding)?,
-            )
+            // Selected PSC and virtual declarations use the project's implemented dialect.
+            let dialect = if let Some(loaded) = &self.loaded {
+                match loaded.root.manifest.dialect.to_ascii_lowercase().as_str() {
+                    "skyrim" => Some(folio_papyrus::PapyrusDialect::Skyrim),
+                    _ => None,
+                }
+            } else {
+                view.analysis
+                    .file_ids()
+                    .find_map(|file| view.analysis.dialect(file))
+            };
+            let language =
+                dialect.and_then(|dialect| folio_ide::language_hover(&text, dialect, byte));
+            if let Some(symbol) = self.occurrence(params)
+                && let Some(item) = folio_ide::hover_symbol(view, &symbol)
+            {
+                let token = folio_papyrus::lex(&text)
+                    .into_iter()
+                    .find(|token| token.range.start <= byte && byte < token.range.end)?;
+                (item, folio_ide::range(&text, token.range, self.encoding)?)
+            } else {
+                let (item, range) = language?;
+                (item, folio_ide::range(&text, range, self.encoding)?)
+            }
         };
         let origin = item.owner_script.as_ref().and_then(|owner| {
             self.metadata

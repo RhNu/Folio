@@ -34,6 +34,28 @@ The LSP adapter separates its public entry point in `lib.rs` and message framing
 
 Hover starts with the owning script, state where applicable, and selected provider's package, kind, and source. Source context and the declaration share one header group with normal paragraph spacing, avoiding a horizontal rule directly above the code block. A Papyrus code block preserves the complete declaration, default literals, and flags; long parameter lists wrap at token boundaries. Documentation, known limitations, and navigation actions occupy separate Markdown sections. Clients without Markdown receive plain text. User-authored documentation is escaped before being combined with trusted navigation actions.
 
+Language hover uses the file's Papyrus dialect and lossless token/CST context, independently of successful name resolution. The current Skyrim catalog covers keywords, standard `Hidden`/`Conditional` flags in declaration positions, primitive and primitive-array types, literals, operators, and delimiters. Ordinary identifiers retain semantic declaration hover. `Self` and `Parent` combine their special-variable explanations with analyzed types and navigation; array `Length` keeps the checker's intrinsic signature. Token ranges exclude neighboring whitespace and comments. Numeric previews include a directly enclosing unary minus, distinguish subtraction from negation, and display hexadecimal Int bit patterns as signed decimal values. String previews share the HIR literal decoder with lowering, display escaped control characters, and describe source values rather than runtime string-cache casing. Invalid or out-of-range values are identified without inventing a value. Hover does not evaluate arbitrary expressions or establish that a literal can be emitted on the target.
+
+Selected dependency PSC snapshots and generated read-only API documents use the same pure language-help query with the project's implemented dialect. The server performs no online lookup. Language descriptions remain prose, examples use Papyrus code fences, and catalog reference URLs render as Markdown links or plaintext URLs. `hover.documentation` controls descriptions, examples, and reference links; `hover.details` controls values and other facts. Other games' keywords or constraints are not added to the Skyrim catalog.
+
+The catalog contains original summaries and small original examples, without vendored wiki text or assets. Its Skyrim references were checked through the CK UESP MediaWiki API; these revision IDs identify the evidence for the descriptions and are separate from game/runtime compatibility verification:
+
+| Creation Kit reference | Revision |
+| --- | --- |
+| [Keywords](https://ck.uesp.net/wiki/Keyword_Reference) | 12664 |
+| [Literals](https://ck.uesp.net/wiki/Literals_Reference) | 25539 |
+| [Default values](https://ck.uesp.net/wiki/Default_Value_Reference) | 9273 |
+| [Operators](https://ck.uesp.net/wiki/Operator_Reference) | 25698 |
+| [Flags](https://ck.uesp.net/wiki/Flag_Reference) | 10064 |
+| [Properties](https://ck.uesp.net/wiki/Property_Reference) | 25738 |
+| [States](https://ck.uesp.net/wiki/State_Reference) | 26035 |
+| [Arrays](https://ck.uesp.net/wiki/Array_Reference) | 24877 |
+| [Functions](https://ck.uesp.net/wiki/Function_Reference) | 25052 |
+| [Events](https://ck.uesp.net/wiki/Events_Reference) | 25007 |
+| [Script structure](https://ck.uesp.net/wiki/Script_File_Structure) | 25811 |
+| [Statements](https://ck.uesp.net/wiki/Statement_Reference) | 26036 |
+| [Casts](https://ck.uesp.net/wiki/Cast_Reference) | 24921 |
+
 Completion shares the checker's scope, inheritance, instance/global, and import lookup rules. It returns replacement edits and resolves documentation from the selected symbol. Built-in state and array operations use the checker's authoritative signature facts. Signature help uses resolved calls and declaration parameter order, including defaults and available documentation. Parameter hints use the bound argument order and omit explicit named arguments and arguments already spelling the parameter name. Document symbols include scripts, states, and members; workspace symbols search root project declarations.
 
 References use bound symbols, type references, imports, and named-argument labels. Counts cover analyzable root project code, including unsaved root buffers; runtime calls and dependency bodies are outside that count. Implementation navigation includes known derived scripts and compatible callable overrides from selected sources and declaration dependencies. CodeLens above scripts and members exposes source context, parent navigation, references, derived scripts, and overrides.

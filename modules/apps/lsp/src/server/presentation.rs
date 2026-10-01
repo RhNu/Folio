@@ -114,10 +114,12 @@ pub(super) fn hover_text(
     markdown: bool,
     links: &[String],
 ) -> String {
-    let mut context = item
-        .owner_script
-        .clone()
-        .unwrap_or_else(|| "Papyrus".into());
+    let mut context = item.owner_script.clone().unwrap_or_else(|| {
+        match item.language.as_ref().map(|help| help.dialect) {
+            Some(folio_papyrus::PapyrusDialect::Skyrim) => "Skyrim Papyrus".into(),
+            None => "Papyrus".into(),
+        }
+    });
     if let Some(Symbol::StateMember { state, .. }) = &item.symbol {
         context.push_str(" · ");
         context.push_str(state);
@@ -142,7 +144,7 @@ pub(super) fn hover_text(
     if settings.documentation
         && let Some(documentation) = &item.documentation
     {
-        sections.push(if markdown {
+        let mut text = if markdown {
             documentation
                 .lines()
                 .map(prose)
@@ -150,7 +152,24 @@ pub(super) fn hover_text(
                 .join("  \n")
         } else {
             documentation.clone()
-        });
+        };
+        if let Some(help) = &item.language {
+            if let Some(example) = help.example {
+                text.push_str("\n\n");
+                text.push_str(&if markdown {
+                    code(example)
+                } else {
+                    example.into()
+                });
+            }
+            text.push_str("\n\n");
+            text.push_str(&if markdown {
+                format!("[Creation Kit reference (Skyrim)]({})", help.reference_url)
+            } else {
+                format!("Creation Kit reference (Skyrim): {}", help.reference_url)
+            });
+        }
+        sections.push(text);
     }
     if settings.details && !item.details.is_empty() {
         sections.push(

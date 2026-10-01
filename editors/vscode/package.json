@@ -89,11 +89,11 @@
         },
         "folio.editor.hover.documentation": {
           "type": "boolean", "default": true, "scope": "resource",
-          "description": "Show Papyrus documentation in hover and completion details. Applies without restarting the language server."
+          "description": "Show Papyrus declaration documentation, language explanations, examples and reference links in hover, and documentation in completion details. Applies without restarting the language server."
         },
         "folio.editor.hover.details": {
           "type": "boolean", "default": true, "scope": "resource",
-          "description": "Show the symbol owner, selected provider, source and navigation links in hover. Applies without restarting the language server."
+          "description": "Show literal values, the symbol owner, selected provider, source and navigation links in hover. Applies without restarting the language server."
         },
         "folio.editor.codeLens.enabled": {
           "type": "boolean", "default": true, "scope": "resource",

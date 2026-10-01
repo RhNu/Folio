@@ -149,6 +149,11 @@ impl QueryContext {
         if let Some(file) = self.uris.get(uri) {
             return Some(*file);
         }
+        // Selected dependency snapshots have no root FileId. Resolve their exact URIs
+        // without consulting a filesystem that may have changed since this generation.
+        if self.selected_document(uri).is_some() {
+            return None;
+        }
         self.paths.get(&uri_to_path(uri)?).copied()
     }
 
@@ -170,9 +175,10 @@ impl QueryContext {
     }
 
     fn document_source(&self, uri: &str) -> Option<String> {
-        if let Some(owner) = presentation::virtual_owner(uri) {
-            return self.declaration_text(&owner);
+        if let Some(text) = self.selected_document(uri) {
+            return Some(text);
         }
+        // Keep canonical path aliases available at the protocol boundary.
         let path = uri_to_path(uri)?;
         let loaded = self.loaded.as_ref()?;
         let metadata = self.metadata.as_ref()?;
@@ -180,6 +186,24 @@ impl QueryContext {
             if let Some((candidate, text)) =
                 presentation::external_source(metadata, loaded, &selection.script, &self.overlays)
                 && candidate == path
+            {
+                return Some(text);
+            }
+        }
+        None
+    }
+
+    /// Exact document identity is supplied by the immutable project snapshot.
+    fn selected_document(&self, uri: &str) -> Option<String> {
+        if let Some(owner) = presentation::virtual_owner(uri) {
+            return self.declaration_text(&owner);
+        }
+        let loaded = self.loaded.as_ref()?;
+        let metadata = self.metadata.as_ref()?;
+        for selection in &metadata.scripts {
+            if let Some((candidate, text)) =
+                presentation::external_source(metadata, loaded, &selection.script, &self.overlays)
+                && path_to_uri(&candidate) == uri
             {
                 return Some(text);
             }

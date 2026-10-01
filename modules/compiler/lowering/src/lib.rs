@@ -48,33 +48,12 @@ fn literal(text: &str, ty: &Type) -> Option<Value> {
             .filter(|n| n.is_finite())
             .map(Value::Float),
         Type::String if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 => {
-            decode_string(&text[1..text.len() - 1]).map(Value::String)
+            folio_hir::decode_string_literal(text).map(Value::String)
         }
         Type::Script(_) | Type::Array(_) if text.eq_ignore_ascii_case("none") => Some(Value::None),
         _ if text.eq_ignore_ascii_case("none") => Some(Value::None),
         _ => None,
     }
-}
-
-/// Decode escapes once, so an escaped backslash never starts another escape.
-fn decode_string(body: &str) -> Option<String> {
-    let mut out = String::with_capacity(body.len());
-    let mut chars = body.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            out.push(ch);
-            continue;
-        }
-        out.push(match chars.next()? {
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            '\\' => '\\',
-            '"' => '"',
-            _ => return None,
-        });
-    }
-    Some(out)
 }
 
 fn default_value(ty: &Type) -> Value {
@@ -526,6 +505,3 @@ fn flag_bits(
 
 mod function;
 use function::FunctionLowerer;
-
-#[cfg(test)]
-mod tests;

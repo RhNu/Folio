@@ -2,6 +2,9 @@
 
 use folio_source::SourceSpan;
 
+mod literals;
+pub use literals::decode_string_literal;
+
 /// A name and its original source range, before name binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NameRef {

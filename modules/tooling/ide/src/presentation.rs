@@ -51,6 +51,7 @@ pub(crate) fn intrinsic_hover(name: &str, receiver: Option<&folio_hir::Type>) ->
         content: declaration.clone(),
         declaration,
         documentation: None,
+        language: None,
         details: vec![if signature.callable {
             "Compiler intrinsic".into()
         } else {
@@ -160,6 +161,7 @@ pub(crate) fn hover_at_definition(
                 symbol: Some(symbol.clone()),
                 declaration,
                 documentation,
+                language: None,
                 details,
                 span: Some(at),
                 owner_script: owner,
@@ -223,6 +225,7 @@ pub(crate) fn hover_at_definition(
         symbol: Some(symbol.clone()),
         declaration,
         documentation,
+        language: None,
         details,
         span: None,
         owner_script: owner,
