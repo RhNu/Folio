@@ -1,41 +1,87 @@
-# CLI、格式化、lint 与编辑器
+# Tools and editor services
 
-CLI 与 LSP 使用同一项目解析和分析视图。工具层不复制 Papyrus 的名称解析或类型系统。进程入口负责日志、输出格式与协议；库返回结构化结果。
+CLI and LSP use the same project resolution and analysis view. Tooling does not duplicate Papyrus name resolution or type rules. Libraries return structured results; process entry points handle logging, output formats, and protocol messages.
 
-## 仓库维护命令
+## CLI and machine output
 
-`modules/apps/xtask` 是开发维护入口，不属于面向 Papyrus 项目的 `folio` 命令。仓库根目录的 Cargo alias 允许运行 `cargo xtask check-lines`。命令入口、纯逻辑计数和 workspace 扫描分别维护；Cargo metadata 定位 workspace 根与配置的构建目录，不依赖调用目录或 crate 的目录深度。`--manifest-path <Cargo.toml 路径>` 可指定其他 workspace。
+`folio` accepts global `--manifest-path`, `--log-filter`, and `--log-format` options. Commands include `init`, `new`, `metadata`, `tree`, `check`, `build`, `fmt`, `lint`, `inspect`, `lsp`, and `declarations`. Consult `folio --help` and each subcommand's help for its arguments.
 
-扫描覆盖 workspace 内的 `.rs` 文件，包括测试、未启用 feature 的源码和 xtask；排除 Cargo 配置的构建目录以及任意层级的 `.git`、`target`、`node_modules`、`.folio` 目录，不跟随符号链接。文件读取或 metadata 失败返回状态 1，不把部分扫描当作成功。
+`metadata` defaults to JSON. `tree`, `check`, `build`, `lint`, and `inspect` default to text and can select JSON. Project metadata, dependency trees, and build results have versioned schemas. Stdout carries the requested data and stderr carries logs. For `folio lsp`, stdout carries LSP messages only.
 
-计数使用 [rustc 词法器的发布包 `ra-ap-rustc_lexer`](https://crates.io/crates/ra-ap-rustc_lexer/0.175.0)，来源为 `rust-lang/rust`，许可为 MIT 或 Apache-2.0，通过 Cargo 依赖使用；workspace 固定兼容的 `unicode-ident` 版本，满足词法器要求的 Unicode 字符表版本一致约束。按含非空白、非注释 token 内容的物理行计数，每行只计一次；空白行、纯注释行、UTF-8 BOM 和 shebang 不计，代码后的注释不使该行被排除。嵌套块注释、字符与生命周期、普通/原始/字节/C 字符串由词法器识别；多行字面量中的非空白内容计入代码，空白行不计。计数不要求语法合法。
+Exit status is 0 on success, 2 for project or source errors, and 1 for I/O or process errors.
 
-单文件超过 650 行为 warning，超过 1200 行为 error 并返回状态 2；warning 不影响退出状态。默认只列出超限文件，`--all` 列出全部文件；结果按路径排序并汇总文件数、最大代码行数、warning 与 error 数量。超过硬限制时按职责拆成子模块；若内嵌测试使文件触及阈值，可把测试移到独立测试子模块。
+## Formatting
 
-## CLI 与机器输出
+`folio fmt` and `folio fmt --check` check root project Papyrus sources, list differing files, and return status 2 when formatting differs. Only `folio fmt --write` writes changes.
 
-`folio` 接受全局 `--manifest-path`、`--log-filter` 和 `--log-format`。项目命令包括 `init`、`new`、`metadata`、`tree`、`check`、`build`、`fmt`、`lint`、`inspect`、`lsp` 和 `declarations`。实际参数以 `folio --help` 及子命令帮助为准。
+The formatter uses lossless CST and does not require complete dependency APIs or a successful semantic build. Its current style uses four-space indentation, basic token spacing, and a final newline. It preserves existing blank lines, each line's existing newline style, comments, string contents, and keyword and identifier spelling.
 
-`metadata` 默认输出 JSON；`tree`、`check`、`build`、`lint` 和 `inspect` 默认文本，可选择 JSON。项目 metadata、依赖树及构建结果分别有版本化 schema。标准输出承载所选数据，日志写标准错误；`folio lsp` 的标准输出只用于 LSP 报文。成功返回状态 0，项目或源码错误返回 2，I/O 与进程错误返回 1。
+Each candidate is parsed again and checked against the original non-whitespace tokens. Invalid syntax, changed tokens, or an inability to establish safety prevents modification of that file. Writes recheck the input content. LSP document formatting uses the same formatter and rejects stale results if the buffer version or project generation changes.
 
-## 格式化
+## Lint
 
-`folio fmt` 与 `folio fmt --check` 检查根项目的 Papyrus 源码；存在差异时列出文件并返回状态 2。只有 `folio fmt --write` 写回。格式化使用无损 CST，不要求依赖 API 齐备或语义构建成功。四空格缩进、基本 token 空格及末尾换行是当前样式；保留已有空行、各行原有换行类型、注释与字符串内容，不改变关键字和标识符拼写。
+`folio lint` and LSP share rules over typed HIR. The current rule, `papyrus.prefer-truthy-none-check`, defaults to warning. In `If`, `ElseIf`, and `While` conditions, it suggests replacing `value != None` with `value` when `value` resolves to a script reference. The reversed comparison is also recognized. Arrays, unresolved types, and other types do not trigger the suggestion.
 
-候选结果重新解析并核对非空白 token。语法损坏、token 改变或无法证明安全时拒绝该文件的修改。写回前复核输入内容；LSP 文档格式化使用同一格式化器，并在缓冲区版本或项目 generation 改变时拒绝过期结果。
+The rule reports diagnostics without modifying source. Configure its severity as `off`, `info`, `warning`, or `error` under `[lint.rules]`. Warnings do not fail the command; errors return status 2. Disabling lint does not disable compilation diagnostics in `check` or `build`.
 
-## lint
+## Language server capabilities
 
-`folio lint` 和 LSP 使用同一 typed HIR 规则。规则 `papyrus.prefer-truthy-none-check` 默认以 warning 提示：在 `If`、`ElseIf`、`While` 条件中，已解析为脚本引用的 `value != None` 可以直接写成 `value`，反向比较也适用。数组、未解析类型和其他类型不触发此建议。当前只报告诊断，不自动修改源码。
+`folio lsp` serves project diagnostics, hover, definition and declaration navigation, signature help, document symbols, semantic tokens, and whole-document formatting over stdio.
 
-清单中的 `[lint.rules]` 可把该规则设为 `off`、`info`、`warning` 或 `error`。warning 不使命令失败；设为 error 时返回状态 2。禁用 lint 不会关闭 `check` 或 `build` 的合法性诊断。
+Hover includes the symbol name, type or callable signature, owning script, and selected provider's package and source. Signature help uses resolved calls and parameter order. Document symbols include scripts, states, and members.
 
-## 语言服务器与 VS Code
+Open unsaved `.psc` buffers override disk text; closing a document restores disk state. Only new unsaved scripts within the root project's source directory enter the project graph. Stale results are not published as current diagnostics. Positions default to UTF-16 and can negotiate UTF-8 when the client supports it.
 
-`folio lsp` 经 stdio 提供项目诊断、hover、定义与声明跳转、签名提示、文档符号、语义 token 和全文格式化。hover 显示符号名、类型或函数签名、所属脚本及所选脚本提供者的包与来源。签名提示使用解析后的调用与形参顺序；文档符号列出脚本、状态及成员。打开的未保存 `.psc` 缓冲区优先于磁盘；关闭后恢复磁盘状态。服务器处理文档变化、保存和受监控文件事件，过期结果不作为最新诊断发布。位置默认使用 UTF-16，客户端支持时可协商 UTF-8。只有位于根项目源码目录内的新建未保存脚本会加入项目图；根项目源码与 PSC 目录依赖可在真实源码中定位；依赖符号定位只解析本次装载的 PSC 快照，不将依赖函数体加入语义分析。`decl`、`repo` 和 PEX 只展示可核实的别名或声明载体来源，不返回历史生成路径构造的文件跳转。
+Root sources and direct PSC dependencies support navigation to real source locations. Dependency navigation parses the PSC snapshot loaded for the operation without adding dependency bodies to semantic analysis. Declaration, repository, and PEX inputs show verifiable aliases or carrier provenance; they do not turn historical generation paths into file navigation targets.
 
-服务器在会话内保存磁盘项目输入与不可变分析视图。打开、重开或提交相同文本时复用语义结果，只更新该文档诊断的版本；实际缓冲区编辑重新投影缓存的项目输入，保留其他打开的覆盖层。关闭时重读该文件以恢复磁盘内容，新建未保存文件和已删除文件的关闭重新解析项目图。保存及文件监控事件刷新清单、源码与声明依赖；加载失败清除当前结果并保留输入监控，修复输入后可继续使用同一会话。仓库监控覆盖无后缀引用的两种候选文件；不存在的路径通过最近的已存在父目录监控其创建。支持动态相对路径监控的客户端会收到清单、源码目录和依赖载体的监控注册，包含工作文件夹外的依赖；其他客户端需自行转发这些文件变化。分析缓存只驻留内存，不在 `.folio` 保存 LSP 语义数据。源码或语义设置变化仍会重新计算全项目语义。
+## Session inputs and invalidation
 
-文档大纲、语义 token 和诊断共用按文本构建的行索引转换协议位置，保留 UTF-8／UTF-16 和 CRLF 边界。`debug` 日志记录消息处理及项目加载、投影、语义分析、诊断发布和符号查询的 `elapsed_us`；项目 span 不携带整份 metadata。`modules/apps/lsp/tests/performance.py` 可用 release 二进制生成独立的首次打开、关闭、重开及编辑耗时报告，生成输入和日志位于可丢弃的 `.folio/lsp-perf`，`--compare` 核对另一份报告中的完整符号响应摘要。
+The server retains disk project inputs and immutable analysis views for the session. Opening, reopening, or submitting identical text reuses semantic results and updates the document diagnostic version. An actual buffer edit projects the cached project inputs again while preserving other open overlays.
 
-`editors/vscode` 中的客户端注册 `.psc`、提供 Papyrus 默认文件图标和基础 TextMate 语法高亮、启动 `folio lsp` 并转发项目文件事件。图标随 VSIX 打包；当前文件图标主题未为 `.psc` 或 Papyrus 指定专用图标且允许语言图标时使用。可执行文件按扩展设置、`PATH`、开发模式下的仓库 `target/debug` 顺序查找。语义 token 使用 VS Code 的通用 token 类型和修饰符，按主题规则显示已解析的函数、事件、类型、属性、参数和变量。一个客户端会话对应一个 Folio 项目文件夹。扩展可用 `npm run package` 生成供本地安装的 VSIX；`npm run publish` 是 Marketplace 发布入口，VSIX 不包含 Folio 可执行文件。源码、调试与安装步骤见[扩展说明](../../editors/vscode/README.md)。
+Closing a document rereads its disk content. Closing a new unsaved file or a deleted file resolves the project graph again. Save and watched-file events refresh manifest, source, and declaration inputs. A load failure clears current results but retains input monitoring so the same session can recover after the inputs are repaired.
+
+The analysis cache stays in memory; LSP semantic data is not persisted in `.folio`. Source or semantic setting changes still recompute project-wide semantics.
+
+## File monitoring
+
+Repository watches cover both candidate carriers for references without a suffix. Missing paths are watched through their nearest existing parent directory so later creation can be detected.
+
+Clients supporting dynamic relative-path watches receive registrations for resolved manifests, source directories, and dependency carriers, including dependencies outside the workspace folder. Other clients must forward those changes themselves. Registrations are updated when dependency configuration changes.
+
+## Protocol positions and diagnostics
+
+Document outlines, semantic tokens, and diagnostics share a text-derived line index for protocol positions, preserving UTF-8, UTF-16, and CRLF boundaries.
+
+Debug logs record message handling and `elapsed_us` for project loading, projection, semantic analysis, diagnostic publication, and symbol queries. Project spans do not contain complete metadata objects.
+
+The existing `modules/apps/lsp/tests/performance.py` tool can use a release binary to report first-open, close, reopen, and edit timings separately. Generated inputs and logs are disposable data under `.folio/lsp-perf`. Its `--compare` option checks complete symbol response digests against another report. This external verification tool is separate from the default pure logic unit test workflow; timing output alone does not establish game or editor compatibility.
+
+## VS Code client
+
+The client in `editors/vscode` registers `.psc`, provides a default Papyrus file icon and TextMate highlighting, starts `folio lsp`, and forwards file events. Semantic highlighting uses standard VS Code token types and modifiers for resolved functions, events, types, properties, parameters, and variables.
+
+The icon is packaged in the VSIX. VS Code uses it when the active file icon theme allows language icons and has no specific icon for `.psc` or Papyrus.
+
+Executable lookup checks the extension setting, then `PATH`, then the repository's `target/debug` build in extension development mode only. One client session serves one Folio project folder. Packaging, installation, publishing, debugging, and settings are documented in the [extension README](../../editors/vscode/README.md). The VSIX contains no Folio executable.
+
+## Repository maintenance
+
+`modules/apps/xtask` provides repository maintenance commands, separately from the `folio` commands for Papyrus projects. The root Cargo alias runs the line checker:
+
+```powershell
+cargo xtask check-lines
+cargo xtask check-lines --all
+cargo xtask check-lines --manifest-path <Cargo.toml>
+```
+
+Command handling, pure counting logic, and workspace scanning have separate responsibilities. Cargo metadata identifies the workspace root and configured build directory, independently of the invocation directory or crate depth.
+
+The scanner covers workspace `.rs` files, including tests, inactive feature code, and xtask itself. It excludes Cargo's configured build directory and any `.git`, `target`, `node_modules`, or `.folio` directory. It does not follow symbolic links. File read or metadata failures return status 1 rather than treating a partial scan as success.
+
+Counting uses the `ra-ap-rustc_lexer` crate through Cargo. It is derived from `rust-lang/rust` and licensed under MIT or Apache-2.0. The root workspace fixes a compatible `unicode-ident` version to match the lexer's Unicode tables; repository dependency configuration is authoritative for versions.
+
+A physical line counts once if it contains non-whitespace, non-comment token content. Blank lines, comment-only lines, a UTF-8 BOM, and a shebang do not count. A trailing comment does not exclude the code before it. The lexer handles nested block comments, characters, lifetimes, and ordinary, raw, byte, and C strings. Nonblank contents of multiline literals count; blank lines inside them do not. Counting does not require valid Rust syntax.
+
+Files above 650 code lines produce warnings; files above 1,200 produce errors and status 2. Warnings do not change the exit status. By default, output lists only files over a threshold; `--all` lists every file. Results are sorted by path and summarize the file count, maximum code line count, warnings, and errors.
+
+Split files that exceed the hard limit by responsibility. Large inline test modules can move to separate test submodules.

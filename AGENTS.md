@@ -1,35 +1,34 @@
-# Folio 项目指南
+# Folio project guide
 
-## 开始工作
+## Working context
 
-- 先读 `README.md` 和所处理领域的技术专题。未完成事项只记录在 `docs/planning/roadmap.md`；文档示例须与当前实现一致。
-- 公开配置或行为变化同步更新所属专题与 README 的相关用法；完成的计划项从路线图删除。
+- Read `README.md` and the relevant domain guide before changing behavior. Keep public configuration and examples aligned with the implementation.
+- Write workspace documentation in English. Maintain `README.zh.md` as the corresponding Chinese copy of the root `README.md`; other documents have no translated copies.
+- Keep outstanding work and unresolved verification in `docs/planning/roadmap.md`. Domain guides describe the current implementation.
 
-## 产品与代码边界
+## Product and module boundaries
 
-- 所有公开构建操作必须来自项目上下文。内部按文件或函数计算不等于提供单文件构建产品。
-- Rust crate 放在 `modules/<领域>/<短目录名>`。package 使用 `folio-<职责>`，Rust lib 通常使用 `folio_<职责>`；分类目录不是嵌套 workspace。
-- 语法核心不依赖 Salsa、LSP 或项目清单。语义查询不读磁盘、不访问网络、不直接输出诊断文本。
-- 前端不生成 PEX；后端不读取 CST、不重新解析名字或推断类型。PEX 编码库独立于编译器。
-- 目标特性必须经过直接实现、等价降级或拒绝的明确判定，不得用静默近似改变程序语义。
-- CLI 和 LSP 是适配层；共享项目加载、分析、诊断与修复能力。
-- 需要新增 crate 时，先确认 API 边界和依赖方向，参见 `docs/architecture/overview.md`；不要为未实现功能创建空 crate。
+- Every public build operation requires a project context. Internal file or function queries do not imply a single-file build interface.
+- Place Rust crates under `modules/<domain>/<short-name>`. Use `folio-<responsibility>` for package names and normally `folio_<responsibility>` for library names. Domain directories are not nested workspaces.
+- Keep the syntax core independent of Salsa, LSP, and manifests. Semantic queries must not read files, access the network, or render diagnostic text.
+- The frontend does not generate PEX. The backend consumes analyzed representations without reading CST, resolving names again, or inferring types. The PEX codec remains independent of the compiler.
+- Treat CLI and LSP as adapters over shared project loading, analysis, diagnostics, and fixes.
+- Before adding a crate, establish its API boundary and dependency direction using `docs/architecture/overview.md`. Do not add empty crates for future features.
 
-## 关键实现约束
+## Compiler and project invariants
 
-- 保留 CST 注释、空白和错误节点；语义分析允许局部错误，生成产物前执行严格合法性检查。
-- 源位置包含文件身份；生成代码保留来源映射。LSP 位置编码转换留在协议边界。
-- 同名脚本按清单依赖顺序整脚本覆盖，后列依赖优先、根项目源码最高；不得由目录枚举顺序决定，并须保留可解释的来源。
-- SDK/API 可见性与运行时能力分别建模。声明依赖默认不产生可部署代码。
-- 构建缓存键覆盖实际语义输入；Salsa 内存查询缓存与磁盘产物缓存分别管理。
-- 构建只写 Folio 管理的输出目录；不自动部署到游戏目录。
-- 库通过 `tracing` 记录结构化事件，入口初始化 subscriber。构建日志关联包、目标、revision 和阶段；LSP stdout 只承载协议。
+- Preserve CST comments, whitespace, and error nodes. Analysis may retain partial results after errors; artifact generation requires strict validation.
+- Source locations include file identity. Generated nodes retain origin mappings. Convert LSP position encodings only at the protocol boundary.
+- Select duplicate scripts as whole units: later manifest dependencies take precedence, and root project sources take precedence over dependencies. Directory enumeration must not affect selection; retain enough provenance to explain it.
+- Model SDK/API visibility separately from runtime capabilities. Declaration dependencies do not produce deployable code.
+- Give each target feature an explicit outcome: direct implementation, equivalent lowering, or rejection. Never silently approximate program semantics. Maintain one authoritative capability model and record each feature's target requirements and verification basis.
+- Build cache keys cover actual semantic inputs. Manage Salsa's in-memory query cache separately from the disk artifact cache.
+- Builds write only to Folio-managed output locations and never deploy automatically to game directories.
 
-## 验证与变更
+## Repository conventions
 
-- 默认自动验证限于纯逻辑单元测试。真实 CLI、文件监控、编辑器和游戏兼容性需要独立验证，不从单元测试推断其结果。
-- 不用源码文本、目录布局或当前快照充当行为规范；不沿用旧项目的结构断言测试。
-- 目标能力数据只维护一份。新增 feature 时说明语义、目标要求、降级或拒绝行为及验证依据。
-- 复用旧项目知识与最小行为用例时，不整块搬入旧 CLI、workspace 或 compiler 的耦合结构。
-- 引入第三方源码、声明或资产前核实使用与分发条件，并在所属目录保留可核查的来源、许可和归属信息。
-- Rust 工具链与依赖由根 workspace 管理，实际版本以仓库配置为准。
+- Libraries emit structured `tracing` events; process entry points initialize subscribers. Build logs identify the package, target, revision, and stage. Reserve LSP stdout for protocol messages.
+- Pure logic unit tests do not establish real CLI, file watcher, editor, or game compatibility. Keep unresolved external verification in the roadmap.
+- Reuse knowledge and minimal behavioral examples from older projects without importing their coupled CLI, workspace, or compiler structure wholesale.
+- Before adding third-party source, declarations, or assets, verify use and distribution terms and retain auditable provenance, licensing, and attribution in the owning directory.
+- The root workspace owns the Rust toolchain and dependencies. Repository configuration is authoritative for their versions.

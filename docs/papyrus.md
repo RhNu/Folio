@@ -1,25 +1,37 @@
-# Folio 的 Skyrim Papyrus 规范
+# Skyrim Papyrus in Folio
 
-本文描述 Folio 当前识别和检查的 Skyrim Papyrus 行为。项目须选择 `languages.papyrus.dialect = "skyrim"` 与 `build.target = "skyrim-se"`。语法接受范围、目标可生成范围和实际运行时 API 是不同条件；`check` 会报告无法分析或无法在目标上表达的程序。
+This guide describes the Skyrim Papyrus behavior Folio currently recognizes and checks. A project selects `languages.papyrus.dialect = "skyrim"` and `build.target = "skyrim-se"`. Accepted syntax, target generation support, and available runtime APIs are separate requirements. `check` reports programs that cannot be analyzed or represented on the target.
 
-## 源码与声明
+## Sources and declarations
 
-源码使用 `.psc`。脚本以 `ScriptName` 声明，可指定 `Extends`、`Hidden`、`Conditional`。Folio 识别导入、变量、属性、具名状态、函数、事件、参数默认值、`Global`、`Native` 和项目声明的自定义 flags。脚本名与文件名按 ASCII 大小写不敏感规则核对；同包重名报错。
+Source files use `.psc`. Scripts begin with `ScriptName` and can specify `Extends`, `Hidden`, and `Conditional`. Folio recognizes imports, variables, properties, named states, functions, events, parameter defaults, `Global`, `Native`, and project-declared custom flags.
 
-函数与事件体支持局部变量、`Return`、赋值、`If`/`ElseIf`/`Else`、`While`、调用和表达式。表达式包括字面量、算术与比较、逻辑操作、成员访问、数组构造与索引，以及显式 `As` 转换。赋值 `=` 与相等比较 `==` 分别处理。词法树保留空白、分号行注释、`;/ … /;` 块注释、`{ … }` 文档注释、续行及错误节点。损坏的局部结构不会丢弃整份文件；不能安全分析或生成的节点会产生诊断。
+Script and file names are compared without ASCII case sensitivity. Duplicate script names within a package are errors.
 
-## 类型、调用与转换
+Function and event bodies support local variables, `Return`, assignments, `If`/`ElseIf`/`Else`, `While`, calls, and expressions. Expressions include literals, arithmetic, comparisons, logical operations, member access, array construction and indexing, and explicit `As` casts. Assignment `=` and equality `==` are distinct operations.
 
-分析层统一处理内建类型、脚本引用和数组。它解析继承、成员、函数调用、参数绑定和来源；未解析名称使用错误状态限制连锁诊断，不伪装成正常 `None`。外部声明只提供可见 API，不能替代游戏或扩展的实际运行时。
+The syntax tree retains whitespace, semicolon line comments, `;/ ... /;` block comments, `{ ... }` documentation comments, line continuations, and error nodes. A damaged local construct does not discard the entire file. Constructs that cannot be safely analyzed or generated produce diagnostics.
 
-Skyrim 的 `If`、`ElseIf`、`While` 及 `&&`、`||`、`!` 接受 `Bool`，也允许 `Int`、`Float`、`String`、脚本引用、数组和 `None` 的隐式 Bool 转换。转换在语义结果中显式记录，生成时形成 MIR `Cast`。这不会放宽 `None` 比较：数值、`Bool` 和 `String` 不能因此与 `None` 比较。数组可用于条件和 `None` 比较，但两种写法的行为不据此视为等价。
+## Types and conversions
 
-`String` 与 `Int`/`Float` 可用 `+` 拼接，`String +=` 也接受对应数值。语义层确定转换，降级时对数值执行 String `Cast`，再使用 `StrCat`。不能表达的操作会明确拒绝；例如不能把浮点取模静默改为另一种计算。
+Analysis handles built-in types, script references, and arrays in one model. It resolves inheritance, members, calls, argument bindings, and source locations. Unresolved names retain an error state that limits cascading diagnostics; they are not treated as valid `None` values. External declarations provide visible APIs, not the runtime implementations of a game or extension.
 
-调用按已解析的形参绑定命名实参，同时保留源码中的求值顺序。没有默认值的必填实参缺失时默认报 `semantic.argument-count`。项目开启 `fill-missing-arguments` 后，在调用点补入类型默认值并报告 `semantic.argument-defaulted`；已有实参仍照原顺序求值。
+Skyrim conditions in `If`, `ElseIf`, and `While`, and operands of `&&`, `||`, and `!`, accept `Bool` and implicit Boolean conversions from `Int`, `Float`, `String`, script references, arrays, and `None`. Semantic analysis records those conversions explicitly, and lowering emits MIR `Cast` operations.
 
-## Skyrim 内置操作
+Boolean conversion does not relax comparison rules: numeric values, `Bool`, and `String` cannot be compared with `None` on that basis. Arrays can appear in conditions and in comparisons with `None`, but the two forms are not assumed to be equivalent.
 
-`GetState()` 和 `GotoState(String)` 是编译器内置实例方法，Folio 为状态读取与迁移生成代码；迁移依次执行 `OnEndState()`、更新状态、`OnBeginState()`。数组的 `Length`、`Find` 和 `RFind` 使用目标数组操作。引擎 native 方法须经项目源码或外部声明可见；内置状态和数组能力不使其他引擎脚本自动可见。
+`String` can be concatenated with `Int` or `Float` using `+`; `String +=` accepts those numeric types as well. Analysis selects the conversion, then lowering emits a string `Cast` followed by `StrCat`. Unsupported operations are rejected explicitly; floating-point remainder, for example, is not silently replaced with a different calculation.
 
-语义错误下，编辑器仍可取得已解析的局部类型、定义和诊断。`build` 只接受通过语义、目标与 MIR 验证的程序。具体阶段和求值顺序保证见[编译管线](architecture/compiler.md)；项目设置与依赖可见性见[项目与依赖](architecture/project-model.md)。
+## Calls and defaults
+
+Named arguments bind to resolved parameters while preserving source evaluation order. By default, omitting a required argument without a default produces `semantic.argument-count`. With `fill-missing-arguments` enabled, the call site supplies the type's default value and reports `semantic.argument-defaulted`. Supplied arguments keep their original evaluation order.
+
+PEX-derived APIs can have unknown parameter defaults and unknown callable kinds. Argument filling does not guess unknown defaults. See [Experimental PEX dependencies](architecture/project-model.md#experimental-pex-dependencies) for the supported uses and restrictions.
+
+## Built-in operations
+
+`GetState()` and `GotoState(String)` are compiler-provided instance methods. Folio generates state reads and transitions; a transition calls `OnEndState()`, updates the state, then calls `OnBeginState()`.
+
+Array `Length`, `Find`, and `RFind` use target array operations. Engine native methods must be visible through project sources or external declarations. Built-in state and array operations do not make other engine scripts automatically visible.
+
+Editors can retrieve resolved local types, definitions, and diagnostics even when other semantic errors exist. A build requires semantic, target, and MIR validation to succeed. See [Compiler pipeline](architecture/compiler.md) for phase boundaries and evaluation order, and [Projects and dependencies](architecture/project-model.md) for configuration and API visibility.

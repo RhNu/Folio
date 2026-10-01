@@ -1,8 +1,10 @@
-# 项目与依赖
+# Projects and dependencies
 
-`folio.toml` 是 Folio 的项目边界。命令从当前目录向上查找最近的同名清单，或使用 `--manifest-path` 指定；文件名须精确匹配。一个项目有一个源码根和一个输出目录。文件系统相对路径以清单所在目录为基准。
+`folio.toml` defines a Folio project. Project discovery searches upward from the current directory for that exact filename, unless `--manifest-path` selects a manifest. A project has one source root and one output directory. Relative filesystem paths are resolved from the manifest directory.
 
-清单使用当前版本的字段与默认值，不声明 schema 版本，并拒绝未知字段。当前支持 Skyrim Papyrus、`skyrim-se` 目标和 PEX 输出：
+## Manifest
+
+The manifest uses the current release's fields and defaults, has no schema version, and rejects unknown fields. The supported language is Skyrim Papyrus, the build target is `skyrim-se`, and the output format is PEX.
 
 ```toml
 [package]
@@ -29,22 +31,24 @@ debug-info = true
 "papyrus.prefer-truthy-none-check" = "warning"
 ```
 
-`paths.source` 和 `paths.output` 默认分别为 `Source/Scripts` 和 `Scripts`。两者须是项目内互不重叠的相对目录，不得指向 `.folio`，也不得包含符号链接或其他重解析点。源码目录必须存在，输出目录由构建创建。`profile` 参与构建身份，目前不切换优化级别。
+The source and output paths default to `Source/Scripts` and `Scripts`. Both must be relative directories within the project, must not overlap, and must not point into `.folio` or contain symbolic links or other reparse points. The source directory must exist; the build creates the output directory. The build profile contributes to build identity but does not select an optimization level.
 
-`user-flags` 显式声明自定义 Papyrus flags；`Hidden` 与 `Conditional` 是语言内置项。`fill-missing-arguments` 默认关闭，省略没有默认值的必填参数会报错；开启时在调用点补类型默认值并发出警告，不修改函数签名。`build.debug-info` 默认开启 PEX 函数与行映射。两项设置均进入构建指纹。lint 规则严重性支持 `off`、`info`、`warning` 和 `error`，不改变 `check/build` 的编译合法性。
+`user-flags` declares custom Papyrus flags. `Hidden` and `Conditional` are built into the language. `fill-missing-arguments` is disabled by default: omitting a required argument without a default is an error. Enabling it supplies type defaults at the call site and emits a warning without changing the function signature.
 
-## 依赖输入与选择
+`build.debug-info` defaults to `true` and controls PEX function and line mappings. Both debug information and argument filling contribute to the build fingerprint. Lint severities are `off`, `info`, `warning`, and `error`; they do not change compilation validity for `check` or `build`.
 
-`[[dependencies]]` 按清单顺序声明，每项都是一个独立的 API 来源。支持四种模式：
+## Dependency inputs
 
-| kind | path | 装载行为 |
+Each `[[dependencies]]` entry declares an independent API source, in manifest order.
+
+| Kind | Path | Loading behavior |
 | --- | --- | --- |
-| `psc` | PSC 目录 | 递归提取脚本 API；默认 UTF-8，可指定 `encoding = "windows1252"` |
-| `pex` | PEX 目录 | 实验性地还原二进制中存在的 API 事实 |
-| `decl` | 声明文件 | 按文件内容读取 JSON 或 `.fdecl` 二进制声明 |
-| `repo` | 仓库内的逻辑路径 | 从全局本地仓库定位声明文件，再使用相同的声明解码与分析流程 |
+| `psc` | PSC directory | Recursively extract script APIs; decode UTF-8 by default or use `encoding = "windows1252"` |
+| `pex` | PEX directory | Experimentally recover API facts present in the binary |
+| `decl` | Declaration file | Detect JSON or binary `.fdecl` encoding from the contents |
+| `repo` | Logical repository path | Find a declaration file in the local repository, then use the same declaration decoder and analysis path |
 
-`name` 是清单内唯一的来源别名，不要求与声明内容匹配。依赖不声明包版本，也不加载其他项目的清单或传递依赖。`psc`、`pex`、`decl` 的路径可以指向项目外、另一磁盘上的本地输入；主机路径与可移植的来源身份分别保存。`encoding` 只适用于 `psc`。
+`name` is a unique source alias within the manifest; it need not match the declaration contents. Dependencies have no package version field, do not load another project's manifest, and do not resolve transitive dependencies. Filesystem paths for `psc`, `pex`, and `decl` may refer to local inputs outside the project or on another drive. Host paths and portable source identities are stored separately. The `encoding` option applies only to `psc`.
 
 ```toml
 [[dependencies]]
@@ -68,30 +72,40 @@ kind = "decl"
 path = "../Declarations/shared-api.fdecl"
 ```
 
-四种输入都投影成同一种声明模型，再进入统一的脚本选择和语义分析。依赖的函数体不进入编译输入，也不产生本次可部署代码；根项目保留源码与函数体，`build` 只为根项目脚本生成 PEX。PSC 与 PEX 目录不能为空，目录内大小写不敏感的重名脚本或无效声明会报错。PSC 直接依赖与声明生成共用目录扫描、文本解码和 API 提取流程。目录载体的内部文件和子目录须是普通文件系统条目，拒绝链接或特殊类型。
+All four inputs become the same declaration model before script selection and semantic analysis. Dependency function bodies are excluded from compilation, and dependencies produce no deployable code in the current build. Root project sources retain their bodies; `build` generates PEX only for root project scripts.
 
-同名脚本按整脚本选择：后列依赖优先，根项目源码最高。即使不同别名指向同一载体，也保留每次依赖声明的顺序和来源；目录枚举顺序不参与优先级。脚本名按 ASCII 大小写不敏感规则比较，PSC 文件名须与 `ScriptName` 一致。`folio tree` 和 `folio metadata` 展示提供者、选中来源和外部运行要求。API 可见性不代表运行时实现已安装；Folio 不下载或部署依赖，不执行版本求解。
+PSC and PEX directories must be nonempty. Invalid declarations and duplicate script names within one directory input, compared without case sensitivity, are errors. PSC dependencies and declaration generation share directory scanning, decoding, and API extraction. Files and subdirectories inside directory inputs must be ordinary filesystem entries; links and special entry types are rejected.
 
-## 全局本地仓库
+## Script selection and runtime requirements
 
-`FOLIO_HOME` 默认是用户目录下的 `.folio`，仓库位于其 `repo` 子目录。可设置绝对路径的环境变量改变位置；应用在启动时固定本次操作使用的位置：
+Script selection replaces whole scripts: later dependencies take precedence over earlier ones, and root project sources take precedence over all dependencies. Each dependency entry retains its position and provenance even when different aliases refer to the same carrier. Directory enumeration never sets priority.
+
+Script names use ASCII case-insensitive comparison. A PSC filename must match its `ScriptName`. `folio tree` and `folio metadata` expose providers, selected sources, and external runtime requirements.
+
+API visibility does not establish that a runtime implementation is installed. Folio neither downloads nor deploys dependencies and does not solve dependency versions.
+
+## Local declaration repository
+
+The user-level Folio home defaults to `.folio` in the user's home directory. Its `repo` subdirectory stores declarations. Set `FOLIO_HOME` to an absolute path to choose another location; the application fixes the location at the start of each operation.
 
 ```powershell
 $env:FOLIO_HOME = 'D:\Folio'
 ```
 
-`repo` 的逻辑路径使用 `/` 分隔，不接受绝对路径、盘符、反斜线、空组件、`.` 或 `..`，也不允许通过链接逃出 `FOLIO_HOME/repo`。例如 `ck/1.6.1170.0` 查找：
+A `repo` path uses `/` separators. It cannot contain an absolute path, drive letter, backslash, empty component, `.`, or `..`, and links must not allow it to escape `FOLIO_HOME/repo`. For example, `ck/1.6.1170.0` selects between:
 
 ```text
 $FOLIO_HOME/repo/ck/1.6.1170.0.fdecl
 $FOLIO_HOME/repo/ck/1.6.1170.0.json
 ```
 
-只有一个候选文件时使用它；两个都存在时报告歧义，要求在清单中显式指定 `.fdecl` 或 `.json` 后缀。明确指定后缀时只读取该文件。候选文件的出现、消失及链接目标变化都属于输入变化。`folio declarations list` 递归列出本地仓库中可解码的声明文件及来源、profile 和脚本数。
+If exactly one candidate exists, Folio uses it. If both exist, resolution reports ambiguity: specify the `.fdecl` or `.json` suffix in the manifest. An explicit suffix selects only that file. Candidate creation, deletion, and link target changes are input changes.
 
-## 实验性的 PEX 输入
+`folio declarations list` recursively lists decodable repository files with their provenance, profile, and script counts.
 
-直接读取 PEX 目录需由根项目显式开启：
+## Experimental PEX dependencies
+
+The root project must explicitly enable direct PEX directory inputs:
 
 ```toml
 [experimental]
@@ -103,13 +117,15 @@ kind = "pex"
 path = "../CompiledMod/Scripts"
 ```
 
-Folio 读取 Skyrim PEX 3.1/3.2，为脚本、继承、变量、属性、状态和可调用成员提取 API。PEX 不保存参数默认值，也不标明可调用成员原本是事件还是函数。这些信息以逐参数的 `unknown` 默认值和 `unknown-callable` 成员明确保存。传齐参数的调用可用；省略未知默认值的参数会报错，即使开启 `fill-missing-arguments` 也不会猜测；源码覆盖继承的未知种类可调用成员会报错。未知事实在 JSON、二进制声明及语义输入之间保持一致。声明文件不因来源标签而要求开启实验选项。
+Folio reads Skyrim PEX 3.1 and 3.2 to extract scripts, inheritance, variables, properties, states, and callable members. PEX does not retain parameter defaults or distinguish whether a callable was originally a function or an event. The declaration model preserves these gaps as per-parameter `unknown` defaults and `unknown-callable` members.
 
-损坏或当前 codec 不支持的 PEX 明确拒绝。PEX 及预生成声明不具有消费机器上的 PSC 定义位置。PSC 目录依赖可使用本次装载的真实源码快照进行符号定位。
+Calls that supply every argument can be analyzed. Omitting an argument with an unknown default is an error even when `fill-missing-arguments` is enabled. A source declaration cannot override an inherited callable of unknown kind. These unknown facts survive JSON, binary declaration, and semantic input conversion. A declaration file's provenance label alone does not require the experimental option.
 
-## 声明模型与载体
+Corrupt PEX and formats unsupported by the codec are rejected. PEX and pregenerated declarations do not provide PSC definition locations on the consuming machine. Direct PSC dependencies can support navigation through the real source snapshot loaded for the operation.
 
-声明协议从 schema 1 开始，仅接受当前格式。JSON 顶层包含格式标识、协议版本、语言/ABI profile、生成来源和脚本；来源不承担包身份或运行时能力判断：
+## Declaration model
+
+The declaration protocol uses schema 1 and accepts only the current format. JSON contains a format identifier, schema version, language/ABI profile, generation provenance, and scripts. Provenance does not determine package identity or runtime capability.
 
 ```json
 {
@@ -136,22 +152,38 @@ Folio 读取 Skyrim PEX 3.1/3.2，为脚本、继承、变量、属性、状态�
 }
 ```
 
-`origin.source` 是可移植的描述标签；生成器还写入 `input_digest`，摘要涵盖排序后的相对输入路径与解码后的源码文本。脚本可保存继承、native、flags、imports、状态、成员及相对来源位置。来源位置只是历史生成信息，不被当作消费机器上的可跳转路径。类型名由语义层解析。
+`origin.source` is a portable descriptive label. The source generator also writes `input_digest`, covering sorted relative input paths and decoded source text. Script records can include inheritance, native status, flags, imports, states, members, and relative source locations. Those locations record generation history; consumers must not treat them as navigable paths on their machine. The semantic layer resolves type names.
 
-成员按 `function`、`event`、`unknown-callable`、`property`、`variable` 分别存储有效事实；函数省略 `return_type` 表示无返回值。属性的 `access` 为 `auto`、`auto-read-only` 或含 `readable`、`writable` 的 `manual`。参数默认值为 `required`、带 Papyrus 字面量文本的 `literal` 或 `unknown`；省略 `default` 等同于 `required`。参数顺序有语义意义。
+Member variants retain facts appropriate to `function`, `event`, `unknown-callable`, `property`, or `variable`. Omitting a function's `return_type` means it returns no value. Property `access` is `auto`, `auto-read-only`, or `manual` with `readable` and `writable` fields. Parameter defaults are `required`, `literal` with Papyrus literal text, or `unknown`. An omitted `default` means `required`. Parameter order is semantically significant.
 
-JSON 与 `.fdecl` 使用相同模型和校验器，按内容识别编码。二进制格式是固定数组与数字标签的 MessagePack，再进行 raw DEFLATE 压缩。60 字节头部依次包含 8 字节 `FOLDECL\0`、小端 u32 schema、小端 u64 原始长度、小端 u64 压缩长度和 32 字节原始 payload BLAKE3；其后是完整压缩流。解码核对长度、摘要、完整流消费、结构及未知标签，拒绝尾随数据。载体与解压数据各最多 128 MiB，单字符串最多 1 MiB，单容器最多 100,000 项，结构深度最多 64，值数量也有限制。协议数组顺序和标签定义在 `formats/declarations` 中，不使用 Rust 内存布局作为文件协议。
+## Declaration encoding
 
-## 从源生成声明
+JSON and binary `.fdecl` use the same model and validator. Decoding identifies the encoding by contents.
 
-生成命令显式指定来源、编码和目的地，默认输出二进制。`--repo` 指定仓库逻辑路径；`--output` 指定任意目标文件路径，两者恰好选一个。生成拒绝覆盖已有文件，并在复核源码快照后发布完整文件：
+The binary payload uses MessagePack arrays with fixed field positions and numeric tags, compressed with raw DEFLATE. A 60-byte header precedes the complete compressed stream:
+
+| Field | Size and encoding |
+| --- | --- |
+| Magic | 8 bytes: `FOLDECL\0` |
+| Schema | Little-endian `u32` |
+| Uncompressed length | Little-endian `u64` |
+| Compressed length | Little-endian `u64` |
+| Payload digest | 32-byte BLAKE3 of the uncompressed payload |
+
+The decoder checks lengths, the digest, complete stream consumption, structure, and tags; it rejects unknown tags and trailing data. Both the carrier and decompressed data are limited to 128 MiB, individual strings to 1 MiB, containers to 100,000 entries, and nesting to 64 levels. The decoder also limits the total number of values.
+
+Array ordering and tag definitions belong to `modules/formats/declarations`. Rust memory layout is not the file protocol.
+
+## Generating declarations
+
+Generation takes an explicit source directory, provenance label, and destination. Encoding defaults to UTF-8 and output to binary. Select exactly one destination: `--repo` for a repository logical path or `--output` for a filesystem path. Generation refuses to overwrite an existing file and publishes a complete file after rechecking the source snapshot.
 
 ```powershell
-folio declarations generate --source-root '<CK PSC 目录>' --source ck/1.6.1170.0 --encoding windows1252 --repo ck/1.6.1170.0
-folio declarations generate --source-root '<SKSE PSC 目录>' --source skse/2.2.8 --repo skse/2.2.8
-folio declarations generate --source-root '<自有 PSC 目录>' --source my-api --format json --output my-api.json
+folio declarations generate --source-root '<CK PSC directory>' --source ck/1.6.1170.0 --encoding windows1252 --repo ck/1.6.1170.0
+folio declarations generate --source-root '<SKSE PSC directory>' --source skse/2.2.8 --repo skse/2.2.8
+folio declarations generate --source-root '<your PSC directory>' --source my-api --format json --output my-api.json
 ```
 
-CK 和 SKSE 是分别生成的 API 输入，需要在项目中显式选择。取得相应工具及脚本来源的用户可以在自己的本地仓库生成声明；源码及派生声明的使用与分发仍遵循各自来源的条件。生成来源应保留实际工具版本与输入摘要，版本名称由用户选择的仓库路径表达。
+Generate CK and SKSE APIs separately and select each explicitly in the project manifest. Users with the relevant tools and script sources can generate declarations in their own local repository. Source code and derived declarations remain subject to the source's use and distribution terms. Retain actual tool versions and input digests in generation provenance; the repository path expresses the version label chosen by the user.
 
-项目输入在一次操作中形成一致快照。构建语义指纹与文件快照分别处理，详细契约见[构建与产物](build-artifacts.md)。
+Inputs form a consistent snapshot for each operation. Semantic build fingerprints and physical file snapshots have separate roles; see [Builds and artifacts](build-artifacts.md).

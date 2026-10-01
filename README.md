@@ -1,10 +1,12 @@
 # Folio
 
-Folio 是面向 Papyrus 项目的工具链。它读取 `folio.toml`，解析本地源码和声明依赖，检查 Skyrim Papyrus，并为根项目生成 PEX。检查、构建、格式化、lint 和编辑器服务使用同一项目上下文。
+[English](README.md) | [Simplified Chinese](README.zh.md)
 
-## 快速开始
+Folio is a toolchain for Papyrus projects. It reads `folio.toml`, loads local sources and declaration dependencies, checks Skyrim Papyrus, and generates PEX files for the root project. Checking, building, formatting, linting, and editor services share the same project context.
 
-以下命令假定 `folio` 已在 `PATH` 中：
+## Quick start
+
+With `folio` on your `PATH`, run:
 
 ```powershell
 folio new MyMod
@@ -13,30 +15,30 @@ folio check
 folio build
 ```
 
-`folio new` 创建项目目录、`folio.toml` 和 `Source/Scripts` 中的起始脚本。已有项目可在项目目录运行 `folio init --name MyMod`。命令从当前目录向上查找最近的 `folio.toml`；也可传入 `--manifest-path <路径>` 指定清单。
+`folio new` creates a manifest and a starter script under `Source/Scripts`. To initialize an existing directory, run `folio init --name MyMod` there. Project commands find the nearest `folio.toml` by searching upward from the current directory; use `--manifest-path <path>` to select one explicitly.
 
-默认从 `Source/Scripts` 读取 `.psc`，将根项目生成的 `.pex` 放在 `Scripts`。`.folio` 保存可丢弃的缓存和构建记录。Folio 不向游戏目录部署文件；本地依赖只供分析。
+By default, Folio reads `.psc` files from `Source/Scripts`, writes the root project's `.pex` files to `Scripts`, and keeps disposable caches and build records in `.folio`. Dependencies supply declarations for analysis. Folio does not deploy files to the game directory.
 
-## 常用命令
+## Commands
 
-| 命令                         | 用途                                   |
-| ---------------------------- | -------------------------------------- |
-| `folio check`                | 检查项目语义与目标可行性，不写 PEX     |
-| `folio build`                | 构建并发布根项目的 PEX                 |
-| `folio fmt`                  | 检查源码格式；`folio fmt --write` 写回 |
-| `folio lint`                 | 报告可配置的代码建议                   |
-| `folio tree`                 | 查看依赖和同名脚本的选择               |
-| `folio metadata`             | 输出解析后的项目数据，默认 JSON        |
-| `folio inspect`              | 验证最近一次成功构建及产物             |
-| `folio inspect --pex <路径>` | 独立读取一个 PEX 文件                  |
-| `folio declarations list`    | 列出本地仓库声明                         |
-| `folio lsp`                  | 启动供编辑器使用的语言服务器           |
+| Command                      | Purpose                                                    |
+| ---------------------------- | ---------------------------------------------------------- |
+| `folio check`                | Check semantics and target feasibility without writing PEX |
+| `folio build`                | Generate and publish PEX for the root project              |
+| `folio fmt`                  | Check formatting; use `folio fmt --write` to apply changes |
+| `folio lint`                 | Report configurable code suggestions                       |
+| `folio tree`                 | Show dependencies and script provider selection            |
+| `folio metadata`             | Describe the resolved project; JSON is the default         |
+| `folio inspect`              | Verify the latest successful build and its outputs         |
+| `folio inspect --pex <path>` | Read a PEX file independently of a project                 |
+| `folio declarations list`    | List declarations in the local repository                  |
+| `folio lsp`                  | Start the language server                                  |
 
-`check` 不执行最终 PEX 编码，因此个别布局限制可能在 `build` 时才报告。`inspect --pex` 只读取产物，不执行单文件构建。`check`、`build`、`lint`、`tree` 和 `inspect` 可按命令帮助选择文本或 JSON 输出。
+`check` does not perform final PEX encoding, so `build` can report additional layout limits. `inspect --pex` reads an artifact; it does not build a source file. See each command's help for options and output formats.
 
-## 项目配置
+## Project configuration
 
-`folio.toml` 按当前版本的字段与默认值解析，不声明 schema 版本。下面是基本配置；`paths` 可省略，展示的是默认目录：
+The manifest uses the current release's fields and defaults without a schema version. This example shows the default source and output directories; the `[paths]` section is optional.
 
 ```toml
 [package]
@@ -57,9 +59,9 @@ profile = "dev"
 emit = ["pex"]
 ```
 
-依赖支持 `psc`、实验性的 `pex`、`decl` 和 `repo`，都只提供 API 声明。`decl` 读取 JSON 或 `.fdecl` 二进制文件；`repo` 从用户目录的 `.folio/repo` 读取，也可用绝对路径的 `FOLIO_HOME` 改变位置。CK、SKSE 声明须从自己的本地源码生成，再以 `repo` 显式选择。后列依赖的同名脚本优先，根项目源码最高；所需运行时由项目自行提供。完整字段、生成命令和覆盖规则见[项目与依赖](docs/architecture/project-model.md)。
+Dependencies can be PSC directories (`psc`), experimental PEX directories (`pex`), declaration files (`decl`), or entries in the user-level declaration repository (`repo`). All four supply API declarations. Later dependencies override earlier scripts as whole units; root project sources take precedence over every dependency. The project remains responsible for the required runtime implementations.
 
-只有 `.psc` 的模组源码目录可直接作为声明依赖，无需给该目录添加 `folio.toml`：
+A mod's PSC directory can be used directly without adding a manifest to it:
 
 ```toml
 [[dependencies]]
@@ -68,20 +70,27 @@ kind = "psc"
 path = "../OtherMod/Source/Scripts"
 ```
 
-实验性的 PEX 目录依赖需在根项目显式开启 `[experimental] pex-dependencies = true`。PEX 只提供二进制中可还原的 API，具体限制见[项目与构建](docs/architecture/project-model.md)。
+`decl` accepts JSON and binary `.fdecl` files. `repo` resolves declarations under the user's `.folio/repo`; an absolute `FOLIO_HOME` changes that location. Generate CK and SKSE declarations from your own local sources and select them explicitly. PEX directory dependencies require `[experimental] pex-dependencies = true` and expose only API facts recoverable from the binary. See [Projects and dependencies](docs/architecture/project-model.md) for configuration, generation commands, and limitations.
 
-Folio 当前接受的语言构造及 Skyrim 行为见[Papyrus 规范](docs/papyrus.md)。格式化、lint，以及 VS Code 的 `.psc` 文件图标、语法与语义高亮、签名提示和符号跳转见[工具与编辑器](docs/architecture/tooling.md)。LSP 在会话内复用未变化的项目与语义视图，打开和重开同一内容不重新分析全项目；保存与文件监控事件刷新磁盘输入。
+## Language and editor support
 
-## 开发指南
+[Skyrim Papyrus](docs/papyrus.md) describes the language behavior Folio accepts and checks. [Tools and editor services](docs/architecture/tooling.md) covers formatting, lint, diagnostics, navigation, and the language server's project model.
 
-仓库按 `modules/<领域>/<crate>` 组织 Rust workspace；`editors/vscode` 是 VS Code 客户端。阅读[架构总览](docs/architecture/overview.md)了解模块边界，[编译管线](docs/architecture/compiler.md)了解语义、降级和生成，[构建与产物](docs/architecture/build-artifacts.md)了解缓存与发布。未完成工作集中在[开发计划](docs/planning/roadmap.md)。
+The VS Code client provides `.psc` file icons, syntax and semantic highlighting, hover, signature help, symbol navigation, and formatting. It uses a configured Folio executable or directory, then searches `PATH`. To package the client, run `npm ci` and `npm run package` in `editors/vscode`. The VSIX does not include the Folio executable. See the [extension README](editors/vscode/README.md) for installation, debugging, and publishing.
 
-修改公开配置或行为时，更新所属专题和本页相关用法。开发约束见[AGENTS.md](AGENTS.md)。VS Code 客户端优先使用配置的 Folio 可执行文件或目录，其次搜索 `PATH`；本地调试方式见[扩展说明](editors/vscode/README.md)。
+## Development
 
-VS Code 客户端可在 `editors/vscode` 运行 `npm ci`、`npm run package` 生成本地安装的 VSIX；发布命令为 `npm run publish`，具体前提和安装步骤见[扩展说明](editors/vscode/README.md)。VSIX 不含 `folio` 可执行文件。
+Rust crates live under `modules/<domain>/<crate>`; the VS Code client lives in `editors/vscode`. Start with the [architecture overview](docs/architecture/overview.md), then read the relevant domain guide:
 
-仓库维护命令通过 `cargo xtask` 运行。`cargo xtask check-lines` 使用 Rust 词法器检查整个 workspace 的 Rust 源文件，排除生成目录、注释与空白行；超过 650 行提示警告，超过 1200 行报错并返回状态 2。默认只列出超限文件，`--all` 显示全部文件，`--manifest-path <Cargo.toml 路径>` 可指定 workspace。行尾注释所在的代码行仍计入，多行字符串中的空白行不计。超过硬限制时应按职责拆入子模块，较大的内嵌测试也可移入测试子模块。详见[仓库维护命令](docs/architecture/tooling.md#仓库维护命令)。
+- [Projects and dependencies](docs/architecture/project-model.md): manifests, declarations, and provider selection.
+- [Compiler pipeline](docs/architecture/compiler.md): analysis, lowering, and PEX generation.
+- [Builds and artifacts](docs/architecture/build-artifacts.md): fingerprints, caches, and output publication.
+- [Tools and editor services](docs/architecture/tooling.md): CLI, LSP, formatting, lint, and repository maintenance.
 
-## 许可与来源
+[AGENTS.md](AGENTS.md) contains project constraints. Keep both README language versions and the affected domain guide aligned with public configuration or behavior changes. Outstanding work and verification gaps belong in the [roadmap](docs/planning/roadmap.md).
 
-Folio 使用 [GNU GPL version 3](LICENSE)。复用源码的来源见[PEX codec 来源记录](modules/formats/pex/PROVENANCE.md)；本地声明生成与来源信息见[项目与依赖](docs/architecture/project-model.md#从源生成声明)。第三方 SDK、游戏脚本和其他资产须按各自权利条件使用和分发。
+Run `cargo xtask check-lines` to count Rust code lines across the workspace. It excludes comments, blank lines, and generated directories, warns above 650 lines per file, and fails above 1,200. Use `--all` to list every file or `--manifest-path <Cargo.toml>` to select a workspace. See [Repository maintenance](docs/architecture/tooling.md#repository-maintenance) for counting and exit status rules.
+
+## License and provenance
+
+Folio uses [GNU GPL version 3](LICENSE). [Declaration generation](docs/architecture/project-model.md#generating-declarations) explains local API sources and attribution. Third-party SDKs, game scripts, and other assets remain subject to their own use and distribution terms.

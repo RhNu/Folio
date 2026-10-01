@@ -1,20 +1,20 @@
-# 未完成工作
+# Roadmap
 
-本页只记录尚未交付的工作。已存在的行为以 [README](../../README.md) 和对应技术专题为准；完成事项从这里删除。
+This is the workspace's record of outstanding work and unresolved verification. The [README](../../README.md) and domain guides describe the current implementation. Remove completed items from this page and retain their lasting behavior in the relevant guide.
 
-## 产品与发布
+## Distribution and compatibility
 
-- 在确定发布渠道时落实可执行文件和 VS Code 客户端的分发方式、安装说明与版本政策。
-- 以明确的外部环境和输入建立兼容性证据，再决定对外宣称的游戏与工具兼容范围。
+- Establish executable and VS Code client distribution channels, installation guidance, and version policy when release channels are selected.
+- Establish compatibility evidence with identified external environments and inputs before declaring supported game and tool combinations.
 
-## 工具体验
+## Tooling and editor services
 
-- 补齐全局仓库缺失载体恢复、双载体歧义、路径别名重定向和跨盘 PSC 导航的真实编辑器验证。
-- 为稳定诊断 code 提供 `folio explain`，区分静态说明与项目上下文中的具体拒绝原因。
-- 在共享符号与来源模型上实现补全、引用查询和安全重命名，并补充相应编辑器协议入口。
-- 根据实际需求增加范围格式化、更多 lint 规则及带 revision 检查的修复。
+- Verify missing repository carrier recovery, ambiguous dual carriers, path alias retargeting, and PSC navigation across drives in a real editor.
+- Add `folio explain` for stable diagnostic codes, separating general explanations from rejection reasons in a specific project.
+- Implement completion, references, and safe rename through the shared symbol and source model, with corresponding editor protocol handlers.
+- Add range formatting, further lint rules, and fixes with revision checks as concrete needs arise.
 
-## 目标扩展
+## Additional targets
 
-- 选择下一个具体游戏目标和所需 SDK 后，逐项定义语言差异、目标约束、PEX 编码与可验证的降级行为。
-- 有真实项目需要时再设计多目标清单、目标切换和各目标诊断的呈现。
+- Select a specific game target and SDK, then define its language differences, target constraints, PEX encoding, and verifiable lowering behavior.
+- Design manifests and diagnostic presentation for multiple targets when a real project requires them.

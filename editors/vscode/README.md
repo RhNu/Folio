@@ -1,12 +1,12 @@
-# Folio VS Code 客户端
+# Folio for VS Code
 
-此扩展为 `.psc` 提供文件图标和基础语法高亮，将项目语义查询交给 `folio lsp`，显示诊断、带来源的 hover、定义与声明跳转、签名提示、文档大纲和语义高亮，并提供文档格式化。基础高亮使用通用 TextMate scope；服务器用 VS Code 标准语义 token 类别细化函数、事件、类型、属性、参数和变量的颜色。客户端源码位于本目录，可从仓库调试或打包成 VSIX 安装。
+This extension provides Papyrus `.psc` file icons and syntax highlighting, and connects to `folio lsp` for diagnostics, hover with provider information, definition and declaration navigation, signature help, document symbols, semantic highlighting, and document formatting.
 
-扩展将 `icons/papyrus-psc.svg` 注册为 Papyrus 语言的默认文件图标，并随 VSIX 打包。VS Code 会在当前文件图标主题未为 `.psc` 或 Papyrus 指定专用图标、且允许语言图标时使用它；主题自带的专用图标优先。
+TextMate highlighting uses conventional scopes. The server refines resolved functions, events, types, properties, parameters, and variables with standard VS Code semantic token types. The packaged `icons/papyrus-psc.svg` is the default Papyrus language icon; a theme's specific `.psc` or Papyrus icon takes precedence, and the theme must allow language icons for the default to appear.
 
-## 本地打包与安装
+## Package and install locally
 
-使用 Node.js 22 或更新版本，在本目录运行：
+Use Node.js 22 or later. Run these commands from this directory:
 
 ```powershell
 npm ci
@@ -14,31 +14,41 @@ npm run package
 code --install-extension .\folio-vscode-0.2.0.vsix
 ```
 
-`npm run package` 会先编译 TypeScript，再生成 `folio-vscode-<版本>.vsix`。也可以在 VS Code 的扩展视图选择“从 VSIX 安装”。重复测试时重新打包并安装新 VSIX；版本号来自 `package.json`。VSIX 只包含客户端，安装后仍须将 `folio` 可执行文件加入 `PATH`，或设置 `folio.server.path`。
+Packaging compiles TypeScript and generates `folio-vscode-<version>.vsix`, with the version taken from `package.json`. Use that filename if the package version differs from the example. VS Code also supports **Install from VSIX** in the Extensions view. Repackage and install a new VSIX after changes.
 
-## 发布命令
+The VSIX contains only the client. Install the Folio executable separately and add it to `PATH`, or configure `folio.server.path`.
 
-`npm run publish` 会先编译客户端，然后调用 `vsce publish` 上传到 VS Code Marketplace。当前 `package.json` 中的 `folio-local` 仅用于本地测试；发布前须将它替换为已注册的 publisher ID、更新版本，并按[官方发布说明](https://code.visualstudio.com/api/working-with-extensions/publishing-extension)配置认证。本仓库不保存发布凭据。
+## Open a project
 
-## 本地调试
+Open a folder containing `folio.toml`. One client session serves `.psc` files in one project folder. The client forwards changes to manifests, source files, JSON declarations, and `.fdecl` declarations within the folder.
 
-1. 在 `editors/vscode` 安装 JavaScript 依赖，然后用 VS Code 打开仓库。
-2. 在“运行和调试”选择 **Folio: Debug VS Code extension**，按 F5。预启动任务构建扩展和 Folio，开发宿主打开 `fixtures/editor-project`。
-3. 打开 `Source/Scripts/FolioArenaController.psc`。扩展启动服务器后，“Folio Language Server”面板显示连接和错误信息。
-4. 调试服务器时，在仓库窗口运行 **Folio: Attach to LSP process**，选择 Folio 进程。此调试配置使用 CodeLLDB。
+The server also registers watches for resolved manifests, source directories, and declaration carriers outside the folder, updating registrations after dependency changes. Watches include local repository files and candidate paths that do not yet exist. Opening or reopening identical text reuses the session's semantic view; saves and watch events refresh disk inputs.
 
-修改扩展或 Rust 代码后重新启动 F5 调试会话。命令面板中的 **Folio: Restart Language Server** 使用当前二进制重启服务器。
+Definition and declaration navigation in root sources and PSC directory dependencies leads to the selected real `.psc` source. Declaration files, repository entries, and PEX dependencies expose provider information without treating historical source locations as files on the local machine.
 
-## 项目与设置
+## Settings
 
-VS Code 应打开含 `folio.toml` 的项目文件夹。一个客户端会话处理一个项目文件夹内的 `.psc`，并转发该文件夹内的清单、源码、JSON 和 `.fdecl` 文件变化。服务器还动态注册已解析清单、源码目录及声明载体的监控，覆盖项目文件夹外的依赖；依赖配置变化后更新注册。打开和重开相同文本复用服务器会话内的语义视图，保存或监控事件刷新磁盘输入。
+| Setting | Purpose |
+| --- | --- |
+| `folio.server.path` | Absolute path to the Folio executable or its directory; lookup continues to `PATH` if unavailable |
+| `folio.server.manifestPath` | Optional manifest path, absolute or relative to the open folder; empty uses the folder's `folio.toml` |
+| `folio.server.logFilter` | Server logging filter; defaults to `info` |
 
-| 设置                        | 用途                                                        |
-| --------------------------- | ----------------------------------------------------------- |
-| `folio.server.path`         | Folio 可执行文件或其目录的绝对路径；未找到时继续搜索 `PATH` |
-| `folio.server.manifestPath` | 可选清单路径；空值使用文件夹根目录的 `folio.toml`           |
-| `folio.server.logFilter`    | 服务器日志过滤器，默认 `info`                               |
+Changing these settings restarts the server. Lookup checks `folio.server.path` and then `PATH`. Only an extension development session falls back to the repository's `target/debug/folio` or `folio.exe`.
 
-设置变化会重启服务器。扩展按 `folio.server.path`、`PATH` 的顺序寻找 `folio`；仅在 VS Code 扩展开发模式下，才回退到仓库的 `target/debug/folio`（Windows 为 `folio.exe`）。已配置路径不可用时，输出面板会记录实际采用的来源。LSP 报文走 stdout，日志走 stderr。仓库外的项目可使用 `PATH` 中的 Folio，或设置 `folio.server.path`。
+If the configured location is unavailable, the output panel records the source actually used. LSP messages use stdout and logs use stderr. Projects outside the repository can use a Folio executable on `PATH` or an explicit `folio.server.path`.
 
-在项目源码与 PSC 目录依赖中，声明跳转指向解析后选中的真实 `.psc`。decl、repo 和 PEX 依赖仅展示提供者信息，不把声明载体中的相对来源位置当成本机源码。客户端监控 `.fdecl` 与 JSON 声明变化；服务器注册的依赖监控覆盖工作区外的本地仓库和未创建的候选路径。主题可直接使用通用 TextMate scope 与 VS Code 的标准语义 token 颜色规则。
+## Debug from the repository
+
+1. Install JavaScript dependencies in `editors/vscode`, then open the repository in VS Code.
+2. Select **Folio: Debug VS Code extension** in Run and Debug, then press F5. The prelaunch task builds the extension and Folio; the development host opens `fixtures/editor-project`.
+3. Open `Source/Scripts/FolioArenaController.psc`. The **Folio Language Server** output panel reports connections and errors.
+4. To debug the server, select **Folio: Attach to LSP process** in the repository window and choose the Folio process. This launch configuration requires CodeLLDB.
+
+Restart the F5 session after changing extension or Rust code. **Folio: Restart Language Server** in the Command Palette restarts the server using the current binary.
+
+## Publish
+
+`npm run publish` compiles the client and invokes `vsce publish` to upload it to the VS Code Marketplace. The `folio-local` publisher in `package.json` is a local testing placeholder. Before publishing, select a registered publisher ID, update the version, and configure authentication according to the [VS Code publishing guide](https://code.visualstudio.com/api/working-with-extensions/publishing-extension). Publishing credentials are not stored in this repository.
+
+The shared server behavior and protocol boundaries are described in [Tools and editor services](../../docs/architecture/tooling.md).

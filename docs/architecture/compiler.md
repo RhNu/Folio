@@ -1,37 +1,49 @@
-# 编译管线
+# Compiler pipeline
 
-Folio 从项目服务接收带文件身份、源码文本、方言、声明可见性、目标和设置的一致输入。前端不读取磁盘或清单；语义查询不输出终端文本；后端只消费已分析和验证的低层表示。
+Folio receives consistent project inputs containing file identities, source text, dialect, visible declarations, target, and settings. The frontend does not read the filesystem or manifest. Semantic queries return structured facts and diagnostics. The backend consumes analyzed and validated low-level representations.
 
-## 语法与语义
+## Syntax and semantic analysis
 
-Papyrus 前端使用手写扫描器、递归下降与 Pratt 表达式解析，Rowan CST 保留 token、空白、注释与错误范围。AST 门面允许编辑中的必需节点缺失。声明摘要不依赖函数体内容；名称、类型、调用目标和转换结果进入带来源的 HIR。符号身份包含所属脚本、状态或属性访问器，避免同名成员误共享作用域。
+The Papyrus frontend combines a handwritten scanner, recursive descent parsing, and Pratt expression parsing. Its Rowan CST preserves tokens, whitespace, comments, and error ranges. AST access allows required nodes to be absent while a document is being edited.
 
-分析通过 Salsa 管理输入与查询。宿主批量验证并应用文件新增、替换和删除，查询视图中的文本、revision、CST 与语义事实保持一致。源码与方言不变时可复用解析及带位置的声明摘要；宿主输入不变时复用同一不可变视图与已完成的语义事实。外部声明、用户 flags 和调用补值政策只有内容改变才使视图失效，旧视图继续保留原有结果。目标、声明 API、可见声明或语言政策影响语义时，相关输入参与查询身份。Salsa 内部 key 不跨 CLI、LSP 或磁盘缓存边界。
+Declaration summaries are independent of function body contents. Resolved names, types, call targets, and conversions enter HIR with source locations. Symbol identity includes the owning script, state, or property accessor so equally named members do not accidentally share scope.
 
-外部 API 使用同一声明模型，根项目源码独立保留函数体。每个参数分别保存必填、已知字面量默认值或未知默认值；未知可调用种类与默认值在分析中保守处理，不由来源标签猜测。
+Salsa manages analysis inputs and queries. The host validates and applies file additions, replacements, and removals in batches, keeping text, revision, CST, and semantic facts consistent within a query view. Unchanged source text and dialect can reuse parsing and declaration summaries with source locations. Unchanged host inputs reuse the same immutable view and completed semantic facts.
 
-错误模型保留可用的局部 HIR 和诊断，供 hover、定义与 lint 使用。生成入口严格验证未解析符号、错误类型和目标约束。诊断数据包含稳定 code、严重性、文件位置及必要的关联位置；终端和 LSP 仅负责呈现。
+External declarations, user flags, and argument filling policy invalidate the view only when their contents change. Existing views retain their original results. Inputs that affect semantics, including targets, visible APIs, and language policy, contribute to query identity. Salsa's internal keys do not cross CLI, LSP, or disk cache boundaries.
 
-## 目标降级与求值顺序
+External APIs use the shared declaration model; root sources retain their function bodies separately. Each parameter records a required argument, a known literal default, or an unknown default. Analysis handles unknown callable kinds and defaults conservatively rather than inferring facts from provenance labels.
 
-当前生成目标是 Skyrim SE 的 Papyrus ABI。每个实际特性使用点经类型和上下文检查后直接实现、等价降级或明确拒绝。声明 API 可见性、运行时要求、目标指令能力与构建设置分别处理。lowering 把 typed HIR 变为带来源的 MIR；PEX 后端不重新查找名字或推断类型。
+## Diagnostics and generation gates
 
-MIR 显式表示存储、调用、转换和标签控制流。生成前验证存储引用、写入目标、标签、可达路径终结、native 函数体及属性访问器。继承字段通过分析层给出的外部存储槽进入验证，未知名字不会被当作合法字段。
+Analysis preserves usable local HIR and diagnostics after errors so hover, definition queries, and lint can still work. Diagnostics contain stable codes, severity, file locations, and related locations where needed. Terminal and LSP adapters handle presentation.
 
-求值顺序是降级约束：
+Generation strictly checks unresolved symbols, error types, and target constraints. The ability to provide editor facts for part of a file does not make that file valid for a build.
 
-- `&&` 与 `||` 使用条件跳转，未选分支不求值。
-- 命名实参按源码顺序求值，再按已绑定的形参位置传递。
-- 复合赋值的接收者、数组和索引只求值一次；右侧求值前保存所需旧值。
-- 二元表达式在右侧可能改写左侧存储时，先捕获左侧结果。
-- 隐式 Bool 和字符串转换显式进入 MIR，来源指向原始表达式。
+## Target lowering and MIR
 
-Skyrim 状态方法和数组操作由编译器生成目标指令；普通 native API 仍依赖声明来源。目标拒绝带原始位置和具体原因，不使用任意默认值或丢弃操作让构建通过。
+The current generation target is the Skyrim SE Papyrus ABI. After type and context checks, each feature use is implemented directly, lowered equivalently, or rejected. Visible APIs, runtime requirements, target instruction capabilities, and build settings remain separate concerns.
 
-## 生成、编码与优化
+Lowering converts typed HIR into MIR with source locations. MIR explicitly represents storage, calls, conversions, and labeled control flow. Validation checks storage references, write destinations, labels, termination of reachable paths, native function bodies, and property accessors. Inherited fields enter validation through external storage slots supplied by analysis; unknown names cannot pass as valid fields.
 
-`folio-backend-pex` 将已验证 MIR 映射为 PEX model，负责指令、临时存储、跳转、状态与属性布局及调试行映射。`folio-format-pex` 独立读写、校验和检查 Skyrim PEX；遇到不支持的游戏 ID、版本或操作码会报错，不按 Skyrim 布局猜测。codec 的复用来源见[来源记录](../../modules/formats/pex/PROVENANCE.md)。
+The PEX backend does not resolve names or infer types again. Target rejections retain the original location and a specific reason. The compiler does not discard operations or invent values to make unsupported behavior compile.
 
-现有优化限于有明确语义依据的生成清理。调用结果捕获只有经写入和副作用检查证明冗余才消除；函数尾部只在 MIR 控制流仍可到达时补 void `RETURN`。这些处理不受 PEX debug 行映射开关控制，也不改变实参或复合赋值的求值次数。`build.profile` 目前不选择优化级别。
+## Evaluation order
 
-PEX 字节的缓存与输出发布由[构建与产物](build-artifacts.md)管理。对外可用的 Papyrus 行为见[Papyrus 规范](../papyrus.md)。
+Lowering preserves these language guarantees:
+
+- `&&` and `||` use conditional jumps, so an unselected branch is not evaluated.
+- Named arguments are evaluated in source order, then passed in their bound parameter positions.
+- Compound assignment evaluates its receiver, array, and index once, preserving the required old value before evaluating the right side.
+- A binary expression captures its left result before evaluating a right side that could overwrite the underlying storage.
+- Implicit Boolean and string conversions become explicit MIR operations attributed to the original expression.
+
+State methods and array operations are generated as target operations. Ordinary native APIs still require visible declarations. The user-facing language rules are described in [Skyrim Papyrus](../papyrus.md).
+
+## PEX generation and optimization
+
+`folio-backend-pex` maps validated MIR to the PEX model, including instructions, temporary storage, jumps, states, property layout, and debug line mappings. `folio-format-pex` independently reads, writes, validates, and inspects Skyrim PEX. It rejects unsupported game IDs, versions, and opcodes instead of assuming they use the Skyrim layout. Reused source is documented in the [codec provenance record](../../modules/formats/pex/PROVENANCE.md).
+
+Current optimization is limited to generation cleanup justified by semantic checks. A call result capture is removed only when write and side-effect analysis proves it redundant. A trailing void `RETURN` is added only when MIR control flow can still reach the end of the function. These decisions do not depend on debug line mappings and do not change argument or compound assignment evaluation counts. `build.profile` does not currently select an optimization level.
+
+[Builds and artifacts](build-artifacts.md) defines PEX byte caching and output publication.

@@ -1,47 +1,55 @@
-# 架构总览
+# Architecture overview
 
-Folio 以项目为公开构建单位。项目服务装载清单、源码和依赖；语言前端与共享分析层产生带来源的语义事实；目标层把已检查的程序降为 MIR，经 PEX 后端和独立 codec 生成产物。CLI 与 LSP 是这些能力的适配层。
+Folio exposes project builds. The project layer loads manifests, source files, and dependencies; the frontend and analysis layer produce semantic facts with source locations; lowering validates target behavior and produces MIR. The PEX backend and independent codec turn that representation into artifacts. CLI and LSP adapt these shared services.
 
 ```text
-folio.toml / 本地来源 / 编辑器缓冲区
-  → 项目解析与一致输入
-  → Papyrus 无损 CST
-  → 声明、绑定、类型与 HIR
-  → 目标合法化与 MIR 验证
-  → PEX 后端 → PEX codec
-  → 构建缓存与工作区输出
+folio.toml / local inputs / editor buffers
+  -> project resolution and consistent inputs
+  -> lossless Papyrus CST
+  -> declarations, binding, types, and HIR
+  -> target lowering and MIR validation
+  -> PEX backend -> PEX codec
+  -> build cache and project output
 ```
 
-`fmt` 使用 CST；`lint` 与 IDE 查询使用同一分析视图。`check` 止于语义和目标可行性检查；`build` 继续编码和发布。文件与函数可以作为内部计算粒度，但公开构建始终具有项目上下文。
+Formatting uses CST. Lint and editor queries share the analysis view. `check` stops after semantic and target feasibility checks; `build` continues through encoding and publication. Files and functions can be internal units of computation without becoming public build entry points.
 
-## 模块边界
+## Module responsibilities
 
-| 区域 | 责任 |
+All paths below are relative to `modules`.
+
+| Area | Responsibility |
 | --- | --- |
-| `foundation` | 文件身份、源码位置、结构化诊断和目标档案 |
-| `project/model`、`project/resolve` | 清单领域模型、本地来源装载、依赖与脚本选择 |
-| `languages/papyrus` | 词法、无损 CST、AST 和声明提取 |
-| `compiler/hir`、`compiler/analysis` | 语义事实、名称与类型分析、一致查询视图 |
-| `compiler/lowering`、`compiler/mir` | 目标降级、控制流与低层合法性 |
-| `backends/pex`、`formats/pex` | MIR 到 PEX model；独立的 PEX 读写与校验 |
-| `formats/declarations`、`tooling/declarations` | JSON/二进制声明载体及从 PSC、PEX 提取 API |
-| `tooling/format`、`tooling/lint`、`tooling/ide` | 格式化、建议和编辑器查询 |
-| `project/build` | 输入投影、构建计划、缓存、执行与产物提交 |
-| `apps/cli`、`apps/lsp` | 命令、呈现、协议与进程边界 |
-| `apps/xtask` | 仓库开发维护命令，不参与产品构建流程 |
+| `foundation` | File identity, source locations, structured diagnostics, and target profiles |
+| `project/model`, `project/resolve` | Manifest model, local input loading, dependency resolution, and script selection |
+| `languages/papyrus` | Lexing, lossless CST, AST access, and declaration extraction |
+| `compiler/hir`, `compiler/analysis` | Semantic facts, name and type analysis, and consistent query views |
+| `compiler/lowering`, `compiler/mir` | Target lowering, control flow, and low-level validation |
+| `backends/pex`, `formats/pex` | MIR-to-PEX mapping; independent PEX reading, writing, and validation |
+| `formats/declarations`, `tooling/declarations` | Declaration formats and API extraction from PSC and PEX |
+| `tooling/format`, `tooling/lint`, `tooling/ide` | Formatting, suggestions, and editor queries |
+| `project/build` | Input projection, build planning, caching, execution, and output publication |
+| `apps/cli`, `apps/lsp` | Commands, presentation, protocol, and process boundaries |
+| `apps/xtask` | Repository maintenance outside the Papyrus build workflow |
 
-crate 位于 `modules/<领域>/<短目录名>`，package 使用 `folio-<职责>`。分类目录不构成嵌套 workspace。依赖方向沿上表的领域能力流向应用：语法核心不依赖 Salsa、LSP 或清单；分析层不读磁盘；后端不读取 CST、不重新解析名称或类型；PEX codec 不依赖编译器。确有新的独立责任时才增加 crate。
+Crates use `modules/<domain>/<short-name>` paths and `folio-<responsibility>` package names. Domain directories are not nested workspaces. Add a crate only for a distinct responsibility with a defined API and dependency boundary.
 
-## 输入、来源与诊断
+The syntax core depends on neither Salsa nor LSP nor manifests. Analysis consumes explicit inputs without reading the filesystem. Backends consume checked representations without reinterpreting CST, names, or types. The PEX codec does not depend on the compiler. Applications compose these lower-level services.
 
-项目层把磁盘内容、依赖选择、声明 API、目标和配置转换为显式分析输入。分析可保留局部错误并继续提供 IDE 事实；产物生成前严格拒绝未解决的错误和目标不合法的操作。文件身份和半开字节范围贯穿 CST、HIR、MIR 与诊断，生成节点保留原始来源。LSP 位置编码转换只发生在协议边界。
+## Inputs and source locations
 
-CLI 和 LSP 共用项目解析、语义规则、诊断和修复数据。打开的编辑器缓冲区覆盖磁盘文本；每批更新形成一致视图，过期结果不能发布为最新诊断。源码文本、声明 API 和目标中影响语义的内容进入查询或构建身份；缓存只是可丢弃的派生状态。
+The project layer converts disk contents, dependency selection, declaration APIs, targets, and settings into explicit analysis inputs. Editor buffers override disk text. Each update produces a consistent view; stale results must not be published as current diagnostics.
 
-声明 API/API 的可见性与目标运行时能力分别建模。目标特性在具体使用点直接实现、等价降级或明确拒绝；Folio 不以静默近似改变程序语义。
+File identity and half-open byte ranges connect CST, HIR, MIR, and diagnostics. Generated nodes retain their original source locations. LSP position encoding conversion occurs at the protocol boundary. Analysis can retain useful local facts after errors, while artifact generation rejects unresolved errors and invalid target operations.
 
-## 工程约定
+CLI and LSP share resolution, semantic rules, diagnostics, and fix data. Semantic source content, declaration APIs, and relevant configuration contribute to query or build identity. Caches are disposable derived state.
 
-根 workspace 统一管理 Rust 工具链、依赖和锁文件。库通过 `tracing` 发出结构化事件，进程入口初始化 subscriber。项目加载、依赖选择、分析、降级、缓存决定与发布记录足够定位问题的上下文；源码正文和敏感数据不进入常规日志。CLI 日志写 stderr，LSP stdout 只承载协议。
+## Target and runtime boundaries
 
-具体契约分别见[项目模型](project-model.md)、[Papyrus 规范](../papyrus.md)、[编译管线](compiler.md)、[构建与产物](build-artifacts.md)及[工具与编辑器](tooling.md)。
+API visibility and runtime capability are separate inputs. A visible declaration does not establish that its implementation is installed in the game. Each feature use must be implemented directly, lowered equivalently, or rejected with a reason; the compiler must not change semantics through silent approximation.
+
+## Engineering conventions
+
+The root workspace manages the Rust toolchain, dependencies, and lockfile. Libraries emit structured `tracing` events, and process entry points initialize subscribers. Loading, provider selection, analysis, lowering, cache decisions, and publication need enough context to diagnose failures without logging source bodies or sensitive data. CLI logs use stderr; LSP stdout carries protocol messages only.
+
+The domain contracts are documented in [Projects and dependencies](project-model.md), [Skyrim Papyrus](../papyrus.md), [Compiler pipeline](compiler.md), [Builds and artifacts](build-artifacts.md), and [Tools and editor services](tooling.md). Outstanding work belongs in the [roadmap](../planning/roadmap.md).

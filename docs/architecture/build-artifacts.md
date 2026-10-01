@@ -1,29 +1,43 @@
-# 构建与产物
+# Builds and artifacts
 
-`folio check` 对解析后的项目执行语义与目标可行性检查，不写 PEX。`folio build` 继续执行 MIR 验证、PEX 布局与编码，并将根工作区的产物发布到 `paths.output`。最终字符串表、指令数和调试行号等限制可能需要到编码时才能准确判定。
+`folio check` performs semantic and target feasibility checks on a resolved project without writing PEX. `folio build` also generates the final PEX layout, encodes it, and publishes root project artifacts to `paths.output`. Some string table, instruction count, and debug line limits can only be determined during final encoding. Target planning includes MIR validation before encoding.
 
-## 构建流程
+## Build flow
 
-1. 装载清单、本地依赖、声明和根项目源码，确定脚本提供者。
-2. 将已装载文本投影到一致分析视图，检查名称、类型和目标要求。
-3. 为最终选中的根项目脚本生成并验证 MIR，再编码 PEX。
-4. 复核输入快照，将完整产物暂存到内部 generation。
-5. 核对输出归属与摘要，发布文件并更新最近成功索引。
+1. Load the manifest, local dependencies, declarations, and root sources; select script providers.
+2. Project the loaded text into a consistent analysis view and check names, types, and target requirements.
+3. Generate and validate MIR for selected root scripts, then encode PEX.
+4. Recheck input snapshots and stage complete artifacts in an internal generation.
+5. Check output ownership and digests, publish files, and update the latest successful build index.
 
-工作区、目标与 profile 构成构建实例。文件、声明和函数可作为内部计算粒度；所有依赖都以 API 声明参与分析，不产生本次部署代码。构建任务以确定顺序执行。
+The workspace, target, and profile identify a build instance. Files, declarations, and functions may be internal units of computation, but every build has project context. Dependencies contribute API declarations without producing deployable code. Build tasks run in a deterministic order.
 
-## 缓存与可复现性
+## Semantic fingerprints and caches
 
-Salsa 在进程内复用查询结果；磁盘缓存跨进程复用产物。这两类缓存独立。磁盘指纹覆盖编译器身份、根项目源码、规范化的声明 API、每次依赖声明的顺序与提供者选择、目标规则、用户 flags 及影响输出的设置。声明来源标签、历史位置、载体编码、成员或脚本的无语义顺序及主机绝对路径不进入 API 摘要，逐参数默认值及未知事实进入摘要。当前失效粒度偏保守，一个语义输入变化可能重建整个构建实例。缓存损坏或摘要不符时丢弃并重建。
+Salsa reuses queries within a process; the disk cache reuses artifacts across processes. These caches are independent.
 
-物理输入快照独立记录原始文件字节、目录成员、逻辑路径的链接目标及仓库候选文件的存在状态。发布前复核这些快照，再以本次固定的 Folio home 重载并核对语义指纹；文件被改写、新增或删除、链接改变目标、仓库出现第二种载体时，拒绝发布过期结果。输入内容在一次操作中保持一致，不从可复用的 API 摘要推断原始文件未变化。
+Disk fingerprints cover compiler identity, root source text, normalized declaration APIs, dependency entry order and provider selection, target rules, user flags, and settings that affect output. Parameter defaults and unknown API facts are part of the declaration API digest.
 
-PEX 中的时间为零，用户名和机器名为空，源路径相对所属包。`build.debug-info` 控制函数和行映射，不改变运行指令；generation ID 不进入 PEX 字节。构建报告保留诊断和缓存决定，包括缓存命中时的调用补值警告。
+Provenance labels, historical source locations, carrier encoding, semantically irrelevant script or member ordering, and absolute host paths are excluded from the API digest. Invalidation remains conservative: one changed semantic input may rebuild the entire build instance. Corrupt cache entries or mismatched digests are discarded and rebuilt.
 
-## 输出归属与失败恢复
+## Physical snapshots and publication checks
 
-默认输出为工作区的扁平 `Scripts/<script>.pex`，`.folio` 保存缓存、暂存 generation、并发发布 guard 和最近成功索引。输入及已发布文件均未变化时不重写产物；输出缺失时可以从有效缓存恢复。
+Physical input snapshots separately record raw file bytes, directory membership, link targets for logical paths, and the existence of repository candidates. Before publication, Folio rechecks those snapshots, reloads inputs using the operation's fixed Folio home, and compares the semantic fingerprint.
 
-Folio 只替换自己上次成功记录中拥有且摘要仍匹配的文件。同名外来文件或被修改的旧产物会使发布失败。成功构建时会移走不再属于本次结果的旧产物。普通 I/O 错误会尝试恢复旧文件；多个 PEX 的替换没有跨文件崩溃原子性。`folio inspect` 使用成功索引和内容摘要识别不一致状态。普通构建只写工作区管理的输出目录，不自动部署到游戏目录。
+Rewritten, added, or deleted files, retargeted links, or a newly ambiguous repository entry prevent publication of stale results. A reusable API digest does not prove that the original files are unchanged.
 
-`folio inspect --pex <路径>` 使用独立 PEX codec 读取任意指定文件，不要求项目上下文。该入口只检查产物，不编译源文件。
+## Reproducible output
+
+PEX timestamps are zero, user and machine names are empty, and source paths are relative to the owning package. Generation IDs do not enter PEX bytes. `build.debug-info` controls function and line mappings without changing runtime instructions.
+
+Build reports retain diagnostics and cache decisions, including argument filling warnings when the build uses cached output.
+
+## Output ownership and recovery
+
+The default output layout is flat: `Scripts/<script>.pex`. The project-local `.folio` directory stores caches, staged generations, the concurrent publication guard, and the latest successful build index.
+
+Folio does not rewrite unchanged artifacts when both inputs and published files are unchanged. Missing outputs can be restored from a valid cache. It replaces a file only when the previous successful index records Folio ownership and the current digest still matches. A foreign file with the same name, or a modified old artifact, causes publication to fail.
+
+A successful build removes previously owned artifacts that are no longer part of the result. Ordinary I/O failures trigger an attempt to restore old files. Replacing several PEX files is not atomic across a process or machine crash. `folio inspect` uses the successful index and content digests to detect inconsistent output.
+
+Builds write within the project's managed locations and never deploy automatically to a game directory. `folio inspect --pex <path>` uses the independent codec to read an arbitrary PEX file without project context; it does not compile source files.
