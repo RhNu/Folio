@@ -32,6 +32,8 @@ Rewritten, added, or deleted files, retargeted links, or a newly ambiguous repos
 
 PEX timestamps are zero, user and machine names are empty, and source paths are relative to the owning package. Generation IDs do not enter PEX bytes. `build.debug-info` controls function and line mappings without changing runtime instructions.
 
+The independent PEX codec accepts and preserves an empty per-function debug line map even when the function has instructions. Distributed SKSE 2.2.8 `Armor`, `Race`, and `GameData` PEX use this form for generated `GetState` and `GotoState` helpers: their debug records have no source lines despite containing instructions. A nonempty map still needs one entry per instruction. Function references, instruction structure, and binary bounds remain validated; accepting absent source locations does not invent line numbers or change code. Folio's backend continues to produce complete mappings when debug information is enabled.
+
 Target planning rejects more than 127 local named states because the empty state occupies the remaining slot in the target's 128-state table. The PEX backend consumes validated MIR and checks it again before encoding. This local gate does not establish inherited state-count or engine-loading behavior.
 
 Property layout reflects the analyzed storage contract. Mutable Auto properties serialize their backing variables; Variable-applicable metadata, including Conditional, is placed on that storage, while Property-applicable metadata remains on the property entry. AutoReadOnly serializes a literal getter without an ordinary backing variable. Parent-owned fields retain owner identities for validation and are not serialized as child variables.

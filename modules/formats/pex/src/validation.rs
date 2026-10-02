@@ -77,7 +77,11 @@ pub(crate) fn validate_debug_info_for_write(
         validate_string_id(function.function_name, strings.len())?;
         ensure_u16("debug line map", function.instruction_line_map.len())?;
         let target = resolve_debug_function(function, objects, strings)?;
-        if function.instruction_line_map.len() != target.instructions.len() {
+        // Distributed SKSE PEX leaves generated state helpers without source lines.
+        // An empty map means unavailable debug locations, not missing instructions.
+        if !function.instruction_line_map.is_empty()
+            && function.instruction_line_map.len() != target.instructions.len()
+        {
             return Err(PexWriteError::DebugLineMapLengthMismatch {
                 function_name: function.function_name,
                 expected: target.instructions.len(),
@@ -394,3 +398,6 @@ pub(crate) fn ensure_u16(what: &'static str, len: usize) -> Result<(), PexWriteE
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
