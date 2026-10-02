@@ -80,9 +80,16 @@ struct RawPapyrus {
     dialect: Spanned<String>,
     extensions: Spanned<Vec<Spanned<String>>>,
     #[serde(default, rename = "user-flags")]
-    user_flags: Vec<Spanned<String>>,
+    user_flags: Vec<Spanned<RawUserFlag>>,
     #[serde(default, rename = "fill-missing-arguments")]
     fill_missing_arguments: Option<Spanned<bool>>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawUserFlag {
+    Name(String),
+    Definition(folio_profiles::UserFlag),
 }
 
 #[derive(Deserialize)]
@@ -237,7 +244,11 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
         .enumerate()
         .map(|(index, value)| {
             let field = format!("languages.papyrus.user-flags[{index}]");
-            let name = value.get_ref();
+            let definition = match value.get_ref() {
+                RawUserFlag::Name(name) => folio_profiles::UserFlag::from(name.clone()),
+                RawUserFlag::Definition(definition) => definition.clone(),
+            };
+            let name = &definition.name;
             if !name
                 .starts_with(|character: char| character.is_ascii_alphabetic() || character == '_')
                 || !name
@@ -251,7 +262,10 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
                     Some(value.span()),
                 ));
             }
-            if name.eq_ignore_ascii_case("Hidden") || name.eq_ignore_ascii_case("Conditional") {
+            if name.eq_ignore_ascii_case("Hidden")
+                || name.eq_ignore_ascii_case("Conditional")
+                || folio_profiles::is_skyrim_keyword(name)
+            {
                 return Err(invalid(
                     source,
                     &field,
@@ -267,10 +281,26 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
                     Some(value.span()),
                 ));
             }
+            if folio_profiles::resolve_user_flags(std::slice::from_ref(&definition), 31).is_err() {
+                return Err(invalid(
+                    source,
+                    &field,
+                    "invalid flag bit or declaration scopes",
+                    Some(value.span()),
+                ));
+            }
             fields.insert(field, span(source, value.span()));
-            Ok(value.into_inner())
+            Ok(definition)
         })
         .collect::<Result<Vec<_>, ManifestError>>()?;
+    folio_profiles::resolve_user_flags(&user_flags, 31).map_err(|_| {
+        invalid(
+            source,
+            "languages.papyrus.user-flags",
+            "flag names and bits must be unique and fit the target",
+            None,
+        )
+    })?;
     let emit = raw
         .build
         .emit

@@ -100,17 +100,12 @@ fn target_plan_with_cancel(
     let mut scripts = BTreeMap::new();
     let mut decisions = Vec::new();
     let mut lowering_errors = Vec::new();
-    let mut flags = metadata.user_flags.clone();
-    flags.sort_by_key(|name| name.to_ascii_lowercase());
-    let user_flags = flags
-        .into_iter()
-        .enumerate()
-        .map(|(index, name)| {
-            (
-                name,
-                u8::try_from(index + 2).expect("project plan validated user flag limit"),
-            )
-        })
+    let resolved_flags =
+        folio_profiles::resolve_user_flags(&metadata.user_flags, target_profile.max_user_flag_bit)
+            .map_err(|reason| BuildError::Plan(PlanError::InvalidUserFlags(reason)))?;
+    let user_flags = resolved_flags
+        .iter()
+        .map(|flag| (flag.name.clone(), flag.bit.expect("resolved flag bit")))
         .collect::<Vec<_>>();
     for unit in &plan.units {
         for script in &unit.scripts {
@@ -126,7 +121,7 @@ fn target_plan_with_cancel(
                 .analysis
                 .hir(file)
                 .ok_or_else(|| BuildError::MissingSemantic(script.script.clone()))?;
-            match folio_lowering::lower_script(&hir, target_profile, &user_flags) {
+            match folio_lowering::lower_script(&hir, target_profile, &resolved_flags) {
                 Ok(mir) => {
                     for decision in &mir.decisions {
                         decisions.push(format!(

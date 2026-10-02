@@ -56,6 +56,23 @@ pub(crate) fn completion_candidates(
             {
                 continue;
             }
+            if matches!(declaration.symbol, Symbol::Local { .. }) {
+                let block = root
+                    .descendants()
+                    .filter(|node| node.kind() == SyntaxKind::Block)
+                    .filter(|node| {
+                        let at = span(file, node);
+                        at.range.start <= declaration.span.range.start
+                            && declaration.span.range.end <= at.range.end
+                    })
+                    .min_by_key(|node| node.text_range().len());
+                if block.is_some_and(|node| {
+                    let at = span(file, &node);
+                    byte < at.range.start || byte > at.range.end
+                }) {
+                    continue;
+                }
+            }
             names.insert(
                 key(symbol_name(&declaration.symbol)),
                 crate::CompletionCandidate {
@@ -201,6 +218,7 @@ pub(crate) fn completion_candidates(
 
 fn symbol_name(symbol: &Symbol) -> &str {
     match symbol {
+        Symbol::ParentReceiver { .. } => "Parent",
         Symbol::Script(name)
         | Symbol::Intrinsic { name }
         | Symbol::Member { name, .. }

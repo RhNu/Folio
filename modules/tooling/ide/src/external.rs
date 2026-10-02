@@ -14,6 +14,7 @@ pub fn referenced_symbol(view: &ProjectAnalysisView, file: FileId, byte: usize) 
 pub fn symbol_script(symbol: &Symbol) -> Option<&str> {
     match symbol {
         Symbol::Script(script)
+        | Symbol::ParentReceiver { script }
         | Symbol::Member { script, .. }
         | Symbol::StateMember { script, .. } => Some(script),
         _ => None,

@@ -41,6 +41,7 @@ pub enum PlanError {
     UnsupportedTarget(String),
     UnsupportedArtifact(String),
     TooManyUserFlags { count: usize, maximum: usize },
+    InvalidUserFlags(String),
     MissingPackage(String),
     MissingSource { package: String, path: String },
     DuplicateArtifact(String),
@@ -55,6 +56,7 @@ impl std::fmt::Display for PlanError {
             Self::TooManyUserFlags { count, maximum } => {
                 write!(f, "{count} user flags exceed target limit of {maximum}")
             }
+            Self::InvalidUserFlags(reason) => write!(f, "invalid user flags: {reason}"),
             Self::MissingPackage(package) => write!(f, "missing loaded package {package}"),
             Self::MissingSource { package, path } => {
                 write!(f, "selected source {path} is missing from {package}")
@@ -85,6 +87,8 @@ pub fn project_plan(
             maximum: maximum_user_flags,
         });
     }
+    folio_profiles::resolve_user_flags(&metadata.user_flags, target.max_user_flag_bit)
+        .map_err(PlanError::InvalidUserFlags)?;
     let root = &project.root.manifest;
     for kind in &root.emit {
         if kind != "pex" {

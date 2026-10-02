@@ -16,6 +16,59 @@ fn local_rename_preserves_bindings_and_ignores_comments_and_strings() {
 }
 
 #[test]
+fn sibling_blocks_can_reuse_the_renamed_local_name() {
+    let text = "ScriptName Example\nFunction Use()\n If True\n  Int first = 1\n  first = 2\n Else\n  Int result = 3\n  result = 4\n EndIf\nEndFunction\n";
+    let view = project(&[("Example", text)]);
+    let file = file(&view, "Example");
+    let edits = rename(&view, file, text.find("first").unwrap(), "result").unwrap();
+    assert_eq!(edits.len(), 2);
+    assert!(
+        edits
+            .iter()
+            .all(|edit| &text[edit.span.range.start..edit.span.range.end] == "first")
+    );
+}
+
+#[test]
+fn renaming_one_sibling_binding_leaves_the_other_binding_unchanged() {
+    let text = "ScriptName Example\nFunction Use()\n If True\n  Int value = 1\n  value = 2\n Else\n  Int value = 3\n  value = 4\n EndIf\nEndFunction\n";
+    let view = project(&[("Example", text)]);
+    let file = file(&view, "Example");
+    let edits = rename(&view, file, text.find("value").unwrap(), "renamedValue").unwrap();
+    assert_eq!(edits.len(), 2);
+    assert!(
+        edits
+            .iter()
+            .all(|edit| edit.span.range.end < text.find("Else").unwrap())
+    );
+}
+
+#[test]
+fn member_rename_remaps_following_local_declaration_identity() {
+    let text = "ScriptName Example\nFunction Work()\n Int value = 1\n value = 2\nEndFunction\nFunction Use()\n Work()\nEndFunction\n";
+    let view = project(&[("Example", text)]);
+    let file = file(&view, "Example");
+    let edits = rename(&view, file, text.find("Work").unwrap(), "PerformWork").unwrap();
+    assert_eq!(edits.len(), 2);
+    assert!(
+        edits
+            .iter()
+            .all(|edit| &text[edit.span.range.start..edit.span.range.end] == "Work")
+    );
+}
+
+#[test]
+fn reanalysis_rejects_capture_even_without_a_declaration_collision() {
+    let text = "ScriptName Example\nInt Property Count Auto\nFunction Use()\n Int value = 1\n Int result = Count\n value = result\nEndFunction\n";
+    let view = project(&[("Example", text)]);
+    let file = file(&view, "Example");
+    assert_eq!(
+        rename(&view, file, text.find("value").unwrap(), "Count"),
+        Err(RenameError::UnverifiableEdit)
+    );
+}
+
+#[test]
 fn project_member_rename_updates_cross_script_uses() {
     let base = "Scriptname Base\nInt Property Count Auto\n";
     let user = "Scriptname User\nBase Property Owner Auto\nFunction Use()\n Owner.Count = 1\nEndFunction\n";
@@ -50,6 +103,10 @@ fn collisions_keywords_and_incomplete_analysis_are_rejected() {
         Err(RenameError::Collision)
     );
     assert_eq!(rename(&view, file, at, "If"), Err(RenameError::InvalidName));
+    assert_eq!(
+        rename(&view, file, at, "Length"),
+        Err(RenameError::InvalidName)
+    );
     let invalid = "Scriptname Broken\nFunction Use()\n missing()\nEndFunction\n";
     let broken = project(&[("Broken", invalid)]);
     assert_eq!(

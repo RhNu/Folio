@@ -2,7 +2,8 @@
 mod common;
 use common::{function, source};
 use folio_mir::{
-    Function, Instruction, Local, Op, Property, Script, ValidationErrorKind, Value, validate,
+    ExternalSlot, Function, Instruction, Local, Op, Property, Script, ValidationErrorKind, Value,
+    validate,
 };
 
 #[test]
@@ -16,7 +17,8 @@ fn validates_accessor_bodies_and_explicit_inherited_storage() {
         flags: 0,
         auto_state: String::new(),
         variables: vec![],
-        external_slots: vec![Local {
+        external_slots: vec![ExternalSlot {
+            owner: "Base".into(),
             name: "inherited".into(),
             ty: "Int".into(),
         }],

@@ -152,6 +152,14 @@ pub struct Local {
     pub ty: String,
 }
 
+/// Parent-owned storage retained for provenance, never emitted locally.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternalSlot {
+    pub owner: String,
+    pub name: String,
+    pub ty: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Function {
     pub name: String,
@@ -176,8 +184,8 @@ pub struct Script {
     pub flags: u32,
     pub auto_state: String,
     pub variables: Vec<Variable>,
-    /// Resolved inherited fields used by this script but stored by a parent object.
-    pub external_slots: Vec<Local>,
+    /// Parent-owned fields retain declaring identity without creating child storage.
+    pub external_slots: Vec<ExternalSlot>,
     pub properties: Vec<Property>,
     pub functions: Vec<Function>,
     pub state_names: Vec<String>,

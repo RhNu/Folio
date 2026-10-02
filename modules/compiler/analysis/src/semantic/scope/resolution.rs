@@ -30,7 +30,9 @@ impl<'a> Scope<'a> {
                 Type::Script(parent.clone()),
                 Some(Binding {
                     name: name.clone(),
-                    symbol: Symbol::Script(parent.clone()),
+                    symbol: Symbol::ParentReceiver {
+                        script: parent.clone(),
+                    },
                     definition: self
                         .world
                         .scripts
@@ -200,6 +202,20 @@ impl<'a> Scope<'a> {
             }
             return (Type::Error, None);
         };
+        if matches!(
+            owner.binding.as_ref().map(|binding| &binding.symbol),
+            Some(Symbol::ParentReceiver { .. })
+        ) && !matches!(
+            member.kind,
+            MemberKind::Function | MemberKind::Event | MemberKind::UnknownCallable
+        ) {
+            self.issue(
+                "semantic.parent-context",
+                "Parent is only a function call receiver",
+                name.span,
+            );
+            return (Type::Error, None);
+        }
         let static_script = matches!(
             owner.binding.as_ref().map(|binding| &binding.symbol),
             Some(Symbol::Script(_))

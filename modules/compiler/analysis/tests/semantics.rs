@@ -538,7 +538,7 @@ fn callable_local_identities_distinguish_accessors_and_states() {
         .declarations
         .iter()
         .filter_map(|declaration| match &declaration.symbol {
-            Symbol::Local { owner, name } if name == "local" => Some(owner.as_ref()),
+            Symbol::Local { owner, name, .. } if name == "local" => Some(owner.as_ref()),
             _ => None,
         })
         .collect::<Vec<_>>();

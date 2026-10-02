@@ -300,6 +300,7 @@ dependencies = [
  "folio-format-declarations",
  "folio-hir",
  "folio-papyrus",
+ "folio-profiles",
  "folio-source",
  "rowan",
  "salsa",
@@ -412,6 +413,7 @@ dependencies = [
 name = "folio-hir"
 version = "0.2.0"
 dependencies = [
+ "folio-papyrus",
  "folio-source",
 ]
 
@@ -425,6 +427,7 @@ dependencies = [
  "folio-format-declarations",
  "folio-hir",
  "folio-papyrus",
+ "folio-profiles",
  "folio-source",
  "tracing",
 ]
@@ -485,6 +488,7 @@ dependencies = [
 name = "folio-papyrus"
 version = "0.2.0"
 dependencies = [
+ "folio-profiles",
  "folio-source",
  "rowan",
  "tracing",
@@ -493,11 +497,15 @@ dependencies = [
 [[package]]
 name = "folio-profiles"
 version = "0.2.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "folio-project-model"
 version = "0.2.0"
 dependencies = [
+ "folio-profiles",
  "serde",
 ]
 
@@ -508,6 +516,7 @@ dependencies = [
  "encoding_rs",
  "folio-declaration-tools",
  "folio-format-declarations",
+ "folio-profiles",
  "folio-project-model",
  "serde",
  "toml",

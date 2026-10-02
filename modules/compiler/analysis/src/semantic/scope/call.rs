@@ -49,6 +49,7 @@ impl<'a> Scope<'a> {
                     global: false,
                     auto: false,
                     read_only: false,
+                    readable: true,
                     writable: true,
                     definition: None,
                 };

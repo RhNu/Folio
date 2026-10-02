@@ -10,16 +10,15 @@ fn declaration(text: &str, kind: SyntaxKind) -> SyntaxNode {
 }
 
 #[test]
-fn binds_inline_and_following_docs_to_their_declaration() {
-    for source in [
-        "ScriptName Demo { Script docs }\n",
-        "ScriptName Demo\n{ Script docs }\nFunction Run() Native\n",
-    ] {
-        assert_eq!(
-            declaration_documentation(&declaration(source, SyntaxKind::ScriptDecl)).as_deref(),
-            Some("Script docs")
-        );
-    }
+fn binds_following_docs_to_eligible_declarations() {
+    assert_eq!(
+        declaration_documentation(&declaration(
+            "ScriptName Demo\n{ Script docs }\nFunction Run() Native\n",
+            SyntaxKind::ScriptDecl
+        ))
+        .as_deref(),
+        Some("Script docs")
+    );
     for (source, kind, expected) in [
         (
             "Function Run()\n{ Call docs }\nReturn\nEndFunction\n",
@@ -37,19 +36,9 @@ fn binds_inline_and_following_docs_to_their_declaration() {
             "Property docs",
         ),
         (
-            "State Busy\n{ State docs }\nEndState\n",
-            SyntaxKind::StateDecl,
-            "State docs",
-        ),
-        (
             "Function Run() Native\n{ Native docs }\n",
             SyntaxKind::FunctionDecl,
             "Native docs",
-        ),
-        (
-            "Int count\n{ Variable docs }\n",
-            SyntaxKind::VariableDecl,
-            "Variable docs",
         ),
     ] {
         assert_eq!(

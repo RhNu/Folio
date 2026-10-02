@@ -15,7 +15,7 @@ pub(super) struct FunctionLowerer<'a> {
     next_label: u32,
     errors: Vec<Diagnostic>,
     decisions: Vec<Decision>,
-    user_flags: &'a [(String, u8)],
+    user_flags: &'a [UserFlag],
 }
 
 mod call;
@@ -28,7 +28,7 @@ impl<'a> FunctionLowerer<'a> {
         member: &'a MemberFact,
         body: &'a folio_hir::Body,
         target: TargetProfile,
-        user_flags: &'a [(String, u8)],
+        user_flags: &'a [UserFlag],
     ) -> Self {
         let (event, global, native) = match &member.kind {
             MemberKind::Function {
@@ -139,6 +139,7 @@ impl<'a> FunctionLowerer<'a> {
         self.function.flags = flag_bits(
             &self.member.flags,
             self.user_flags,
+            FlagScope::Function,
             self.member.span,
             &mut self.errors,
         );

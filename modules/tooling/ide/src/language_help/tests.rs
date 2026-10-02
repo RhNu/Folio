@@ -76,7 +76,7 @@ fn builtin_types_describe_representation_and_array_types() {
 
 #[test]
 fn literal_values_include_defaults_hexadecimal_signed_numbers_and_strings() {
-    let text = "ScriptName Example\nInt Property Count = 0x2A Auto\nFunction Run(Int value = -2147483648, String label = \"雪\\n🦊\")\n Float delay = -1.25\n Bool yes = True\n Bool no = False\n Example target = None\n Int bits = 0xFFFFFFFF\n String empty = \"\"\nEndFunction\n";
+    let text = "ScriptName Example\nInt Property Count = 0x2A Auto\nFunction Run(Int value = -2147483648, String label = \"雪\\n🦊\")\n Float delay = -1.25\n Bool yes = True\n Bool no = False\n Example target = None\n Int bits = 0x7FFFFFFF\n String empty = \"\"\nEndFunction\n";
     for (needle, ty, value) in [
         ("0x2A", "Int", "42"),
         ("2147483648", "Int", "-2147483648"),
@@ -84,7 +84,7 @@ fn literal_values_include_defaults_hexadecimal_signed_numbers_and_strings() {
         ("True", "Bool", "True"),
         ("False", "Bool", "False"),
         ("None", "None", "None"),
-        ("0xFFFFFFFF", "Int", "-1"),
+        ("0x7FFFFFFF", "Int", "2147483647"),
         ("\"雪", "String", "\"雪\\n🦊\""),
         ("\"\"", "String", "\"\""),
     ] {

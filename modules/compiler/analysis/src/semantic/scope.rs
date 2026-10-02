@@ -77,6 +77,8 @@ impl<'a> Scope<'a> {
     }
 
     pub(super) fn block(&mut self, block: &SyntaxNode) -> Vec<Statement> {
+        // Visibility ends at the block boundary; HIR retains every storage identity.
+        let outer_locals = self.locals.clone();
         let mut statements = Vec::new();
         for node in block
             .children()
@@ -90,6 +92,7 @@ impl<'a> Scope<'a> {
                 statements.push(statement);
             }
         }
+        self.locals = outer_locals;
         statements
     }
 
@@ -118,7 +121,7 @@ impl<'a> Scope<'a> {
                 if expressions.len() < 2 {
                     return Some(Statement::Error(span(self.file, &node)));
                 }
-                let target = self.expr(&expressions[0]);
+                let target = self.expr_with_access(&expressions[0], false);
                 let mut value = self.expr(&expressions[1]);
                 let compound = node
                     .children_with_tokens()
@@ -169,6 +172,7 @@ impl<'a> Scope<'a> {
                     }
                 }
                 if let Some(operator) = &compound {
+                    self.check_readable(&target);
                     let operator = operator.text().trim_end_matches('=');
                     let result_type =
                         self.binary_type(operator, &target.ty, &value.ty, span(self.file, &node));
@@ -284,12 +288,25 @@ impl<'a> Scope<'a> {
         let symbol = Symbol::Local {
             owner: Box::new(self.callable.clone()),
             name: name.clone(),
+            identity: definition.range.start,
         };
         let declaration = DeclarationFact {
             symbol: symbol.clone(),
             ty: ty.clone(),
             span: definition,
         };
+        if self
+            .script
+            .members
+            .get(&key(&name))
+            .is_some_and(|member| member.kind == MemberKind::Variable)
+        {
+            self.issue(
+                "semantic.local-member-conflict",
+                format!("local {name} conflicts with a script variable"),
+                definition,
+            );
+        }
         if self
             .locals
             .insert(

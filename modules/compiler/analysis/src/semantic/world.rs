@@ -59,6 +59,30 @@ pub(super) fn script_from_external(external: &ExternalScript) -> ScriptInfo {
     }
 }
 
+/// Check retained external constants before member lookup discards storage details.
+/// Missing values remain unknown, including PEX-derived AutoReadOnly properties.
+pub(super) fn validate_external_initializers(
+    external: &ExternalScript,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for member in &external.members {
+        let (Some(literal), Some(ty)) = (member.initial_literal(), member.ty()) else {
+            continue;
+        };
+        if !folio_papyrus::constant_literal_matches_type(literal, ty) {
+            tracing::debug!(script = %external.name, member = %member.name, declared_type = %ty, "rejected external member initializer");
+            diagnostics.push(Diagnostic::new(
+                "semantic.initializer-type",
+                Severity::Error,
+                format!(
+                    "external {}.{} initializer is not a valid literal compatible with {ty}",
+                    external.name, member.name
+                ),
+            ));
+        }
+    }
+}
+
 fn member_from_external(member: &folio_format_declarations::Member) -> MemberInfo {
     MemberInfo {
         name: member.name.clone(),
@@ -78,6 +102,7 @@ fn member_from_external(member: &folio_format_declarations::Member) -> MemberInf
         global: member.is_global(),
         auto: member.is_auto(),
         read_only: member.is_read_only(),
+        readable: member.kind() != MemberKind::Property || member.is_readable(),
         writable: member.kind() != MemberKind::Property || member.is_writable(),
         definition: None,
     }
@@ -122,7 +147,7 @@ pub(super) fn member_from_source(
         Declaration::Variable { name, ty, .. } => (
             name,
             Type::from_spelling(ty),
-            MemberKind::Property,
+            MemberKind::Variable,
             Vec::new(),
             false,
         ),
@@ -171,7 +196,8 @@ pub(super) fn member_from_source(
         global,
         auto: matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "auto" || flag == "autoreadonly")),
         read_only: matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "autoreadonly")),
-        writable: !matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "autoreadonly")),
+        readable: !matches!(declaration, Declaration::Property { flags, .. } if !flags.iter().any(|flag| flag == "auto" || flag == "autoreadonly") && !node.descendants().any(|child| super::file::callable_name(&child).is_some_and(|name| name.eq_ignore_ascii_case("get")))),
+        writable: !matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "autoreadonly") || (!flags.iter().any(|flag| flag == "auto") && !node.descendants().any(|child| super::file::callable_name(&child).is_some_and(|name| name.eq_ignore_ascii_case("set"))))),
         definition,
     })
 }
@@ -223,6 +249,17 @@ pub(super) fn validate_world(
             .values()
             .chain(script.states.values().flat_map(|members| members.values()))
         {
+            for (name, ty, default) in &member.parameters {
+                if let ParameterDefault::Literal(text) = default {
+                    let actual = literal_type(text);
+                    if !constant_matches_type(text, ty) {
+                        analysis.project_diagnostics.push(Diagnostic::new(
+                            "semantic.parameter-default-type", Severity::Error,
+                            format!("external {}.{} default for {name} is not a valid {ty:?} literal (found {actual:?})", script.name, member.name),
+                        ));
+                    }
+                }
+            }
             for ty in
                 std::iter::once(&member.ty).chain(member.parameters.iter().map(|(_, ty, _)| ty))
             {
@@ -242,6 +279,7 @@ pub(super) fn validate_world(
     for (&file, script_key) in file_scripts {
         let script = &world.scripts[script_key];
         let file_analysis = analysis.files.get_mut(&file).unwrap();
+        validate_source_contracts(world, script, file_analysis);
         if let Some(parent) = &script.parent {
             if !world.scripts.contains_key(&key(parent)) {
                 if let Some(parent_ref) = &file_analysis.script.parent {
@@ -355,6 +393,94 @@ pub(super) fn validate_world(
     }
 }
 
+/// Inherited contracts are checked even when no body or caller exists.
+fn validate_source_contracts(world: &World, script: &ScriptInfo, result: &mut FileAnalysis) {
+    for member in script
+        .members
+        .values()
+        .filter(|member| member.kind == MemberKind::Property)
+    {
+        if script
+            .parent
+            .as_ref()
+            .and_then(|parent| lookup_member(world, parent, &member.name))
+            .is_some_and(|(_, inherited)| inherited.kind == MemberKind::Property)
+        {
+            result.diagnostics.push(diagnostic(
+                "semantic.property-override",
+                "inherited properties cannot be redefined",
+                member.definition.unwrap(),
+            ));
+        }
+    }
+    for (state, members) in &script.states {
+        for member in members.values() {
+            let Some(at) = member.definition else {
+                continue;
+            };
+            let contract =
+                lookup_callable_member(world, &script.name, &member.name).map(|(_, member)| member);
+            // Skyrim lifecycle handlers have an implicit parameterless event contract.
+            let lifecycle = ["OnBeginState", "OnEndState"]
+                .iter()
+                .any(|name| member.name.eq_ignore_ascii_case(name));
+            let valid = if let Some(contract) = contract {
+                member.kind == contract.kind
+                    && same_type(&member.ty, &contract.ty)
+                    && member.parameters.len() == contract.parameters.len()
+                    && member
+                        .parameters
+                        .iter()
+                        .zip(&contract.parameters)
+                        .all(|(actual, expected)| same_type(&actual.1, &expected.1))
+            } else {
+                lifecycle
+                    && member.kind == MemberKind::Event
+                    && member.ty == Type::Void
+                    && member.parameters.is_empty()
+            };
+            if !valid {
+                result.diagnostics.push(diagnostic(
+                    "semantic.state-contract",
+                    format!(
+                        "state {state} callable {} requires a matching empty-state declaration",
+                        member.name
+                    ),
+                    at,
+                ));
+            }
+        }
+    }
+}
+
+fn literal_type(text: &str) -> Type {
+    let text = text.trim();
+    match text.to_ascii_lowercase().as_str() {
+        "true" | "false" => Type::Bool,
+        "none" => Type::None,
+        _ if text.starts_with('"') => Type::String,
+        _ if text.contains('.') => Type::Float,
+        _ => Type::Int,
+    }
+}
+
+fn constant_matches_type(text: &str, ty: &Type) -> bool {
+    fn spelling(ty: &Type) -> String {
+        match ty {
+            Type::Void => "void".into(),
+            Type::Int => "int".into(),
+            Type::Float => "float".into(),
+            Type::Bool => "bool".into(),
+            Type::String => "string".into(),
+            Type::Script(name) => name.clone(),
+            Type::Array(element) => format!("{}[]", spelling(element)),
+            Type::None => "none".into(),
+            Type::Error => String::new(),
+        }
+    }
+    matches!(ty, Type::Error) || folio_papyrus::constant_literal_matches_type(text, &spelling(ty))
+}
+
 pub(super) fn known_type(world: &World, ty: &Type) -> bool {
     match ty {
         Type::Script(name) => world.scripts.contains_key(&key(name)),
@@ -447,7 +573,10 @@ fn inherits(world: &World, subtype: &str, supertype: &str) -> bool {
 }
 
 pub(super) fn assignable(world: &World, actual: &Type, expected: &Type) -> bool {
-    if actual == expected || matches!(actual, Type::Error) || matches!(expected, Type::Error) {
+    if same_type(actual, expected)
+        || matches!(actual, Type::Error)
+        || matches!(expected, Type::Error)
+    {
         return true;
     }
     match (actual, expected) {
@@ -458,10 +587,25 @@ pub(super) fn assignable(world: &World, actual: &Type, expected: &Type) -> bool 
     }
 }
 
+fn same_type(actual: &Type, expected: &Type) -> bool {
+    match (actual, expected) {
+        (Type::Script(left), Type::Script(right)) => left.eq_ignore_ascii_case(right),
+        (Type::Array(left), Type::Array(right)) => same_type(left, right),
+        _ => actual == expected,
+    }
+}
+
 /// Bool coercion is valid in value contexts, but must not make `x == None`
 /// legal for primitive values through the equality compatibility check.
 pub(super) fn implicitly_convertible(world: &World, actual: &Type, expected: &Type) -> bool {
     assignable(world, actual, expected)
+        || matches!(
+            (actual, expected),
+            (
+                Type::Bool | Type::Int | Type::Float | Type::Script(_) | Type::Array(_),
+                Type::String
+            )
+        )
         || matches!(
             (actual, expected),
             (
@@ -482,8 +626,6 @@ pub(super) fn castable(world: &World, from: &Type, to: &Type) -> bool {
     }
     matches!(
         (from, to),
-        (Type::Float, Type::Int)
-            | (Type::Int | Type::Float | Type::Bool, Type::String)
-            | (Type::Script(_), Type::Script(_))
-    )
+        (Type::Float, Type::Int) | (Type::Bool | Type::String, Type::Int | Type::Float)
+    ) || matches!((from, to), (Type::Script(child), Type::Script(parent)) if inherits(world, child, parent) || inherits(world, parent, child))
 }

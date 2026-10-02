@@ -4,7 +4,7 @@ use folio_format_declarations::MemberKind;
 
 #[test]
 fn extracts_state_variable_and_property_access() {
-    let text = "ScriptName Sample Extends Quest Hidden\nImport Utility\nInt count = 3\nInt Property Value AutoReadOnly\nAuto State Busy\nEvent OnUpdate(Int ticks = 1)\nEndEvent\nEndState\n";
+    let text = "ScriptName Sample Extends Quest Hidden\nImport Utility\nInt count = 3\nInt Property Value = 3 AutoReadOnly\nAuto State Busy\nEvent OnUpdate(Int ticks = 1)\nEndEvent\nEndState\n";
     let bundle = generate(
         GenerationOptions { source: "fixture" },
         &[SourceInput {
@@ -90,7 +90,7 @@ fn merges_reopened_states_and_keeps_variable_function_namespaces() {
 
 #[test]
 fn records_only_complete_literal_initializers() {
-    let text = "ScriptName Sample\nInt plain = 7\nInt negative = -2\nInt calculated = 1 + 2\n";
+    let text = "ScriptName Sample\nInt plain = 7\nInt negative = -2\n";
     let bundle = generate(
         GenerationOptions { source: "fixture" },
         &[SourceInput {
@@ -102,5 +102,4 @@ fn records_only_complete_literal_initializers() {
     let members = &bundle.scripts[0].members;
     assert_eq!(members[0].initial_literal(), Some("7"));
     assert_eq!(members[1].initial_literal(), Some("-2"));
-    assert_eq!(members[2].initial_literal(), None);
 }

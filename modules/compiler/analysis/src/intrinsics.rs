@@ -23,9 +23,9 @@ pub fn intrinsic_signature(name: &str, receiver: Option<&Type>) -> Option<Intrin
                 if reverse { "RFind" } else { "Find" },
                 Type::Int,
                 vec![
-                    ("value".into(), *element.clone(), None),
+                    ("akElement".into(), *element.clone(), None),
                     (
-                        "startIndex".into(),
+                        "aiStartIndex".into(),
                         Type::Int,
                         Some(if reverse { "-1" } else { "0" }.into()),
                     ),
@@ -39,7 +39,7 @@ pub fn intrinsic_signature(name: &str, receiver: Option<&Type>) -> Option<Intrin
         None | Some(Type::Script(_)) if name.eq_ignore_ascii_case("GotoState") => (
             "GotoState",
             Type::Void,
-            vec![("newState".into(), Type::String, None)],
+            vec![("asNewState".into(), Type::String, None)],
             true,
         ),
         _ => return None,

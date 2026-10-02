@@ -33,6 +33,14 @@ impl<'a> FunctionLowerer<'a> {
                     return None;
                 };
                 match &binding.symbol {
+                    Symbol::ParentReceiver { .. } => {
+                        self.issue(
+                            "lowering.parent-value",
+                            "Parent is only a function call receiver",
+                            expr.span,
+                        );
+                        return None;
+                    }
                     Symbol::Parameter { .. } | Symbol::Local { .. } => {
                         Value::Identifier(self.slot(&binding.symbol, &expr.ty, expr.span)?)
                     }
@@ -45,12 +53,38 @@ impl<'a> FunctionLowerer<'a> {
                     Symbol::Script(_) => Value::Identifier(name.text.clone()),
                     Symbol::Member { name, .. } | Symbol::StateMember { name, .. } => {
                         match find_member(self.source, &binding.symbol).map(|member| &member.kind) {
-                            Some(MemberKind::Property { auto: true, .. })
-                                if self
-                                    .source
-                                    .members
-                                    .iter()
-                                    .any(|item| item.symbol == binding.symbol) =>
+                            Some(MemberKind::Property {
+                                auto: true,
+                                read_only: true,
+                            }) if self
+                                .source
+                                .members
+                                .iter()
+                                .any(|item| item.symbol == binding.symbol) =>
+                            {
+                                let member = find_member(self.source, &binding.symbol)?;
+                                let Some(value) = member
+                                    .initial_literal
+                                    .as_deref()
+                                    .and_then(|text| literal(text, &member.ty))
+                                else {
+                                    self.issue(
+                                        "target.property-initializer",
+                                        "AutoReadOnly requires a representable constant",
+                                        member.span,
+                                    );
+                                    return None;
+                                };
+                                value
+                            }
+                            Some(MemberKind::Property {
+                                auto: true,
+                                read_only: false,
+                            }) if self
+                                .source
+                                .members
+                                .iter()
+                                .any(|item| item.symbol == binding.symbol) =>
                             {
                                 Value::Identifier(format!("::{name}_var"))
                             }
@@ -96,11 +130,18 @@ impl<'a> FunctionLowerer<'a> {
                         source: expr.span,
                     });
                 }
-                if operator == "-"
-                    && expr.ty == Type::Int
-                    && matches!(&operand.kind, ExpressionKind::Literal(text) if text.trim() == "2147483648")
-                {
-                    Value::Int(i32::MIN)
+                let signed_literal = if operator == "-" && expr.ty == Type::Int {
+                    match &operand.kind {
+                        ExpressionKind::Literal(text) => {
+                            folio_hir::decode_integer_literal(&format!("-{}", text.trim()))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(value) = signed_literal {
+                    Value::Int(value)
                 } else {
                     let value = self.expr(operand)?;
                     if operator == "+" {

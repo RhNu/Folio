@@ -3,7 +3,10 @@
 mod ast;
 mod documentation;
 mod lexer;
+mod literals;
 mod parser;
+mod source_structure;
+mod validation;
 
 use folio_source::TextRange;
 use rowan::{GreenNode, Language};
@@ -11,7 +14,13 @@ use rowan::{GreenNode, Language};
 pub use ast::{FunctionAst, ScriptAst};
 pub use documentation::{declaration_documentation, declaration_header};
 pub use lexer::{LexToken, lex};
+pub use literals::normalize_constant_literal_text;
+pub use literals::{
+    constant_literal_matches_type, constant_literal_text, decode_integer_literal,
+    decode_string_literal,
+};
 pub use parser::parse;
+pub use validation::{DeclarationIssue, is_constant_literal, validate_declarations};
 
 /// The language policy is explicit even while the first parser shares Skyrim syntax.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

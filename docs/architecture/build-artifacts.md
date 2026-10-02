@@ -18,6 +18,8 @@ Salsa reuses queries within a process; the disk cache reuses artifacts across pr
 
 Disk fingerprints cover compiler identity, root source text, normalized declaration APIs, dependency entry order and provider selection, target rules, user flags, and settings that affect output. Parameter defaults and unknown API facts are part of the declaration API digest.
 
+Configured user flags contribute their names, explicit or allocated bit indexes, and declaration scopes to semantic identity. Allocation is deterministic, reserves the standard Hidden/Conditional bits, and checks names, scopes, and bit conflicts before generation. The resolved bits also populate the PEX flag table; a scope or allocation change cannot reuse artifacts built with different metadata.
+
 Provenance labels, historical source locations, declaration documentation, schema-only upgrades, carrier encoding, semantically irrelevant script or member ordering, and absolute host paths are excluded from the API digest. Root source text still contributes in full. Invalidation remains conservative: one changed semantic input may rebuild the entire build instance. Corrupt cache entries or mismatched digests are discarded and rebuilt.
 
 ## Physical snapshots and publication checks
@@ -30,6 +32,10 @@ Rewritten, added, or deleted files, retargeted links, or a newly ambiguous repos
 
 PEX timestamps are zero, user and machine names are empty, and source paths are relative to the owning package. Generation IDs do not enter PEX bytes. `build.debug-info` controls function and line mappings without changing runtime instructions.
 
+Target planning rejects more than 127 local named states because the empty state occupies the remaining slot in the target's 128-state table. The PEX backend consumes validated MIR and checks it again before encoding. This local gate does not establish inherited state-count or engine-loading behavior.
+
+Property layout reflects the analyzed storage contract. Mutable Auto properties serialize their backing variables; Variable-applicable metadata, including Conditional, is placed on that storage, while Property-applicable metadata remains on the property entry. AutoReadOnly serializes a literal getter without an ordinary backing variable. Parent-owned fields retain owner identities for validation and are not serialized as child variables.
+
 Build reports retain diagnostics and cache decisions, including argument filling warnings when the build uses cached output.
 
 ## Output ownership and recovery
@@ -41,3 +47,7 @@ Folio does not rewrite unchanged artifacts when both inputs and published files 
 A successful build removes previously owned artifacts that are no longer part of the result. Ordinary I/O failures trigger an attempt to restore old files. Replacing several PEX files is not atomic across a process or machine crash. `folio inspect` uses the successful index and content digests to detect inconsistent output.
 
 Builds write within the project's managed locations and never deploy automatically to a game directory. `folio inspect --pex <path>` uses the independent codec to read an arbitrary PEX file without project context; it does not compile source files.
+
+Successful generation and artifact inspection do not establish compatibility with a running script instance or an existing save. Saved variables, properties, states, and execution stacks can retain earlier definitions or values. The [engine reference](../papyrus/runtime.md) describes the source-backed save and update behavior; Folio does not migrate game saves.
+
+The absence of an AutoReadOnly backing variable is verified in emitted PEX data, not by loading a save in the engine. Conditional visibility, changed read-only values across save/reload, inherited state dispatch, Parent execution context, and nested lifecycle callbacks still require versioned CK/game verification recorded in the [roadmap](../planning/roadmap.md#papyrus-conformance).

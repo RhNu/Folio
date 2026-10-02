@@ -67,6 +67,11 @@ pub fn parse(source: &str, dialect: PapyrusDialect) -> Parse {
     parser.builder.finish_node();
     let green = parser.builder.finish();
     debug_assert_eq!(green.text_len(), rowan::TextSize::from(source.len() as u32));
+    crate::source_structure::validate(
+        &crate::SyntaxNode::new_root(green.clone()),
+        source,
+        &mut parser.errors,
+    );
     tracing::debug!(
         bytes = source.len(),
         errors = parser.errors.len(),
@@ -130,22 +135,7 @@ impl Parser<'_> {
     }
 
     fn starts_function(&self) -> bool {
-        let mut words = Vec::new();
-        for token in &self.tokens[self.cursor..] {
-            if matches!(
-                token.kind,
-                SyntaxKind::Newline | SyntaxKind::Comment | SyntaxKind::UnclosedComment
-            ) {
-                break;
-            }
-            if token.kind.is_trivia() {
-                continue;
-            }
-            words.push((token.kind, token.text(self.source)));
-            if words.len() >= 4 {
-                break;
-            }
-        }
+        let words = self.line_words();
         matches!(words.as_slice(), [(SyntaxKind::Ident, first), ..] if first.eq_ignore_ascii_case("function"))
             || matches!(words.as_slice(), [(SyntaxKind::Ident, _), (SyntaxKind::Ident, second), ..] if second.eq_ignore_ascii_case("function"))
             || matches!(words.as_slice(), [(SyntaxKind::Ident, _), (SyntaxKind::LBracket, _), (SyntaxKind::RBracket, _), (SyntaxKind::Ident, fourth), ..] if fourth.eq_ignore_ascii_case("function"))
@@ -155,22 +145,11 @@ impl Parser<'_> {
         if self.is_unsupported_statement() {
             return false;
         }
-        let mut words = Vec::new();
-        for token in &self.tokens[self.cursor..] {
-            if matches!(
-                token.kind,
-                SyntaxKind::Newline | SyntaxKind::Comment | SyntaxKind::UnclosedComment
-            ) {
-                break;
-            }
-            if token.kind.is_trivia() {
-                continue;
-            }
-            words.push(token.kind);
-            if words.len() >= 4 {
-                break;
-            }
-        }
+        let words = self
+            .line_words()
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect::<Vec<_>>();
         matches!(words.as_slice(), [SyntaxKind::Ident, SyntaxKind::Ident, ..])
             || matches!(
                 words.as_slice(),
@@ -189,7 +168,6 @@ impl Parser<'_> {
             .iter()
             .take_while(|token| !self.newline_like_token(**token))
             .filter(|token| !token.kind.is_trivia())
-            .take(6)
             .map(|token| (token.kind, token.text(self.source)))
             .collect()
     }
@@ -338,12 +316,39 @@ impl Parser<'_> {
         }
     }
 
+    fn name(&mut self, message: &str) {
+        if self.kind() == Some(SyntaxKind::Ident) && self.text().is_some_and(reserved_word) {
+            self.issue(
+                SyntaxErrorKind::UnexpectedText,
+                "reserved word cannot be a declaration name",
+            );
+        }
+        self.expect_kind(SyntaxKind::Ident, message);
+    }
+
+    fn type_name(&mut self, message: &str) {
+        if self.kind() == Some(SyntaxKind::Ident)
+            && self.text().is_some_and(|text| {
+                reserved_word(text)
+                    && !["int", "float", "string", "bool"]
+                        .iter()
+                        .any(|ty| text.eq_ignore_ascii_case(ty))
+            })
+        {
+            self.issue(
+                SyntaxErrorKind::UnexpectedText,
+                "reserved word cannot be a type name",
+            );
+        }
+        self.expect_kind(SyntaxKind::Ident, message);
+    }
+
     fn script(&mut self) {
         self.start(SyntaxKind::ScriptDecl);
         self.bump_keyword("scriptname");
-        self.expect_kind(SyntaxKind::Ident, "expected script name");
+        self.name("expected script name");
         if self.bump_keyword("extends") {
-            self.expect_kind(SyntaxKind::Ident, "expected parent script name");
+            self.name("expected parent script name");
         }
         self.flags();
         self.line_tail();
@@ -353,24 +358,27 @@ impl Parser<'_> {
     fn import(&mut self) {
         self.start(SyntaxKind::ImportDecl);
         self.bump_keyword("import");
-        self.expect_kind(SyntaxKind::Ident, "expected imported script name");
+        self.name("expected imported script name");
         self.line_tail();
         self.finish();
     }
 
     /// Declaration flags are parsed as words and validated against the project's flag set later.
-    fn flags(&mut self) {
+    fn flags(&mut self) -> bool {
+        let mut native = false;
         while !self.at_line_end() && self.kind() == Some(SyntaxKind::Ident) {
+            native |= self.at_keyword("native");
             self.trivia();
             self.bump();
         }
+        native
     }
 
     fn state(&mut self) {
         self.start(SyntaxKind::StateDecl);
         self.bump_keyword("auto");
         self.bump_keyword("state");
-        self.expect_kind(SyntaxKind::Ident, "expected state name");
+        self.name("expected state name");
         self.flags();
         self.line_tail();
         self.start(SyntaxKind::Block);
@@ -403,7 +411,7 @@ impl Parser<'_> {
         self.start(SyntaxKind::PropertyDecl);
         self.type_ref();
         self.bump_keyword("property");
-        self.expect_kind(SyntaxKind::Ident, "expected property name");
+        self.name("expected property name");
         if self.bump_kind(SyntaxKind::Equals) {
             self.expression(0);
         }
@@ -444,21 +452,14 @@ impl Parser<'_> {
     fn event(&mut self) {
         self.start(SyntaxKind::EventDecl);
         self.bump_keyword("event");
-        self.expect_kind(SyntaxKind::Ident, "expected event name");
+        self.name("expected event name");
         self.parameters();
-        let native = self.header_contains("native");
-        self.flags();
+        let native = self.flags();
         self.line_tail();
         if !native {
             self.body("endevent", SyntaxErrorKind::MissingEndEvent);
         }
         self.finish();
-    }
-
-    fn header_contains(&self, keyword: &str) -> bool {
-        self.line_words()
-            .iter()
-            .any(|(kind, word)| *kind == SyntaxKind::Ident && word.eq_ignore_ascii_case(keyword))
     }
 
     fn function(&mut self) {
@@ -472,14 +473,9 @@ impl Parser<'_> {
                 "expected Function keyword",
             );
         }
-        self.expect_kind(SyntaxKind::Ident, "expected function name");
+        self.name("expected function name");
         self.parameters();
-        let mut native = false;
-        while !self.at_line_end() && self.kind() == Some(SyntaxKind::Ident) {
-            native |= self.at_keyword("native");
-            self.trivia();
-            self.bump();
-        }
+        let native = self.flags();
         self.line_tail();
         if native {
             self.finish();
@@ -526,7 +522,7 @@ impl Parser<'_> {
 
     fn type_ref(&mut self) {
         self.start(SyntaxKind::TypeRef);
-        self.expect_kind(SyntaxKind::Ident, "expected type");
+        self.type_name("expected type");
         if self.bump_kind(SyntaxKind::LBracket) {
             self.expect_kind(SyntaxKind::RBracket, "expected ]");
         }
@@ -536,7 +532,7 @@ impl Parser<'_> {
     fn variable(&mut self) {
         self.start(SyntaxKind::VariableDecl);
         self.type_ref();
-        self.expect_kind(SyntaxKind::Ident, "expected variable name");
+        self.name("expected variable name");
         if self.bump_kind(SyntaxKind::Equals) {
             self.expression(0);
         }
@@ -559,7 +555,7 @@ impl Parser<'_> {
             let before = self.cursor;
             self.start(SyntaxKind::Parameter);
             self.type_ref();
-            self.expect_kind(SyntaxKind::Ident, "expected parameter name");
+            self.name("expected parameter name");
             if self.bump_kind(SyntaxKind::Equals) {
                 self.expression(0);
             }
@@ -754,7 +750,7 @@ impl Parser<'_> {
             Some(SyntaxKind::Ident) if self.at_keyword("new") => {
                 self.start(SyntaxKind::NewArrayExpr);
                 self.bump_keyword("new");
-                self.expect_kind(SyntaxKind::Ident, "expected array element type");
+                self.type_name("expected array element type");
                 self.expect_kind(SyntaxKind::LBracket, "expected [");
                 self.expression(0);
                 self.expect_kind(SyntaxKind::RBracket, "expected ]");
@@ -848,10 +844,11 @@ impl Parser<'_> {
                     SyntaxKind::Less
                     | SyntaxKind::Greater
                     | SyntaxKind::LessEq
-                    | SyntaxKind::GreaterEq,
+                    | SyntaxKind::GreaterEq
+                    | SyntaxKind::EqEq
+                    | SyntaxKind::NotEq,
                 ) => (7, 8),
-                Some(SyntaxKind::EqEq | SyntaxKind::NotEq) => (5, 6),
-                Some(SyntaxKind::Ident) if self.at_keyword("as") => (7, 8),
+                Some(SyntaxKind::Ident) if self.at_keyword("as") => (15, 16),
                 Some(SyntaxKind::AndAnd) => (3, 4),
                 Some(SyntaxKind::OrOr) => (1, 2),
                 _ => break,
@@ -864,9 +861,21 @@ impl Parser<'_> {
                 crate::PapyrusLanguage::kind_to_raw(SyntaxKind::BinaryExpr),
             );
             self.trivia();
+            let cast = self.at_keyword("as");
             self.bump();
-            self.expression(right);
+            if cast {
+                self.type_ref();
+            } else {
+                self.expression(right);
+            }
             self.finish();
         }
     }
 }
+
+fn reserved_word(text: &str) -> bool {
+    folio_profiles::is_skyrim_keyword(text)
+}
+
+#[cfg(test)]
+mod tests;

@@ -85,13 +85,16 @@ fn intrinsic_completion_signature_and_hover_reuse_semantic_shapes() {
     assert!(unqualified.iter().any(|item| item.label == "GetState"));
     assert!(unqualified.iter().any(|item| item.label == "GotoState"));
     let help = crate::signature_help(&view, file, text.find("Find(1)").unwrap() + 5).unwrap();
-    assert_eq!(help.parameters, ["Int value", "Int startIndex = 0"]);
+    assert_eq!(help.parameters, ["Int akElement", "Int aiStartIndex = 0"]);
     let reverse = crate::signature_help(&view, file, text.find("RFind(2").unwrap() + 9).unwrap();
     assert_eq!(reverse.active_parameter, 1);
-    assert_eq!(reverse.parameters, ["Int value", "Int startIndex = -1"]);
+    assert_eq!(
+        reverse.parameters,
+        ["Int akElement", "Int aiStartIndex = -1"]
+    );
     let state =
         crate::signature_help(&view, file, text.find("GotoState(\"").unwrap() + 10).unwrap();
-    assert_eq!(state.parameters, ["String newState"]);
+    assert_eq!(state.parameters, ["String asNewState"]);
     let hover = crate::hover(&view, file, text.find("Length").unwrap()).unwrap();
     assert_eq!(hover.declaration, "Int Property Length");
     assert_eq!(hover.details, ["Read-only array length"]);
@@ -99,7 +102,7 @@ fn intrinsic_completion_signature_and_hover_reuse_semantic_shapes() {
         crate::hover(&view, file, text.find("Find(").unwrap())
             .unwrap()
             .declaration
-            .contains("Int value")
+            .contains("Int akElement")
     );
 }
 

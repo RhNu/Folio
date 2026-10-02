@@ -122,7 +122,7 @@ pub struct AnalysisHost {
     last_revisions: BTreeMap<FileId, Revision>,
     generation: u64,
     external_declarations: Arc<Vec<DeclarationBundle>>,
-    user_flags: Arc<Vec<String>>,
+    user_flags: Arc<Vec<folio_profiles::UserFlag>>,
     fill_missing_arguments: bool,
     view: OnceLock<AnalysisView>,
 }
@@ -147,7 +147,7 @@ impl AnalysisHost {
     }
 
     /// Replaces available project-defined flags; source references remain explicit.
-    pub fn set_user_flags(&mut self, flags: Vec<String>) {
+    pub fn set_user_flags(&mut self, flags: Vec<folio_profiles::UserFlag>) {
         if *self.user_flags == flags {
             return;
         }
@@ -315,7 +315,7 @@ pub struct AnalysisView {
     generation: u64,
     files: Arc<BTreeMap<FileId, ViewFile>>,
     external_declarations: Arc<Vec<DeclarationBundle>>,
-    user_flags: Arc<Vec<String>>,
+    user_flags: Arc<Vec<folio_profiles::UserFlag>>,
     fill_missing_arguments: bool,
     semantic: Arc<OnceLock<semantic::Analysis>>,
 }
@@ -326,7 +326,7 @@ impl AnalysisView {
         &self.external_declarations
     }
 
-    pub fn user_flags(&self) -> &[String] {
+    pub fn user_flags(&self) -> &[folio_profiles::UserFlag] {
         &self.user_flags
     }
     pub fn fill_missing_arguments(&self) -> bool {

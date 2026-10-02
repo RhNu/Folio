@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     DeclarationBundle, DecodeError, FORMAT, Member, MemberData, PROFILE, ParameterDefault,
-    SCHEMA_VERSION,
+    PropertyAccess, SCHEMA_VERSION,
 };
 
 pub(crate) const MAX_BYTES: usize = 128 * 1024 * 1024;
@@ -161,9 +161,25 @@ fn validate_members(
         if let Some(initial) = member.initial_literal() {
             text(&format!("{field}.initial_literal"), initial)?;
         }
+        if matches!(
+            member.data,
+            MemberData::Property {
+                access: PropertyAccess::Manual {
+                    readable: false,
+                    writable: false
+                },
+                ..
+            }
+        ) {
+            return Err(invalid(
+                field,
+                "manual property requires at least one accessor",
+            ));
+        }
         let parameters = member.parameters();
         container(&format!("{field}.parameters"), parameters.len())?;
         let mut names = BTreeSet::new();
+        let mut saw_literal_default = false;
         for (index, parameter) in parameters.iter().enumerate() {
             let field = format!("{field}.parameters[{index}]");
             text(&format!("{field}.name"), &parameter.name)?;
@@ -173,6 +189,13 @@ fn validate_members(
             }
             if let ParameterDefault::Literal(literal) = &parameter.default {
                 text(&format!("{field}.default"), literal)?;
+                saw_literal_default = true;
+            } else if matches!(parameter.default, ParameterDefault::Required) && saw_literal_default
+            {
+                return Err(invalid(
+                    field,
+                    "required parameter follows a defaulted parameter",
+                ));
             }
         }
         *values += 1 + parameters.len() + member.flags.len();

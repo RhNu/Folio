@@ -3,6 +3,11 @@ use super::*;
 
 impl<'a> Scope<'a> {
     pub(super) fn expr(&mut self, node: &SyntaxNode) -> ExpressionFact {
+        self.expr_with_access(node, true)
+    }
+
+    /// Assignment destinations may omit Get; their receiver/index expressions still read values.
+    pub(super) fn expr_with_access(&mut self, node: &SyntaxNode, read: bool) -> ExpressionFact {
         let location = span(self.file, node);
         let (ty, binding, kind) = match node.kind() {
             SyntaxKind::LiteralExpr => {
@@ -27,6 +32,28 @@ impl<'a> Scope<'a> {
                     text: token.text().to_string(),
                     span: token_span(self.file, &token),
                 };
+                if name.text.eq_ignore_ascii_case("parent") {
+                    let legal = node
+                        .parent()
+                        .filter(|parent| parent.kind() == SyntaxKind::MemberExpr)
+                        .and_then(|member| {
+                            member
+                                .parent()
+                                .filter(|parent| parent.kind() == SyntaxKind::CallExpr)
+                                .map(|call| (member, call))
+                        })
+                        .is_some_and(|(member, call)| {
+                            direct_expression(&call).as_ref() == Some(&member)
+                        });
+                    if !legal || self.script.parent.is_none() || self.member.global {
+                        self.issue(
+                            "semantic.parent-context",
+                            "Parent requires an inherited instance function call",
+                            location,
+                        );
+                        return self.error_expr(location);
+                    }
+                }
                 let (ty, binding) = self.resolve_name(&name);
                 (ty, binding, ExpressionKind::Reference(name))
             }
@@ -87,9 +114,6 @@ impl<'a> Scope<'a> {
                 let Some(left) = children.next() else {
                     return self.error_expr(location);
                 };
-                let Some(right) = children.next() else {
-                    return self.error_expr(location);
-                };
                 let mut left = self.expr(&left);
                 let operator = node
                     .children_with_tokens()
@@ -100,7 +124,13 @@ impl<'a> Scope<'a> {
                     .map(|token| token.text().to_string())
                     .unwrap_or_default();
                 if operator.eq_ignore_ascii_case("as") {
-                    let target = Type::from_spelling(&right.text().to_string());
+                    let Some(right) = node
+                        .children()
+                        .find(|child| child.kind() == SyntaxKind::TypeRef)
+                    else {
+                        return self.error_expr(location);
+                    };
+                    let target = Type::from_spelling(&type_text(&right));
                     if !known_type(self.world, &target) {
                         self.issue(
                             "semantic.unknown-type",
@@ -125,6 +155,9 @@ impl<'a> Scope<'a> {
                         },
                     )
                 } else {
+                    let Some(right) = children.next() else {
+                        return self.error_expr(location);
+                    };
                     let mut right = self.expr(&right);
                     if matches!(operator.as_str(), "&&" | "||") {
                         for operand in [&mut left, &mut right] {
@@ -322,8 +355,35 @@ impl<'a> Scope<'a> {
             conversion: None,
             kind,
         };
+        if read
+            && matches!(
+                fact.kind,
+                ExpressionKind::Reference(_) | ExpressionKind::Member { .. }
+            )
+        {
+            self.check_readable(&fact);
+        }
         self.result.script.expressions.push(fact.clone());
         fact
+    }
+
+    pub(super) fn check_readable(&mut self, fact: &ExpressionFact) {
+        let member = fact
+            .binding
+            .as_ref()
+            .and_then(|binding| match &binding.symbol {
+                Symbol::Member { script, name } => {
+                    lookup_member(self.world, script, name).map(|(_, member)| member)
+                }
+                _ => None,
+            });
+        if member.is_some_and(|member| member.kind == MemberKind::Property && !member.readable) {
+            self.issue(
+                "semantic.write-only-property",
+                "property has no readable accessor",
+                fact.span,
+            );
+        }
     }
 
     fn error_expr(&mut self, span: SourceSpan) -> ExpressionFact {

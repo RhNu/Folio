@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+folio-profiles = { path = "../../foundation/profiles" }
 folio-project-model = { path = "../model" }
 folio-format-declarations = { path = "../../formats/declarations" }
 folio-declaration-tools = { path = "../../tooling/declarations" }

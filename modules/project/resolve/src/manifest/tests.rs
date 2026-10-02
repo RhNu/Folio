@@ -163,7 +163,10 @@ fn validates_explicit_papyrus_user_flags() {
         "extensions = [\"psc\"]\nuser-flags = [\"MyFlag\"]",
     );
     let manifest = parse("folio.toml", &input).unwrap();
-    assert_eq!(manifest.user_flags, vec!["MyFlag"]);
+    assert_eq!(
+        manifest.user_flags,
+        vec![folio_profiles::UserFlag::from("MyFlag")]
+    );
     let duplicated = input.replace("[\"MyFlag\"]", "[\"MyFlag\", \"myflag\"]");
     assert!(matches!(
         parse("folio.toml", &duplicated),
@@ -192,6 +195,31 @@ fn built_in_flags_cannot_be_redeclared() {
     assert!(matches!(error.kind, ManifestErrorKind::InvalidValue { .. }));
     let range = error.span.expect("flag has source location");
     assert_eq!(&input[range], "\"hIdDeN\"");
+}
+
+#[test]
+fn typed_flags_preserve_explicit_bits_scopes_and_reject_conflicts() {
+    let input = MINIMAL.replace(
+        "extensions = [\"psc\"]",
+        "extensions = [\"psc\"]\nuser-flags = [\"Legacy\", { name = \"ApiTag\", bit = 7, scopes = [\"script\", \"function\"] }]",
+    );
+    let manifest = parse("folio.toml", &input).unwrap();
+    assert_eq!(manifest.user_flags[1].bit, Some(7));
+    assert_eq!(
+        manifest.user_flags[1].scopes,
+        [
+            folio_profiles::FlagScope::Script,
+            folio_profiles::FlagScope::Function
+        ]
+    );
+    for invalid in [
+        input.replace("bit = 7", "bit = 1"),
+        input.replace("\"script\", \"function\"", "\"state\""),
+        input.replace("\"Legacy\"", "{ name = \"Legacy\", bit = 7 }"),
+        input.replace("name = \"ApiTag\"", "name = \"Native\""),
+    ] {
+        assert!(parse("folio.toml", &invalid).is_err());
+    }
 }
 
 #[test]

@@ -172,19 +172,13 @@ fn negative_literal(literal: &SyntaxNode) -> Option<TextRange> {
     (sign.kind() == SyntaxKind::Minus).then(|| crate::symbols::token_range(&sign))
 }
 
-/// Hex literals describe the Int bit pattern; decimal literals must fit the signed range.
+/// Preview exactly the integer representation accepted by generation.
 fn integer_value(text: &str, negative: bool) -> Option<i32> {
-    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        let value = u32::from_str_radix(hex, 16).ok()? as i32;
-        Some(if negative {
-            value.wrapping_neg()
-        } else {
-            value
-        })
+    folio_hir::decode_integer_literal(&if negative {
+        format!("-{text}")
     } else {
-        let value = text.parse::<i64>().ok()?;
-        i32::try_from(if negative { -value } else { value }).ok()
-    }
+        text.to_owned()
+    })
 }
 
 /// The parser keeps flag words as Ident tokens, just like declaration names.

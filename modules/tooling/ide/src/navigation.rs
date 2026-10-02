@@ -14,6 +14,7 @@ pub struct SymbolOccurrence {
 pub(crate) fn name(symbol: &Symbol) -> &str {
     match symbol {
         Symbol::Script(name)
+        | Symbol::ParentReceiver { script: name }
         | Symbol::Intrinsic { name }
         | Symbol::Member { name, .. }
         | Symbol::StateMember { name, .. }
@@ -27,6 +28,7 @@ pub(crate) fn name(symbol: &Symbol) -> &str {
 pub(crate) fn same(left: &Symbol, right: &Symbol) -> bool {
     match (left, right) {
         (Symbol::Script(a), Symbol::Script(b))
+        | (Symbol::ParentReceiver { script: a }, Symbol::ParentReceiver { script: b })
         | (Symbol::Intrinsic { name: a }, Symbol::Intrinsic { name: b }) => {
             a.eq_ignore_ascii_case(b)
         }
@@ -57,10 +59,21 @@ pub(crate) fn same(left: &Symbol, right: &Symbol) -> bool {
                 name: y,
             },
         ) => a.eq_ignore_ascii_case(b) && s.eq_ignore_ascii_case(t) && x.eq_ignore_ascii_case(y),
-        (Symbol::Parameter { owner: a, name: x }, Symbol::Parameter { owner: b, name: y })
-        | (Symbol::Local { owner: a, name: x }, Symbol::Local { owner: b, name: y }) => {
+        (Symbol::Parameter { owner: a, name: x }, Symbol::Parameter { owner: b, name: y }) => {
             same(a, b) && x.eq_ignore_ascii_case(y)
         }
+        (
+            Symbol::Local {
+                owner: a,
+                name: x,
+                identity: i,
+            },
+            Symbol::Local {
+                owner: b,
+                name: y,
+                identity: j,
+            },
+        ) => same(a, b) && x.eq_ignore_ascii_case(y) && i == j,
         _ => false,
     }
 }

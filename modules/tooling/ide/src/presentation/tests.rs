@@ -129,13 +129,3 @@ fn virtual_declarations_retain_exact_name_ranges_for_unknown_callable() {
     assert!(document.text.contains("Default for amount is unknown"));
     assert!(!document.text.contains("EndFunction"));
 }
-
-#[test]
-fn state_hover_includes_documentation() {
-    let text = "Scriptname Example\nState Busy\n{Busy state.}\nEndState\n";
-    let view = project(&[("Example", text)]);
-    let file = file(&view, "Example");
-    let hover = crate::hover(&view, file, text.find("Busy").unwrap()).unwrap();
-    assert_eq!(hover.documentation.as_deref(), Some("Busy state."));
-    assert_eq!(hover.declaration, "State Busy");
-}

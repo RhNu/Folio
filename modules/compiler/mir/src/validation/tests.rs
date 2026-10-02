@@ -91,3 +91,46 @@ fn rejects_instance_access_in_global_and_code_in_native_functions() {
     body.instructions.clear();
     assert!(issues(&body).is_empty());
 }
+
+#[test]
+fn inherited_fields_are_unique_within_owners_and_do_not_merge_child_storage() {
+    let mut script = Script {
+        target: folio_profiles::TargetProfile::skyrim_se(),
+        name: "Child".into(),
+        parent: "Base".into(),
+        flags: 0,
+        auto_state: String::new(),
+        variables: vec![crate::Variable {
+            name: "x".into(),
+            ty: "Int".into(),
+            initial: Value::Int(1),
+            flags: 0,
+            source: source(),
+        }],
+        external_slots: vec![crate::ExternalSlot {
+            owner: "Base".into(),
+            name: "x".into(),
+            ty: "Int".into(),
+        }],
+        properties: vec![],
+        functions: vec![function(vec![Op::Return(Value::Identifier("x".into()))])],
+        state_names: vec![],
+        source: source(),
+        decisions: vec![],
+    };
+    assert!(validate(&script).is_ok());
+    script.external_slots.push(crate::ExternalSlot {
+        owner: "Grandparent".into(),
+        name: "x".into(),
+        ty: "Int".into(),
+    });
+    assert!(validate(&script).is_ok());
+    script.external_slots.push(crate::ExternalSlot {
+        owner: "BASE".into(),
+        name: "X".into(),
+        ty: "Int".into(),
+    });
+    assert!(validate(&script).unwrap_err().iter().any(
+        |error| matches!(&error.kind, ValidationErrorKind::DuplicateName(name) if name == "BASE/X")
+    ));
+}

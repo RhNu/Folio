@@ -242,7 +242,7 @@ pub(super) fn skyrim(word: &str, context: SyntaxKind) -> Option<Entry> {
         ),
         "new" => entry(
             "New",
-            "Creates a one-dimensional array with elements initialized to their type's default value. Skyrim's New syntax requires a constant integer size from 1 through 128. It does not construct script objects.",
+            "Creates a one-dimensional array with elements initialized to their type's default value. Skyrim's New syntax requires a integer literal size from 1 through 128. It does not construct script objects.",
             Some("Int[] values = New Int[8]"),
             ARRAYS,
         ),

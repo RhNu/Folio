@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+folio-profiles = { path = "../../foundation/profiles" }
 folio-source = { path = "../../foundation/source" }
 rowan.workspace = true
 tracing.workspace = true

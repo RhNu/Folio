@@ -6,6 +6,8 @@
 
 The manifest uses the current release's fields and defaults, has no schema version, and rejects unknown fields. The supported language is Skyrim Papyrus, the build target is `skyrim-se`, and the output format is PEX.
 
+The [Papyrus dialect reference](../papyrus/dialects.md) also documents Fallout and Starfield language requirements. Those reference sections do not add accepted manifest dialects or targets. A declaration dependency cannot enable another game's grammar or ABI.
+
 ```toml
 [package]
 name = "example-mod"
@@ -33,7 +35,15 @@ debug-info = true
 
 The source and output paths default to `Source/Scripts` and `Scripts`. Both must be relative directories within the project, must not overlap, and must not point into `.folio` or contain symbolic links or other reparse points. The source directory must exist; the build creates the output directory. The build profile contributes to build identity but does not select an optimization level.
 
-`user-flags` declares custom Papyrus flags. `Hidden` and `Conditional` are built into the language. `fill-missing-arguments` is disabled by default: omitting a required argument without a default is an error. Enabling it supplies type defaults at the call site and emits a warning without changing the function signature.
+`user-flags` declares custom Papyrus flags. A string keeps the shorthand above; a table can set the PEX bit and allowed declaration sites:
+
+```toml
+user-flags = ["ProjectFlag", { name = "ApiTag", bit = 7, scopes = ["script", "function"] }]
+```
+
+Allowed scopes are `script`, `property`, `variable`, and `function` (including events). Omitted scopes mean all four. Bits 0 and 1 are reserved for built-in Hidden and Conditional; custom bits must be unique in 2–31. Omitted bits are allocated in case-insensitive name order from unused bits. Names must be ASCII identifiers and cannot redeclare keywords or built-in flags. Duplicate names, bits, scopes, empty scopes, and unsupported fields are errors. Metadata exposes flag definitions as objects. The normalized definitions participate in semantic inputs and build identity. Folio does not load `.flg` files.
+
+`fill-missing-arguments` is disabled by default: omitting a required argument without a default is an error. Enabling it supplies type defaults at the call site and emits a warning without changing the function signature.
 
 `build.debug-info` defaults to `true` and controls PEX function and line mappings. Both debug information and argument filling contribute to the build fingerprint. Lint severities are `off`, `info`, `warning`, and `error`; they do not change compilation validity for `check` or `build`.
 
@@ -81,6 +91,8 @@ PSC and PEX directories must be nonempty. Invalid declarations and duplicate scr
 Script selection replaces whole scripts: later dependencies take precedence over earlier ones, and root project sources take precedence over all dependencies. Each dependency entry retains its position and provenance even when different aliases refer to the same carrier. Directory enumeration never sets priority.
 
 Script names use ASCII case-insensitive comparison. A PSC filename must match its `ScriptName`. `folio tree` and `folio metadata` expose providers, selected sources, and external runtime requirements.
+
+This provider order is Folio's project policy. The Skyrim reference compiler documents first-match selection in its import search path; that tool behavior does not override Folio's explicit manifest order. See [Reference compiler differences](../papyrus/runtime.md) for the distinction between source-language rules and tool workflows.
 
 API visibility does not establish that a runtime implementation is installed. Folio neither downloads nor deploys dependencies and does not solve dependency versions.
 
@@ -156,11 +168,15 @@ The declaration writer uses schema 2. Readers accept schema 1 JSON and its origi
 
 `origin.source` is a portable descriptive label. The source generator also writes `input_digest`, covering sorted relative input paths and decoded source text. Script records can include inheritance, native status, flags, imports, states, members, and relative source locations. Those locations record generation history; consumers must not treat them as navigable paths on their machine. The semantic layer resolves type names.
 
-Schema 2 adds optional `documentation` to scripts, states, and members. PSC extraction associates Papyrus `{ ... }` documentation immediately following a declaration header; ordinary comments and documentation after executable statements are excluded. PEX extraction preserves existing script, property, and callable documentation strings. It does not invent documentation for states or variables, callable kinds, or parameter defaults.
+Schema 2 adds optional `documentation` to scripts, states, and members. PSC extraction accepts `{ ... }` documentation immediately after script, property, and function headers; event documentation is a Folio extension. Source state, variable, inline, and statement documentation is rejected. Carrier state documentation remains representable. PEX extraction preserves existing script, property, and callable documentation strings. It does not invent documentation for states or variables, callable kinds, or parameter defaults.
 
 Old carriers remain usable but cannot supply documentation they never retained. Regenerate from the original PSC inputs to add it. Encoding a schema 1 model writes schema 2; older Folio readers require an upgrade before consuming new carriers. Documentation and a schema-only upgrade are excluded from semantic API identity.
 
 Member variants retain facts appropriate to `function`, `event`, `unknown-callable`, `property`, or `variable`. Omitting a function's `return_type` means it returns no value. Property `access` is `auto`, `auto-read-only`, or `manual` with `readable` and `writable` fields. Parameter defaults are `required`, `literal` with Papyrus literal text, or `unknown`. An omitted `default` means `required`. Parameter order is semantically significant.
+
+PSC extraction shares pure declaration validation with source analysis: malformed headers, invalid property/accessor forms, modifier sites, default ordering, and invalid literal initializers/defaults are errors. A nonliteral initializer is never silently omitted. Callable body analysis remains excluded. Carrier validation checks structural facts; semantic consumption checks literal value/type compatibility without inventing unknown PEX facts. Reopened source states currently merge into one API state; CK acceptance of that extension remains unverified.
+
+The current declaration model's `native` flag identifies an implementation supplied by the runtime. It does not encode whether a call is latent, synchronized with a game frame, or permitted in a particular runtime context. Names and the `native` flag alone cannot establish these properties. The [engine reference](../papyrus/runtime.md) records them separately; newer dialect constructs such as custom events, structs, access modifiers, and guards also require their own supported semantic representation before their declarations can be consumed as such.
 
 ## Declaration encoding
 

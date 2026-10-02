@@ -18,12 +18,20 @@ impl LexToken {
 pub fn lex(source: &str) -> Vec<LexToken> {
     let mut tokens = Vec::new();
     let mut offset = 0;
+    let mut continued_newline = None;
     while offset < source.len() {
         let remaining = &source[offset..];
         let first = remaining.chars().next().expect("nonempty remainder");
         let (kind, len) = match first {
-            '\r' if remaining.starts_with("\r\n") => (SyntaxKind::Newline, 2),
-            '\r' | '\n' => (SyntaxKind::Newline, 1),
+            '\r' | '\n' => {
+                let kind = if continued_newline == Some(offset) {
+                    continued_newline = None;
+                    SyntaxKind::Continuation
+                } else {
+                    SyntaxKind::Newline
+                };
+                (kind, if remaining.starts_with("\r\n") { 2 } else { 1 })
+            }
             ' ' | '\t' => (
                 SyntaxKind::Whitespace,
                 remaining
@@ -44,20 +52,11 @@ pub fn lex(source: &str) -> Vec<LexToken> {
                 None => (SyntaxKind::UnclosedComment, remaining.len()),
             },
             '\\' => {
-                let horizontal = remaining.as_bytes()[1..]
-                    .iter()
-                    .take_while(|byte| **byte == b' ' || **byte == b'\t')
-                    .count();
-                let after = &remaining[1 + horizontal..];
-                let newline = if after.starts_with("\r\n") {
-                    2
-                } else if after.starts_with('\r') || after.starts_with('\n') {
-                    1
-                } else {
-                    0
-                };
-                if newline > 0 {
-                    (SyntaxKind::Continuation, 1 + horizontal + newline)
+                if let Some(newline) = continuation_newline(remaining) {
+                    // Preserve a trailing comment as its own token. Only the
+                    // physical newline loses its statement-boundary meaning.
+                    continued_newline = Some(offset + newline);
+                    (SyntaxKind::Continuation, 1)
                 } else {
                     (SyntaxKind::Unknown, 1)
                 }
@@ -148,3 +147,32 @@ pub fn lex(source: &str) -> Vec<LexToken> {
     }
     tokens
 }
+
+fn continuation_newline(text: &str) -> Option<usize> {
+    let mut offset = 1;
+    loop {
+        offset += text[offset..]
+            .bytes()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count();
+        let tail = &text[offset..];
+        if tail.starts_with(['\r', '\n']) {
+            return Some(offset);
+        }
+        if let Some(comment) = tail.strip_prefix(";/") {
+            let end = comment.find("/;")?;
+            // A multiline block comment itself ends the code line.
+            if comment[..end].contains(['\r', '\n']) {
+                return None;
+            }
+            offset += end + 4;
+        } else if tail.starts_with(';') {
+            return tail.find(['\r', '\n']).map(|end| offset + end);
+        } else {
+            return None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -4,7 +4,7 @@ use folio_project_model::{Metadata, SourceId};
 use folio_project_resolve::LoadedProject;
 
 /// Bump when key inputs or cache representation change.
-pub const CACHE_SCHEMA: u32 = 5;
+pub const CACHE_SCHEMA: u32 = 6;
 
 /// Logical provider identity excludes host paths, carrier bytes and provenance.
 fn occurrence(source: &SourceId) -> Option<usize> {

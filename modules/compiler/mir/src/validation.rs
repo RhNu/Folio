@@ -22,6 +22,7 @@ pub enum ValidationErrorKind {
     NativeBody,
     InvalidProperty,
     InvalidState(String),
+    StateCapacity,
     NonConstantInitializer,
 }
 
@@ -40,6 +41,7 @@ impl std::fmt::Display for ValidationErrorKind {
             Self::NativeBody => write!(f, "native MIR function contains executable operations"),
             Self::InvalidProperty => write!(f, "invalid MIR property accessor or backing storage"),
             Self::InvalidState(state) => write!(f, "undefined MIR state {state}"),
+            Self::StateCapacity => write!(f, "MIR local state table exceeds target capacity"),
             Self::NonConstantInitializer => write!(f, "MIR field initializer is not constant"),
         }
     }
@@ -80,14 +82,30 @@ pub fn validate(script: &Script) -> Result<(), Vec<ValidationError>> {
             );
         }
     }
+    // Fields belong to their declaring object. Identical child/parent names do
+    // not conflict; lowering has already selected the visible declaring owner.
+    let mut inherited_fields = BTreeSet::new();
     for slot in &script.external_slots {
-        unique(&mut fields, &slot.name, script.source, &mut errors);
+        unique(
+            &mut inherited_fields,
+            &format!("{}/{}", slot.owner, slot.name),
+            script.source,
+            &mut errors,
+        );
+        fields.insert(slot.name.to_ascii_lowercase());
     }
     let mut states = BTreeSet::from([String::new()]);
     for state in &script.state_names {
         if !state.is_empty() {
             unique(&mut states, state, script.source, &mut errors);
         }
+    }
+    if states.len() > script.target.max_states as usize {
+        error(
+            &mut errors,
+            script.source,
+            ValidationErrorKind::StateCapacity,
+        );
     }
     if !states.contains(&script.auto_state.to_ascii_lowercase()) {
         error(
@@ -124,6 +142,7 @@ pub fn validate(script: &Script) -> Result<(), Vec<ValidationError>> {
         let invalid = match &property.auto_var {
             Some(name) => {
                 !fields.contains(&name.to_ascii_lowercase())
+                    || property.read_only
                     || property.getter.is_some()
                     || property.setter.is_some()
             }

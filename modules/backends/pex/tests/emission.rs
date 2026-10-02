@@ -185,20 +185,28 @@ fn array_find_uses_array_before_destination() {
 }
 
 #[test]
-fn readonly_backed_property_uses_getter_without_auto_write_flag() {
+fn readonly_constant_property_uses_literal_getter_without_auto_write_flag() {
     let mut script = script(vec![Op::Return(Value::None)]);
-    script.variables.push(Variable {
-        name: "::Answer_var".into(),
-        ty: "Int".into(),
-        initial: Value::Int(42),
-        flags: 0,
-        source: source(0),
-    });
     script.properties.push(folio_mir::Property {
         name: "Answer".into(),
         ty: "Int".into(),
-        auto_var: Some("::Answer_var".into()),
-        getter: None,
+        auto_var: None,
+        getter: Some(Function {
+            name: "Get".into(),
+            state: String::new(),
+            return_type: "Int".into(),
+            parameters: vec![],
+            locals: vec![],
+            instructions: vec![Instruction {
+                op: Op::Return(Value::Int(42)),
+                source: source(0),
+            }],
+            flags: 0,
+            is_global: false,
+            is_native: false,
+            is_event: false,
+            source: source(0),
+        }),
         setter: None,
         read_only: true,
         flags: 0,

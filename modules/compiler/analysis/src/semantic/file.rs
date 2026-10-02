@@ -13,18 +13,24 @@ pub(super) fn analyze_file(
     let Some(script) = world.scripts.get(script_key) else {
         return Ok(());
     };
-    let user_flags = view
-        .user_flags
-        .iter()
-        .map(|flag| key(flag))
-        .collect::<BTreeSet<_>>();
+    if let Some(parse) = view.parse(file) {
+        for issue in folio_papyrus::validate_declarations(&parse, Some(view.user_flags.as_ref())) {
+            result.diagnostics.push(diagnostic(
+                issue.code,
+                issue.message,
+                SourceSpan {
+                    file,
+                    range: issue.range,
+                },
+            ));
+        }
+    }
     let mut imports = Vec::new();
     if let Some(declarations) = view.located_declarations(file) {
         for item in declarations.iter() {
             if cancelled() {
                 return Err(AnalysisCancelled);
             }
-            let node = source_declaration_node(view, file, item.range);
             match &item.declaration {
                 Declaration::Import { name } => {
                     if !world.scripts.contains_key(&key(name)) {
@@ -40,48 +46,7 @@ pub(super) fn analyze_file(
                         imports.push(name.clone());
                     }
                 }
-                Declaration::Script { flags, .. } => validate_flags(
-                    flags,
-                    &["hidden", "conditional"],
-                    &user_flags,
-                    node.as_ref(),
-                    file,
-                    &mut result.diagnostics,
-                ),
-                Declaration::Variable { flags, .. } => validate_flags(
-                    flags,
-                    &["conditional"],
-                    &user_flags,
-                    node.as_ref(),
-                    file,
-                    &mut result.diagnostics,
-                ),
-                Declaration::Property { flags, .. } => validate_flags(
-                    flags,
-                    &["auto", "autoreadonly", "conditional", "hidden"],
-                    &user_flags,
-                    node.as_ref(),
-                    file,
-                    &mut result.diagnostics,
-                ),
-                Declaration::State { flags, .. } => validate_flags(
-                    flags,
-                    &["auto"],
-                    &user_flags,
-                    node.as_ref(),
-                    file,
-                    &mut result.diagnostics,
-                ),
-                Declaration::Function { modifiers, .. } | Declaration::Event { modifiers, .. } => {
-                    validate_flags(
-                        modifiers,
-                        &["global", "native", "hidden"],
-                        &user_flags,
-                        node.as_ref(),
-                        file,
-                        &mut result.diagnostics,
-                    )
-                }
+                _ => {}
             }
         }
     }
@@ -110,26 +75,7 @@ pub(super) fn analyze_file(
             } else {
                 Type::Void
             };
-            if !name.eq_ignore_ascii_case("get") && !name.eq_ignore_ascii_case("set") {
-                result.diagnostics.push(diagnostic(
-                    "semantic.invalid-accessor",
-                    "property accessor must be Get or Set",
-                    span(file, &node),
-                ));
-            }
             let actual = folio_papyrus::FunctionAst::cast(node.clone());
-            let actual_ty = actual
-                .as_ref()
-                .and_then(|ast| ast.return_type())
-                .map(|text| Type::from_spelling(&text))
-                .unwrap_or(Type::Void);
-            if actual_ty != ty {
-                result.diagnostics.push(diagnostic(
-                    "semantic.accessor-type",
-                    format!("accessor must return {ty:?}"),
-                    span(file, &node),
-                ));
-            }
             let parameters: Vec<(String, Type, ParameterDefault)> = actual
                 .map(|ast| {
                     ast.parameters()
@@ -148,16 +94,6 @@ pub(super) fn analyze_file(
                         .collect()
                 })
                 .unwrap_or_default();
-            if (name.eq_ignore_ascii_case("get") && !parameters.is_empty())
-                || (name.eq_ignore_ascii_case("set")
-                    && (parameters.len() != 1 || parameters[0].1 != property_type))
-            {
-                result.diagnostics.push(diagnostic(
-                    "semantic.accessor-parameters",
-                    "property accessor parameters do not match property type",
-                    span(file, &node),
-                ));
-            }
             Some(MemberInfo {
                 name: name.clone(),
                 ty,
@@ -166,6 +102,7 @@ pub(super) fn analyze_file(
                 global: false,
                 auto: false,
                 read_only: false,
+                readable: true,
                 writable: true,
                 definition: Some(span(file, &node)),
             })
@@ -231,7 +168,7 @@ pub(super) fn analyze_file(
     Ok(())
 }
 
-fn callable_name(node: &SyntaxNode) -> Option<String> {
+pub(super) fn callable_name(node: &SyntaxNode) -> Option<String> {
     let keyword = if node.kind() == SyntaxKind::EventDecl {
         "event"
     } else {
@@ -252,40 +189,4 @@ fn callable_name(node: &SyntaxNode) -> Option<String> {
         saw_keyword = token.text().eq_ignore_ascii_case(keyword);
     }
     None
-}
-
-fn validate_flags(
-    flags: &[String],
-    builtins: &[&str],
-    user_flags: &BTreeSet<String>,
-    node: Option<&SyntaxNode>,
-    file: FileId,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    for flag in flags {
-        if builtins
-            .iter()
-            .any(|builtin| builtin.eq_ignore_ascii_case(flag))
-            || user_flags.contains(&key(flag))
-        {
-            continue;
-        }
-        let at = node
-            .and_then(|node| {
-                node.children_with_tokens()
-                    .filter_map(|item| item.into_token())
-                    .find(|token| {
-                        token.kind() == SyntaxKind::Ident && token.text().eq_ignore_ascii_case(flag)
-                    })
-            })
-            .map(|token| token_span(file, &token))
-            .or_else(|| node.map(|node| span(file, node)));
-        if let Some(at) = at {
-            diagnostics.push(diagnostic(
-                "semantic.unknown-flag",
-                format!("unknown flag {flag}"),
-                at,
-            ));
-        }
-    }
 }

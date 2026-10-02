@@ -145,47 +145,7 @@ fn valid_name(value: &str) -> bool {
     };
     (first.is_ascii_alphabetic() || first == '_')
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-        && ![
-            "scriptname",
-            "extends",
-            "import",
-            "function",
-            "endfunction",
-            "event",
-            "endevent",
-            "property",
-            "endproperty",
-            "auto",
-            "autoreadonly",
-            "state",
-            "endstate",
-            "if",
-            "elseif",
-            "else",
-            "endif",
-            "while",
-            "endwhile",
-            "return",
-            "new",
-            "as",
-            "self",
-            "parent",
-            "none",
-            "true",
-            "false",
-            "int",
-            "float",
-            "bool",
-            "string",
-            "native",
-            "global",
-            "hidden",
-            "conditional",
-            "getstate",
-            "gotostate",
-        ]
-        .iter()
-        .any(|word| value.eq_ignore_ascii_case(word))
+        && !folio_profiles::is_skyrim_keyword(value)
 }
 
 pub fn rename(
@@ -203,22 +163,9 @@ pub fn rename(
         span: target.span,
         definition: Some(target.definition),
     };
-    // Conservatively reject callable-wide collisions: shadowing can capture uses before a local declaration.
-    if let Symbol::Local { owner, .. } | Symbol::Parameter { owner, .. } = &target.symbol {
-        let script = view.analysis.hir(target.definition.file).unwrap();
-        if script.declarations.iter().any(|item| {
-            !same(&item.symbol, &target.symbol)
-                && name(&item.symbol).eq_ignore_ascii_case(new_name)
-                && match &item.symbol {
-                    Symbol::Local { owner: other, .. } | Symbol::Parameter { owner: other, .. } => {
-                        same(owner, other)
-                    }
-                    _ => true,
-                }
-        }) {
-            return Err(RenameError::Collision);
-        }
-    } else if let Symbol::Member { script: owner, .. } = &target.symbol {
+    // Local collisions depend on lexical scope. The edited-project analysis and
+    // occurrence checks below reject overlapping declarations and captured uses.
+    if let Symbol::Member { script: owner, .. } = &target.symbol {
         for file in view.analysis.file_ids() {
             let script = view.analysis.hir(file).unwrap();
             let Some(script_name) = &script.name else {
@@ -296,7 +243,7 @@ pub fn rename(
             let start = map_offset(file, original.span.range.start, &edits);
             let actual =
                 crate::symbol_at(&edited, file, start).ok_or(RenameError::UnverifiableEdit)?;
-            let expected = if matches!(
+            let mut expected = if matches!(
                 target.symbol,
                 Symbol::Local { .. } | Symbol::Parameter { .. }
             ) && original.definition != Some(target.definition)
@@ -305,6 +252,14 @@ pub fn rename(
             } else {
                 renamed_symbol(&original.symbol, &target.symbol, new_name)
             };
+            // Local identity is its declaration offset; edits before it move that identity.
+            if let Symbol::Local { identity, .. } = &mut expected {
+                *identity = map_offset(
+                    original.definition.map_or(file, |span| span.file),
+                    *identity,
+                    &edits,
+                );
+            }
             let expected_definition = original.definition.map(|span| SourceSpan {
                 file: span.file,
                 range: folio_source::TextRange {
@@ -335,9 +290,12 @@ fn map_offset(file: FileId, byte: usize, edits: &[RenameEdit]) -> usize {
 fn renamed_symbol(symbol: &Symbol, target: &Symbol, new_name: &str) -> Symbol {
     if same(symbol, target) {
         match symbol {
-            Symbol::Local { owner, .. } => Symbol::Local {
+            Symbol::Local {
+                owner, identity, ..
+            } => Symbol::Local {
                 owner: owner.clone(),
                 name: new_name.into(),
+                identity: *identity,
             },
             Symbol::Parameter { owner, .. } => Symbol::Parameter {
                 owner: owner.clone(),
@@ -368,9 +326,14 @@ fn renamed_symbol(symbol: &Symbol, target: &Symbol, new_name: &str) -> Symbol {
                     name: name.clone(),
                 }
             }
-            Symbol::Local { owner, name } => Symbol::Local {
+            Symbol::Local {
+                owner,
+                name,
+                identity,
+            } => Symbol::Local {
                 owner: Box::new(renamed_symbol(owner, target, new_name)),
                 name: name.clone(),
+                identity: *identity,
             },
             Symbol::Parameter { owner, name } => Symbol::Parameter {
                 owner: Box::new(renamed_symbol(owner, target, new_name)),

@@ -74,7 +74,7 @@ path = "../OtherMod/Source/Scripts"
 
 ## 语言与编辑器支持
 
-[Skyrim Papyrus](docs/papyrus.md) 描述 Folio 接受和检查的语言行为。[工具与编辑器服务](docs/architecture/tooling.md) 介绍格式化、lint、诊断、导航及语言服务器的项目模型。
+[Papyrus 语言参考](docs/papyrus.md) 整理 Skyrim 基线、[游戏方言差异](docs/papyrus/dialects.md)和[引擎语义](docs/papyrus/runtime.md)，并注明来源及尚未解决的规范问题。Folio 实现 `skyrim` 方言和 `skyrim-se` 生成目标。源码与依赖声明共享字面量默认值、属性形式和声明标志校验；语义分析检查词法作用域、转换、访问器权限和继承契约。[编译管线](docs/architecture/compiler.md) 说明当前实现。Folio 扩展和尚未完成的 CK／引擎验证仍明确记录在参考文档及[符合性路线图](docs/planning/roadmap.md#papyrus-conformance)中。[工具与编辑器服务](docs/architecture/tooling.md) 介绍格式化、lint、诊断、导航及语言服务器的项目模型。
 
 VS Code 客户端提供 `.psc` 文件图标、语法与语义高亮、带文档和来源链接的声明 hover、针对关键字、内置类型、字面量和运算符的离线 Skyrim 语言 hover、补全、签名提示、引用查询、继承导航、CodeLens、参数提示、经过验证的项目符号重命名、符号搜索和格式化。语言 hover 在源码和只读 API 文档中提供字面量值、示例与 Creation Kit 参考链接。没有 PSC 源码的依赖以只读 API 声明视图打开。它优先使用配置的 Folio 可执行文件或目录，然后搜索 `PATH`。在 `editors/vscode` 运行 `npm ci` 和 `npm run package` 可打包客户端。VSIX 不包含 Folio 可执行文件。安装、设置、调试和发布方式见[扩展 README](editors/vscode/README.md)。
 

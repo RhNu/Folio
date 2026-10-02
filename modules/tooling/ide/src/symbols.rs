@@ -30,7 +30,7 @@ pub(crate) fn token_range(token: &folio_papyrus::SyntaxToken) -> TextRange {
 /// Returns the script that owns a bound symbol, including locals and parameters.
 pub(crate) fn owner_script(symbol: &Symbol) -> Option<String> {
     match symbol {
-        Symbol::Script(name) => Some(name.clone()),
+        Symbol::Script(name) | Symbol::ParentReceiver { script: name } => Some(name.clone()),
         Symbol::Member { script, .. }
         | Symbol::StateMember { script, .. }
         | Symbol::PropertyAccessor { script, .. } => Some(script.clone()),
@@ -41,7 +41,7 @@ pub(crate) fn owner_script(symbol: &Symbol) -> Option<String> {
 
 fn symbol_name(symbol: &Symbol) -> &str {
     match symbol {
-        Symbol::Script(name) => name,
+        Symbol::Script(name) | Symbol::ParentReceiver { script: name } => name,
         Symbol::Intrinsic { name }
         | Symbol::Member { name, .. }
         | Symbol::StateMember { name, .. }
@@ -237,7 +237,7 @@ fn member_kind(script: &Script, symbol: &Symbol) -> SemanticTokenKind {
 
 fn classify(script: &Script, symbol: &Symbol) -> SemanticTokenKind {
     match symbol {
-        Symbol::Script(_) => SemanticTokenKind::Class,
+        Symbol::Script(_) | Symbol::ParentReceiver { .. } => SemanticTokenKind::Class,
         Symbol::Intrinsic { .. } => SemanticTokenKind::Method,
         Symbol::Member { .. } | Symbol::StateMember { .. } | Symbol::PropertyAccessor { .. } => {
             member_kind(script, symbol)

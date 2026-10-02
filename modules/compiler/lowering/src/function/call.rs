@@ -81,7 +81,12 @@ impl<'a> FunctionLowerer<'a> {
         };
         let mut captures = Vec::new();
         let mut receiver = if let ExpressionKind::Member { owner, .. } = &callee.kind {
-            if is_global {
+            if is_global
+                || owner
+                    .binding
+                    .as_ref()
+                    .is_some_and(|binding| matches!(binding.symbol, Symbol::ParentReceiver { .. }))
+            {
                 None
             } else {
                 let value = self.expr(owner)?;
@@ -230,7 +235,7 @@ impl<'a> FunctionLowerer<'a> {
                 dest: dest.clone(),
                 args,
             }
-        } else if matches!(&callee.kind, ExpressionKind::Member { owner, .. } if matches!(&owner.kind, ExpressionKind::Reference(reference) if reference.text.eq_ignore_ascii_case("parent")))
+        } else if matches!(&callee.kind, ExpressionKind::Member { owner, .. } if owner.binding.as_ref().is_some_and(|binding| matches!(binding.symbol, Symbol::ParentReceiver { .. })))
         {
             Op::CallParent {
                 name,

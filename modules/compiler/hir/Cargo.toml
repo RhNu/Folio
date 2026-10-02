@@ -9,4 +9,5 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+folio-papyrus = { path = "../../languages/papyrus" }
 folio-source = { path = "../../foundation/source" }

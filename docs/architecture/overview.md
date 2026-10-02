@@ -48,8 +48,10 @@ CLI and LSP share resolution, semantic rules, diagnostics, and fix data. Semanti
 
 API visibility and runtime capability are separate inputs. A visible declaration does not establish that its implementation is installed in the game. Each feature use must be implemented directly, lowered equivalently, or rejected with a reason; the compiler must not change semantics through silent approximation.
 
+The [Papyrus reference](../papyrus.md) separates source-language requirements, [dialect differences](../papyrus/dialects.md), and [engine behavior](../papyrus/runtime.md) from Folio's implementation status. Documenting a game dialect does not register it as an implemented frontend or generation target. Current target parameters are defined by `TargetProfile` in `modules/foundation/profiles`; they cover a subset of the requirements, rather than establishing full language or runtime conformance.
+
 ## Engineering conventions
 
 The root workspace manages the Rust toolchain, dependencies, and lockfile. Libraries emit structured `tracing` events, and process entry points initialize subscribers. Loading, provider selection, analysis, lowering, cache decisions, and publication need enough context to diagnose failures without logging source bodies or sensitive data. CLI logs use stderr; LSP stdout carries protocol messages only.
 
-The domain contracts are documented in [Projects and dependencies](project-model.md), [Skyrim Papyrus](../papyrus.md), [Compiler pipeline](compiler.md), [Builds and artifacts](build-artifacts.md), and [Tools and editor services](tooling.md). Outstanding work belongs in the [roadmap](../planning/roadmap.md).
+The domain contracts are documented in [Projects and dependencies](project-model.md), [Papyrus language reference](../papyrus.md), [Compiler pipeline](compiler.md), [Builds and artifacts](build-artifacts.md), and [Tools and editor services](tooling.md). Outstanding work belongs in the [roadmap](../planning/roadmap.md).

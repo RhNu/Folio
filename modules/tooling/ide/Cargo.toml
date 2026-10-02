@@ -13,6 +13,7 @@ folio-build = { path = "../../project/build" }
 folio-hir = { path = "../../compiler/hir" }
 folio-papyrus = { path = "../../languages/papyrus" }
 folio-source = { path = "../../foundation/source" }
+folio-profiles = { path = "../../foundation/profiles" }
 tracing.workspace = true
 
 [lints]

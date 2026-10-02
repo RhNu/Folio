@@ -107,6 +107,38 @@ fn error(path: &str, reason: impl Into<String>) -> GenerationError {
 
 fn extract(input: &SourceInput<'_>) -> Result<Script, GenerationError> {
     let parsed = parse(input.text, PapyrusDialect::Skyrim);
+    // Dependency bodies may be unavailable or invalid; their declaration headers may not.
+    let body_ranges = parsed
+        .syntax()
+        .descendants()
+        .filter(|node| {
+            node.kind() == SyntaxKind::Block
+                && node.parent().is_some_and(|parent| {
+                    matches!(
+                        parent.kind(),
+                        SyntaxKind::FunctionDecl | SyntaxKind::EventDecl
+                    )
+                })
+        })
+        .map(|node| node.text_range())
+        .collect::<Vec<_>>();
+    if let Some(cause) = parsed.errors.iter().find(|cause| {
+        !body_ranges.iter().any(|range| {
+            usize::from(range.start()) <= cause.range.start
+                && cause.range.start < usize::from(range.end())
+        })
+    }) {
+        return Err(error(
+            input.path,
+            format!("invalid declaration syntax: {}", cause.message),
+        ));
+    }
+    if let Some(cause) = folio_papyrus::validate_declarations(&parsed, None).first() {
+        return Err(error(
+            input.path,
+            format!("{}: {}", cause.code, cause.message),
+        ));
+    }
     let summaries = declarations(&parsed)
         .into_iter()
         .map(|item| (item.range.start, item.declaration))
@@ -336,8 +368,7 @@ fn member(
     let initial_literal = node
         .children()
         .find(|child| is_expression(child.kind()))
-        .filter(is_literal_expression)
-        .map(|child| child.text().to_string());
+        .and_then(|child| folio_papyrus::constant_literal_text(&child));
     let global = flags.iter().any(|flag| flag == "global");
     let native = flags.iter().any(|flag| flag == "native");
     if global && kind != MemberKind::Function {
@@ -395,20 +426,6 @@ fn is_expression(kind: SyntaxKind) -> bool {
             | SyntaxKind::ParenExpr
             | SyntaxKind::NewArrayExpr
     )
-}
-
-fn is_literal_expression(node: &SyntaxNode) -> bool {
-    match node.kind() {
-        SyntaxKind::LiteralExpr => true,
-        SyntaxKind::UnaryExpr => {
-            let mut expressions = node.children().filter(|child| is_expression(child.kind()));
-            expressions
-                .next()
-                .is_some_and(|child| is_literal_expression(&child))
-                && expressions.next().is_none()
-        }
-        _ => false,
-    }
 }
 
 fn parameter(source: &folio_papyrus::Parameter) -> Parameter {

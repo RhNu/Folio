@@ -21,7 +21,10 @@ fn selected_inputs_preserve_root_body_and_select_dependency_api() {
     assert_eq!(selected.declarations.len(), 1);
     assert_eq!(selected.declarations[0].scripts.len(), 1);
     assert_eq!(selected.declarations[0].scripts[0].name, "Actor");
-    assert_eq!(selected.user_flags, vec!["Custom"]);
+    assert_eq!(
+        selected.user_flags,
+        vec![folio_profiles::UserFlag::from("Custom")]
+    );
     let mut service = ProjectAnalysis::new();
     let view = service.sync_project(&loaded, &metadata).unwrap();
     assert!(view.diagnostics().is_empty());

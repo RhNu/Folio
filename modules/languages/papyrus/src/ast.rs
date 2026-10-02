@@ -169,3 +169,6 @@ pub(crate) fn type_text(node: SyntaxNode) -> String {
         .map(|token| token.text().to_string())
         .collect()
 }
+
+#[cfg(test)]
+mod tests;

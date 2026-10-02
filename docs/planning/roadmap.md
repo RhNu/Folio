@@ -20,3 +20,37 @@ This is the workspace's record of outstanding work and unresolved verification. 
 
 - Select a specific game target and SDK, then define its language differences, target constraints, PEX encoding, and verifiable lowering behavior.
 - Design manifests and diagnostic presentation for multiple targets when a real project requires them.
+
+## Papyrus conformance
+
+The current scope is the Skyrim language and `skyrim-se` generation target. CK/SKSE API catalogs and additional game implementations are separate work. Pure syntax, semantic, MIR/PEX, and editor-model unit tests establish compiler behavior for their inputs; they do not establish original CK or engine compatibility.
+
+### Coverage and unresolved decisions
+
+- Obtain an identified original CK/compiler baseline for the complete mixed Bool/numeric/string operator and comparison matrix, standalone None casts, redundant array casts, all namespace collision pairs, and mixed positional/named argument ordering. Do not derive a complete matrix from isolated wiki examples.
+- Verify or narrow explicit Folio extensions: event documentation, unary plus, repeated unary/cast expressions, the `\r` escape, and reopening same-named source states. Declaration extraction currently merges reopened states; authoritative acceptance/rejection evidence remains missing. Source identifiers currently use ASCII letters/digits/underscore.
+- Confirm constant-context conversion rules beyond matching types, Int-to-Float widening, and None references. Runtime String conversions do not imply a compile-time formatter for declaration constants.
+- Resolve conflicting evidence for Conditional AutoReadOnly and typed fallthrough. Current Folio policy rejects both rather than emitting uncertain behavior.
+- Establish full-width hexadecimal/sign interpretation beyond the signed Int range. The shared decoder currently accepts signed-range decimal/hex values, including the signed minimum; it rejects unsigned full-width bit patterns.
+- Verify inherited private-field visibility and namespace interactions independently of owner-qualified storage identity. Local state capacity is 128 including the empty state; inherited counting needs versioned evidence.
+- Select a `.flg` import workflow only when required. Manifest definitions now carry explicit bits/scopes, but this does not establish equivalence to original compiler flag-file parsing.
+- Improve the location of remaining downstream-only rejections, including unsupported Float remainder and some global-instance cases. No approximation is emitted for these operations.
+
+### External compatibility verification
+
+Before declaring runtime compatibility, identify CK/compiler and game versions and verify:
+
+- Inherited auto-state selection and state/ancestor fallback; Parent calls across an ancestor without a local implementation; empty lifecycle callbacks, populated callbacks, and nested transitions. Expect Parent dispatch and OnEndState → state update → OnBeginState ordering as described in the runtime reference.
+- Conditional property visibility in CK and its generated storage metadata. Change an AutoReadOnly literal after saving, then load with the rebuilt script; confirm the current script value is observed rather than persisted mutable backing storage.
+- Array None/search/bounds behavior, Float epsilon, string caching/casing, loop-local lifetime, instance-lock reentry, initialization/reset, and saved stacks against the documented contracts.
+- Editor diagnostics, lexical completion/rename, intrinsic named parameters, and numeric hover after live source/dependency changes. In-memory model tests do not establish protocol, refresh, or UI behavior.
+
+Retain disagreements as unresolved evidence rather than reproducing historical compiler bugs without a language requirement. Fallout 4 is a future target; Fallout 76 and Starfield implementation review remains deferred.
+
+### Additional reference verification
+
+- Resolve conflicting or incomplete Skyrim evidence for Conditional property kinds, typed-function fallthrough, state/ancestor dispatch, `Parent` call context, string comparison/caching, floating-point epsilon, identifier character sets, unary operators, and inherited state-count limits. Keep historical CK compiler bugs distinct from semantic requirements.
+- Establish versioned CK/compiler and engine evidence for built-in state methods and callbacks, array operations and failures, local-variable lifetime, instance-lock reentrancy, initialization/reset, and saved-stack compatibility. Pure logic tests do not establish these external behaviors.
+- Validate the [Fallout and Starfield dialect reference](../papyrus/dialects.md) against identified official compiler/SDK versions before implementing targets. Preserve separate evidence for Fallout 4, Fallout 76, and Starfield; do not infer compatibility from shared syntax or third-party tool support.
+- Resolve Fallout 4 source conflicts about native/const storage, struct unboxing from `Var`, array allocation bounds and invalid mutation/search arguments, release/final call argument effects, and custom-event unregistration timing. Verify state-event parameter changes, initialization deadlocks, repeatable quest resets, and const saved-value/alias behavior against the identified engine.
+- Obtain Starfield compiler/SDK evidence for `TryLockGuard` and alternative branches, guard requirements and access modifiers, `GetMatchingStructs`, special parameter types, and actual flags. The pinned reconstructed lexer, parser, and walkers disagree; a token inventory or decompiled temporary name is not a definitive source production. Establish Fallout 76 language/runtime evidence independently where public references remain unavailable.

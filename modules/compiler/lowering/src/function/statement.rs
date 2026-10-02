@@ -124,12 +124,24 @@ impl<'a> FunctionLowerer<'a> {
                         .map(|name| Place::Slot(Value::Identifier(name))),
                     Symbol::Member { name, .. } => {
                         match find_member(self.source, &binding.symbol).map(|member| &member.kind) {
-                            Some(MemberKind::Property { auto: true, .. })
-                                if self
-                                    .source
-                                    .members
-                                    .iter()
-                                    .any(|item| item.symbol == binding.symbol) =>
+                            Some(MemberKind::Property {
+                                read_only: true, ..
+                            }) => {
+                                self.issue(
+                                    "lowering.read-only-property",
+                                    "read-only property cannot be assigned",
+                                    span,
+                                );
+                                None
+                            }
+                            Some(MemberKind::Property {
+                                auto: true,
+                                read_only: false,
+                            }) if self
+                                .source
+                                .members
+                                .iter()
+                                .any(|item| item.symbol == binding.symbol) =>
                             {
                                 Some(Place::Slot(Value::Identifier(format!("::{name}_var"))))
                             }

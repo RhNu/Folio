@@ -2,8 +2,9 @@
 
 use folio_source::SourceSpan;
 
-mod literals;
-pub use literals::decode_string_literal;
+pub use folio_papyrus::{
+    decode_integer_literal, decode_string_literal, normalize_constant_literal_text,
+};
 
 /// A name and its original source range, before name binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,6 +57,10 @@ impl Type {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Symbol {
     Script(String),
+    /// Restricted ancestor-call context, never an ordinary script value.
+    ParentReceiver {
+        script: String,
+    },
     /// Compiler-provided operations independent of CK or SDK declarations.
     Intrinsic {
         name: String,
@@ -81,6 +86,8 @@ pub enum Symbol {
     Local {
         owner: Box<Symbol>,
         name: String,
+        /// Declaration byte offset distinguishes equally named sibling-block locals.
+        identity: usize,
     },
 }
 

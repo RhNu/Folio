@@ -40,6 +40,7 @@ struct MemberInfo {
     global: bool,
     auto: bool,
     read_only: bool,
+    readable: bool,
     writable: bool,
     definition: Option<SourceSpan>,
 }
@@ -101,10 +102,15 @@ fn name_token(node: &SyntaxNode, skip: &[&str]) -> Option<SyntaxToken> {
 }
 
 fn type_text(node: &SyntaxNode) -> String {
-    node.text()
-        .to_string()
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
+    node.children_with_tokens()
+        .filter_map(|item| item.into_token())
+        .filter(|token| {
+            matches!(
+                token.kind(),
+                SyntaxKind::Ident | SyntaxKind::LBracket | SyntaxKind::RBracket
+            )
+        })
+        .map(|token| token.text().to_string())
         .collect()
 }
 
@@ -309,6 +315,7 @@ pub(super) fn analyze_with_cancel(
                 ));
                 continue;
             }
+            validate_external_initializers(external, &mut analysis.project_diagnostics);
             world.scripts.insert(k, script_from_external(external));
         }
     }
@@ -487,7 +494,8 @@ pub(super) fn analyze_with_cancel(
                     ),
                     _ => unreachable!(),
                 };
-                let initial_literal = direct_expression(&node).map(|expr| expr.text().to_string());
+                let initial_literal = direct_expression(&node)
+                    .and_then(|expr| folio_papyrus::constant_literal_text(&expr));
                 analysis
                     .files
                     .get_mut(&file)

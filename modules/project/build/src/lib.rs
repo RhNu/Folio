@@ -81,7 +81,7 @@ pub fn sources_from_loaded(project: &LoadedProject) -> Result<Vec<ProjectSource>
 pub struct SelectedInputs {
     pub sources: Vec<ProjectSource>,
     pub declarations: Vec<DeclarationBundle>,
-    pub user_flags: Vec<String>,
+    pub user_flags: Vec<folio_profiles::UserFlag>,
 }
 
 /// Projects only resolver-selected providers into the visible semantic namespace.

@@ -249,35 +249,7 @@ impl<'a> Emitter<'a> {
                         ));
                     }
                     let var_id = self.intern(var, prop.source)?;
-                    if prop.read_only {
-                        let return_instruction = self.instruction(
-                            PexOpcode::Return,
-                            vec![PexValue::Identifier(var_id)],
-                            vec![],
-                            prop.source,
-                        )?;
-                        let getter = PexFunction {
-                            name: prop_name,
-                            return_type_name: type_name,
-                            documentation_string: empty,
-                            user_flags: 0,
-                            is_global: false,
-                            is_native: false,
-                            parameters: vec![],
-                            locals: vec![],
-                            instructions: vec![return_instruction],
-                        };
-                        self.push_debug(
-                            name,
-                            empty,
-                            prop_name,
-                            PexDebugFunctionType::Getter,
-                            vec![self.line(prop.source)?],
-                        );
-                        (Some(getter), None, false, None)
-                    } else {
-                        (None, None, true, Some(var_id))
-                    }
+                    (None, None, true, Some(var_id))
                 } else {
                     let getter = match &prop.getter {
                         Some(function) => {
@@ -679,7 +651,7 @@ impl<'a> Emitter<'a> {
             locals: vec![],
             instructions: vec![get_return],
         };
-        let new_state = self.intern("newState", source)?;
+        let new_state = self.intern("asNewState", source)?;
         let none_var = self.intern("::NoneVar", source)?;
         let self_name = self.intern("self", source)?;
         let on_end = self.intern("onEndState", source)?;
@@ -711,6 +683,7 @@ impl<'a> Emitter<'a> {
                 vec![],
                 source,
             )?,
+            self.instruction(PexOpcode::Return, vec![PexValue::None], vec![], source)?,
         ];
         let goto = PexFunction {
             name: goto_name,
@@ -732,3 +705,6 @@ impl<'a> Emitter<'a> {
         Ok(vec![get, goto])
     }
 }
+
+#[cfg(test)]
+mod tests;

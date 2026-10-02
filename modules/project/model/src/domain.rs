@@ -63,7 +63,7 @@ pub struct Manifest {
     pub dialect: String,
     pub extensions: Vec<String>,
     /// Project-defined Papyrus modifier names available to semantic analysis.
-    pub user_flags: Vec<String>,
+    pub user_flags: Vec<folio_profiles::UserFlag>,
     /// Whether omitted required Papyrus call arguments receive type defaults.
     pub fill_missing_arguments: bool,
     /// Rule ID to severity (off, info, warning, error) for project linting.
@@ -206,7 +206,7 @@ pub struct Metadata {
     pub debug_info: bool,
     pub source: String,
     pub output: String,
-    pub user_flags: Vec<String>,
+    pub user_flags: Vec<folio_profiles::UserFlag>,
     pub packages: Vec<ResolvedPackage>,
     pub dependencies: Vec<DependencyEdge>,
     pub scripts: Vec<ScriptSelection>,

@@ -1,5 +1,8 @@
 //! Typed identifiers for source languages and compilation targets.
 
+mod flags;
+pub use flags::{FlagScope, UserFlag, is_skyrim_keyword, resolve_user_flags};
+
 /// A source language selected for analysis.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct LanguageId(String);
@@ -39,6 +42,8 @@ pub struct TargetProfile {
     pub pex_major: u8,
     pub pex_minor: u8,
     pub max_array_length: u32,
+    /// Local state table capacity, including the implicit empty state.
+    pub max_states: u32,
     pub max_user_flag_bit: u8,
     pub supports_structs: bool,
     pub supports_guards: bool,
@@ -52,6 +57,7 @@ impl TargetProfile {
             pex_major: 3,
             pex_minor: 2,
             max_array_length: 128,
+            max_states: 128,
             max_user_flag_bit: 31,
             supports_structs: false,
             supports_guards: false,
