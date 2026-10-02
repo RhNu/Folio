@@ -85,8 +85,8 @@ fn valid_type_name(text: &str) -> bool {
         && (builtin || !folio_profiles::is_skyrim_keyword(text))
 }
 
-/// Decode a signed-range Papyrus integer, including decimal minimum and hex.
-/// Full-width unsigned hexadecimal bit-pattern interpretation remains unresolved.
+/// Decode decimal signed values and unsigned 32-bit hexadecimal bit patterns.
+/// Explicit minus retains signed-magnitude limits pending compiler evidence.
 pub fn decode_integer_literal(text: &str) -> Option<i32> {
     // Unary plus remains a Folio expression extension, while declaration
     // constant syntax is restricted to an optional numeric minus.
@@ -120,6 +120,11 @@ pub fn decode_integer_literal(text: &str) -> Option<i32> {
         return None;
     }
     let magnitude = i64::from_str_radix(digits, radix).ok()?;
+    if radix == 16 && !negative {
+        // SDK masks use the high bit: 0x80000000 is MIN, 0xFFFFFFFF is -1.
+        let bits = u32::try_from(magnitude).ok()?;
+        return Some(i32::from_ne_bytes(bits.to_ne_bytes()));
+    }
     let value = if negative { -magnitude } else { magnitude };
     i32::try_from(value).ok()
 }

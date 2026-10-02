@@ -133,7 +133,19 @@ impl<'a> FunctionLowerer<'a> {
                 let signed_literal = if operator == "-" && expr.ty == Type::Int {
                     match &operand.kind {
                         ExpressionKind::Literal(text) => {
-                            folio_hir::decode_integer_literal(&format!("-{}", text.trim()))
+                            let Some(value) =
+                                folio_hir::decode_integer_literal(&format!("-{}", text.trim()))
+                            else {
+                                // An invalid signed literal must not fall back to runtime
+                                // negation of a separately accepted unsigned hex pattern.
+                                self.issue(
+                                    "target.invalid-literal",
+                                    "signed integer literal cannot be represented by target",
+                                    expr.span,
+                                );
+                                return None;
+                            };
+                            Some(value)
                         }
                         _ => None,
                     }

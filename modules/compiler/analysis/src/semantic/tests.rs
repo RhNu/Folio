@@ -1,6 +1,8 @@
 use super::*;
 use folio_format_declarations::decode;
 
+mod integers;
+
 fn analyze_sources(sources: &[&str]) -> (Vec<Diagnostic>, Vec<Script>) {
     let mut host = crate::AnalysisHost::new();
     for (index, text) in sources.iter().enumerate() {

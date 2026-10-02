@@ -1,6 +1,15 @@
 use super::*;
 use crate::tests::{file, project};
 
+#[test]
+fn mask_previews_show_signed_32_bit_values() {
+    let text = "ScriptName Masks\nInt highBit = 0x80000000\nInt allBits = 0xFFFFFFFF\n";
+    for (needle, expected) in [("0x80000000", "-2147483648"), ("0xFFFFFFFF", "-1")] {
+        let (item, _) = language(text, needle);
+        assert_eq!(item.details, [format!("Value of literal: {expected}")]);
+    }
+}
+
 fn language(text: &str, needle: &str) -> (Hover, TextRange) {
     language_hover(text, PapyrusDialect::Skyrim, text.find(needle).unwrap()).unwrap()
 }

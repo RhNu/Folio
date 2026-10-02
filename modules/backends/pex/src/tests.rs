@@ -51,6 +51,24 @@ fn decoded(script: &Script) -> PexFile {
 }
 
 #[test]
+fn signed_mask_values_survive_pex_encoding() {
+    for value in [i32::MIN, -1] {
+        let mut input = script();
+        input.functions.push(getter(Value::Int(value)));
+        let output = decoded(&input);
+        let function = output.objects[0]
+            .states
+            .iter()
+            .flat_map(|state| &state.functions)
+            .find(|function| output.resolve_string(function.name) == Some("Get"))
+            .expect("emitted function");
+        let instruction = &function.instructions[0];
+        assert_eq!(instruction.opcode, PexOpcode::Return);
+        assert_eq!(instruction.arguments, [PexValue::Integer(value)]);
+    }
+}
+
+#[test]
 fn literal_getter_serializes_without_an_auto_or_saved_variable() {
     let mut input = script();
     input.properties.push(Property {

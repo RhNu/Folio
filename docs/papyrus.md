@@ -91,7 +91,7 @@ Skyrim has Bool, Int, Float, String, and None literals. Negative numeric notatio
 | --- | --- | --- |
 | Bool | True, False | Keyword case rules apply |
 | Decimal Int | Digits, optionally preceded by `-` | Signed 32-bit: -2,147,483,648 through 2,147,483,647 |
-| Hex Int | `0x` followed by hexadecimal digits | A–F are case-insensitive; complete signed bit-pattern/overflow handling is not explained |
+| Hex Int | `0x` followed by hexadecimal digits | A–F are case-insensitive; Folio accepts 32-bit bit patterns and interprets the high bit as the sign bit |
 | Float | Digits, `.`, digits, optionally preceded by `-` | IEEE single precision; decimal values may round |
 | String | Text in double quotes | Special characters use escapes |
 | None | None | Absent object/array reference in the applicable type context |
@@ -636,7 +636,9 @@ This section describes existing implementation behavior, separately from referen
 
 Event documentation is accepted as an extension alongside documented script/property/function header documentation. State, variable, inline, and statement documentation is rejected. Identifiers use ASCII letters/digits/underscore. Expression unary plus and repeated unary/casts, `\r` string escapes, and reopened named states remain Folio extensions without established CK equivalence; reopened states merge their API declarations.
 
-Integer decoding uses the signed Int range for decimal and hexadecimal forms, including the signed minimum. Full-width unsigned hexadecimal bit patterns are rejected pending compiler evidence. Conditional AutoReadOnly and typed-function fallthrough are rejected conservatively. The complete mixed-operand matrix and other unresolved cases remain in the roadmap; these policies must not be presented as settled original-compiler rules.
+Integer decoding accepts signed-range decimal literals and unsigned hexadecimal magnitudes through `0xFFFFFFFF`, interpreted as 32-bit two's-complement values. Thus `0x80000000` is -2147483648 and `0xFFFFFFFF` is -1; Int-to-Float widening uses that signed value. Values requiring more than 32 bits are rejected rather than truncated. Explicit minus retains signed-magnitude bounds (`-0x80000000` is accepted, `-0xFFFFFFFF` is rejected); this conservative boundary remains pending original compiler evidence. Runtime negation of nonliteral expressions is separate. Conditional AutoReadOnly and typed-function fallthrough are rejected conservatively. The complete mixed-operand matrix and other unresolved cases remain in the roadmap; these policies must not be presented as settled original-compiler rules.
+
+The integer compatibility basis includes SKSE 2.2.8 PSC and distributed PEX for Skyrim 1.6.1170: `Armor.kSlotMask61` and `Race.kRace_AvoidsRoads` declare `0x80000000`, and Champollion 1.3.2 disassembly shows both getters returning -2147483648. The inspected PEX SHA-256 values are `683F805157C002EE6330C6D110CC25486C88282BD443F4DD2B09427491F54DC2` (Armor) and `10B97E5559241948DA7516D64FF05E8B7B528C1416A3D200D31D613C8506FCD7` (Race). The [SKSE Armor source](https://github.com/ianpatt/skse64/blob/master/scripts/modified/Armor.psc) exposes the high-bit mask, while the [GameData source](https://github.com/ianpatt/skse64/blob/master/scripts/modified/GameData.psc) uses `0xFFFFFFFF` for the weapon-type bitmask default. Callee PEX retains no parameter defaults, so interpreting this latter spelling as -1 follows the same bit-pattern rule rather than a recovered default from `GameData.pex`.
 
 ### Argument filling extension
 

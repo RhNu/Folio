@@ -2,6 +2,8 @@ use super::*;
 use folio_hir::{Binding, Body, NameRef, StateFact};
 use folio_source::{FileId, TextRange};
 
+mod integers;
+
 #[test]
 fn external_literal_trivia_is_normalized_before_target_values() {
     assert_eq!(
@@ -226,7 +228,7 @@ fn integer_decoder_is_used_for_literals_and_signed_decimal_minimum() {
         literal("-2147483648", &Type::Int),
         Some(Value::Int(i32::MIN))
     );
-    assert_eq!(literal("0xffffffff", &Type::Int), None);
+    assert_eq!(literal("0xffffffff", &Type::Int), Some(Value::Int(-1)));
     assert_eq!(literal("0x10", &Type::Float), Some(Value::Float(16.0)));
 }
 

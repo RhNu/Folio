@@ -1,6 +1,20 @@
 use super::*;
 
 #[test]
+fn generation_preserves_full_width_mask_literals() {
+    let bundle = generate(GenerationOptions { source: "fixture" }, &[SourceInput {
+        path: "Masks.psc",
+        text: "ScriptName Masks\nInt Property HighBit = 0x80000000 AutoReadOnly\nFunction Take(Int mask = 0xFFFFFFFF) Native\n",
+    }]).unwrap();
+    let members = &bundle.scripts[0].members;
+    assert_eq!(members[0].initial_literal(), Some("0x80000000"));
+    assert_eq!(
+        members[1].parameters()[0].default,
+        ParameterDefault::Literal("0xFFFFFFFF".into())
+    );
+}
+
+#[test]
 fn declaration_generation_rejects_invalid_headers_and_constants() {
     for text in [
         "Scriptname Demo\nInt Property P\nString Function Get(Int x)\nEndFunction\nEndProperty\n",

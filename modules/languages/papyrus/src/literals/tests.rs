@@ -7,6 +7,9 @@ fn declaration_constants_check_values_and_declared_types() {
         ("-2147483648", "Int"),
         ("0x10", "Int"),
         ("0x10", "Float"),
+        ("0x80000000", "Int"),
+        ("0xFFFFFFFF", "Int"),
+        ("0xFFFFFFFF", "Float"),
         ("-1", "Float"),
         ("-1.25", "Float"),
         ("True", "Bool"),
@@ -32,7 +35,8 @@ fn declaration_constants_check_values_and_declared_types() {
         ("None", "Int[][]"),
         ("2147483648", "Float"),
         ("2147483648", "Int"),
-        ("0xFFFFFFFF", "Int"),
+        ("0x100000000", "Int"),
+        ("-0xFFFFFFFF", "Int"),
         ("999999999999999999999999999999999999999.0", "Float"),
         ("\"bad\\q\"", "String"),
         ("1 + 2", "Int"),
@@ -77,6 +81,12 @@ fn decodes_decimal_and_hexadecimal_integer_values() {
         ("10", 10),
         ("0x10", 16),
         ("0X7f", 127),
+        ("0x80000000", i32::MIN),
+        ("0x80000001", -2147483647),
+        ("0XfFfFfFfF", -1),
+        ("0xFFFFFFFE", -2),
+        ("0x00000000FFFFFFFF", -1),
+        ("+0xFFFFFFFF", -1),
         ("-0x10", -16),
         ("+16", 16),
         ("2147483647", i32::MAX),
@@ -100,7 +110,9 @@ fn rejects_incomplete_out_of_range_or_noninteger_spelling() {
         "+-1",
         "2147483648",
         "-2147483649",
-        "0xFFFFFFFF",
+        "4294967295",
+        "-0x80000001",
+        "-0xFFFFFFFF",
         "0x100000000",
     ] {
         assert_eq!(decode_integer_literal(text), None, "{text}");
@@ -115,6 +127,7 @@ fn external_literal_trivia_normalizes_before_value_decoding() {
         ("- ;/ note /; 2", -2),
         ("- \\ ; note\n 0x10", -16),
         ("- ;/ min /; 2147483648", i32::MIN),
+        (" ;/ mask /; 0xFFFFFFFF", -1),
     ] {
         assert!(constant_literal_matches_type(text, "Int"));
         assert_eq!(decode_integer_literal(text), Some(expected));
