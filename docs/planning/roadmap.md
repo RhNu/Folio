@@ -27,6 +27,7 @@ The current scope is the Skyrim language and `skyrim-se` generation target. CK/S
 
 ### Coverage and unresolved decisions
 
+- Verify nontrailing parameter defaults against original CK 1.6.1170.0 PSC and its compiler, including explicit positional calls, named omission of an earlier default, and rejection of omitted required arguments. Local refreshed declaration data contains this pattern in `CarriageSystemScript.Travel`, `FerrySystemScript.Travel`, and `WIDeadBody01.ReorderAliasesBasedOnDistance`. Folio accepts it while preserving required slots; derived declarations and pure logic tests do not establish original compiler or game compatibility.
 - Obtain an identified original CK/compiler baseline for the complete mixed Bool/numeric/string operator and comparison matrix, standalone None casts, redundant array casts, all namespace collision pairs, and mixed positional/named argument ordering. Do not derive a complete matrix from isolated wiki examples.
 - Verify or narrow explicit Folio extensions: event documentation, unary plus, repeated unary/cast expressions, the `\r` escape, and reopening same-named source states. Declaration extraction currently merges reopened states; authoritative acceptance/rejection evidence remains missing. Source identifiers currently use ASCII letters/digits/underscore.
 - Confirm constant-context conversion rules beyond matching types, Int-to-Float widening, and None references. Runtime String conversions do not imply a compile-time formatter for declaration constants.

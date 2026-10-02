@@ -22,7 +22,7 @@ Contextual conversions are recorded in HIR for assignments, returns, arguments, 
 
 Analysis preserves usable local HIR and diagnostics after errors so hover, definition queries, and lint can still work. Diagnostics contain stable codes, severity, file locations, and related locations where needed. Terminal and LSP adapters handle presentation.
 
-Analysis checks declaration defaults and their order independently of call sites, property access permissions and forms, inherited property conflicts, and named-state callable contracts. Shared pure declaration validators also check API header facts without compiling dependency function bodies. Generation strictly checks unresolved symbols, error types, and target constraints. The ability to provide editor facts for part of a file does not make that file valid for a build.
+Analysis checks declaration default values independently of call sites, property access permissions and forms, inherited property conflicts, and named-state callable contracts. Defaults belong to individual parameter positions and may precede required parameters. Named calls can omit those defaulted positions; omitted required positions still follow the configured argument-filling policy. Shared pure declaration validators also check API header facts without compiling dependency function bodies. Generation strictly checks unresolved symbols, error types, and target constraints. The ability to provide editor facts for part of a file does not make that file valid for a build.
 
 ## Target lowering and MIR
 

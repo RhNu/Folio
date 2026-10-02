@@ -15,11 +15,32 @@ fn generation_preserves_full_width_mask_literals() {
 }
 
 #[test]
+fn generation_preserves_nontrailing_defaults_and_required_parameters() {
+    let bundle = generate(GenerationOptions { source: "fixture" }, &[SourceInput {
+        path: "Demo.psc",
+        text: "ScriptName Demo\nFunction Travel(Int destination = -1, Demo driver) Native\nEvent Arrived(Int destination = -1, Demo driver)\nEndEvent\nState Busy\nFunction Travel(Int destination = -1, Demo driver)\nEndFunction\nEndState\n",
+    }]).unwrap();
+    let script = &bundle.scripts[0];
+    assert_eq!(script.members.len(), 2);
+    assert_eq!(script.states[0].members.len(), 1);
+    for member in script.members.iter().chain(&script.states[0].members) {
+        let parameters = member.parameters();
+        assert_eq!(parameters.len(), 2);
+        assert_eq!(parameters[0].name, "destination");
+        assert_eq!(
+            parameters[0].default,
+            ParameterDefault::Literal("-1".into())
+        );
+        assert_eq!(parameters[1].name, "driver");
+        assert_eq!(parameters[1].default, ParameterDefault::Required);
+    }
+}
+
+#[test]
 fn declaration_generation_rejects_invalid_headers_and_constants() {
     for text in [
         "Scriptname Demo\nInt Property P\nString Function Get(Int x)\nEndFunction\nEndProperty\n",
         "Scriptname Demo\nInt Property P\nEndProperty\n",
-        "Scriptname Demo\nFunction F(Int a = 1, Int b) Native\n",
         "Scriptname Demo\nFunction F(Int a = 2147483648) Native\n",
         "Scriptname Demo\nInt value = 1 + 2\n",
         "Scriptname Demo\nInt Property P AutoReadOnly\n",

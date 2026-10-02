@@ -236,13 +236,12 @@ fn check_parameters(node: &SyntaxNode, out: &mut Vec<DeclarationIssue>) {
     else {
         return;
     };
-    let mut optional = false;
+    // Named calls can omit a defaulted slot before a required parameter.
     for parameter in parameters
         .children()
         .filter(|child| child.kind() == SyntaxKind::Parameter)
     {
         if let Some(value) = initializer(&parameter) {
-            optional = true;
             if !is_constant_literal(&value) {
                 issue(
                     out,
@@ -257,13 +256,6 @@ fn check_parameters(node: &SyntaxNode, out: &mut Vec<DeclarationIssue>) {
             {
                 check_constant_type(&value, &ty, "semantic.parameter-default", out);
             }
-        } else if optional {
-            issue(
-                out,
-                &parameter,
-                "semantic.parameter-order",
-                "required parameters cannot follow defaulted parameters",
-            );
         }
     }
 }

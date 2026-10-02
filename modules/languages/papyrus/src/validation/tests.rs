@@ -22,13 +22,19 @@ fn property_forms_and_accessors_are_validated_without_bodies() {
 }
 
 #[test]
-fn declarations_require_literal_values_and_ordered_defaults() {
+fn declarations_require_literal_values() {
     assert!(codes("ScriptName A\nInt x = 1 + 2\n", &[]).contains(&"semantic.variable-initializer"));
-    assert!(
-        codes("ScriptName A\nFunction F(Int x = 1, Int y) Native\n", &[])
-            .contains(&"semantic.parameter-order")
-    );
     assert!(codes("ScriptName A\nFunction F(Int x = -1) Native\n", &[]).is_empty());
+}
+
+#[test]
+fn callable_defaults_can_precede_required_parameters() {
+    for source in [
+        "ScriptName A\nFunction F(Int x = -1, A target, Bool enabled = True, Int count) Native\n",
+        "ScriptName A\nEvent E(Int x = -1, A target)\nEndEvent\n",
+    ] {
+        assert!(codes(source, &[]).is_empty(), "{source}");
+    }
 }
 
 #[test]

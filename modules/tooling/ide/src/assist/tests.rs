@@ -2,6 +2,36 @@ use super::*;
 use crate::tests::{file, project};
 
 #[test]
+fn nontrailing_defaults_preserve_signature_positions_and_hints() {
+    let text = "ScriptName Example\nFunction Travel(Int destination = -1, Example driver) Native\nFunction Use(Example vehicle)\n Travel(driver = vehicle)\n Travel(-1, vehicle)\nEndFunction\n";
+    let view = project(&[("Example", text)]);
+    let file = file(&view, "Example");
+    let help = crate::signature_help(
+        &view,
+        file,
+        text.find("driver = vehicle").unwrap() + "driver = ".len(),
+    )
+    .unwrap();
+    assert_eq!(help.parameters, ["Int destination = -1", "Example driver"]);
+    assert_eq!(help.active_parameter, 1);
+    let hints = inlay_hints(
+        &view,
+        file,
+        TextRange {
+            start: 0,
+            end: text.len(),
+        },
+    );
+    assert_eq!(
+        hints
+            .iter()
+            .map(|hint| hint.label.as_str())
+            .collect::<Vec<_>>(),
+        ["destination:", "driver:"]
+    );
+}
+
+#[test]
 fn completion_uses_visible_locals_and_replaces_whole_identifier() {
     let text = "Scriptname Example\nFunction Use(Int amount)\n Int count = amount\n count = amount\nEndFunction\n";
     let view = project(&[("Example", text)]);

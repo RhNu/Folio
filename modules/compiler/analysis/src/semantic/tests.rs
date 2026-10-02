@@ -1,6 +1,7 @@
 use super::*;
 use folio_format_declarations::decode;
 
+mod arguments;
 mod integers;
 
 fn analyze_sources(sources: &[&str]) -> (Vec<Diagnostic>, Vec<Script>) {
@@ -100,7 +101,7 @@ fn sibling_locals_keep_distinct_identity_and_do_not_escape() {
 #[test]
 fn unused_parameter_defaults_are_checked() {
     let (diagnostics, _) = analyze_sources(&[
-        "ScriptName Defaults\nFunction Wrong(Int amount = True) Native\nFunction Ordered(Int first = 1, Int second) Native\nFunction Right(Float amount = 1, Defaults object = None) Native\n",
+        "ScriptName Defaults\nFunction Wrong(Int amount = True, Int required) Native\nFunction Right(Float amount = 1, Defaults object = None) Native\n",
     ]);
     assert_eq!(
         diagnostics
@@ -108,12 +109,6 @@ fn unused_parameter_defaults_are_checked() {
             .filter(|item| item.code == "semantic.parameter-default")
             .count(),
         1,
-        "{diagnostics:?}"
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|item| item.message.contains("default") && item.message.contains("required")),
         "{diagnostics:?}"
     );
 }

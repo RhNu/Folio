@@ -179,7 +179,7 @@ fn validate_members(
         let parameters = member.parameters();
         container(&format!("{field}.parameters"), parameters.len())?;
         let mut names = BTreeSet::new();
-        let mut saw_literal_default = false;
+        // Defaults belong to individual parameter slots, including before required slots.
         for (index, parameter) in parameters.iter().enumerate() {
             let field = format!("{field}.parameters[{index}]");
             text(&format!("{field}.name"), &parameter.name)?;
@@ -189,13 +189,6 @@ fn validate_members(
             }
             if let ParameterDefault::Literal(literal) = &parameter.default {
                 text(&format!("{field}.default"), literal)?;
-                saw_literal_default = true;
-            } else if matches!(parameter.default, ParameterDefault::Required) && saw_literal_default
-            {
-                return Err(invalid(
-                    field,
-                    "required parameter follows a defaulted parameter",
-                ));
             }
         }
         *values += 1 + parameters.len() + member.flags.len();

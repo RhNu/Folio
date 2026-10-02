@@ -5,6 +5,25 @@ mod common;
 use common::sample;
 
 #[test]
+fn nontrailing_defaults_round_trip_without_changing_the_signature() {
+    let bundle = decode(br#"{"format":"folio-declarations","schema":2,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Api","members":[{"name":"Travel","kind":"function","parameters":[{"name":"destination","ty":"Int","default":{"kind":"literal","value":"-1"}},{"name":"driver","ty":"Api"}]}]}]}"#).unwrap();
+    for format in [DeclarationFormat::Json, DeclarationFormat::Binary] {
+        let decoded = decode(&encode(&bundle, format).unwrap()).unwrap();
+        let parameters = decoded.scripts[0].members[0].parameters();
+        assert_eq!(parameters.len(), 2);
+        assert_eq!(parameters[0].name, "destination");
+        assert_eq!(parameters[0].ty, "Int");
+        assert_eq!(
+            parameters[0].default,
+            crate::ParameterDefault::Literal("-1".into())
+        );
+        assert_eq!(parameters[1].name, "driver");
+        assert_eq!(parameters[1].ty, "Api");
+        assert_eq!(parameters[1].default, crate::ParameterDefault::Required);
+    }
+}
+
+#[test]
 fn binary_checks_header_hash_truncation_and_trailing_data() {
     let good = encode(&sample(), DeclarationFormat::Binary).unwrap();
     for cutoff in [0, 5, 59, good.len() - 1] {

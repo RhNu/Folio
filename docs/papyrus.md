@@ -361,7 +361,7 @@ Overrides must match parent return type and parameters. Default/name equivalence
 
 ### Parameters and arguments
 
-A parameter has a type, name, and optional constant default. After the first defaulted parameter, every remaining parameter must have a default.
+A parameter has a type, name, and optional constant default. The Function Reference describes defaults as a trailing sequence. Folio also accepts defaults before required parameters to preserve signatures found in local CK declaration data. This compatibility policy preserves parameter positions and required arguments; original CK source/compiler verification remains [outstanding](planning/roadmap.md#papyrus-conformance).
 
 ```papyrus
 Int Function Offset(Int value, Int increment = 2)
@@ -370,6 +370,8 @@ EndFunction
 ```
 
 Positional arguments follow declaration order. `parameterName = expression` binds by declared name. Optional argument defaults are inserted at the call site; changing only the callee declaration does not make an already compiled caller adopt a changed default.
+
+For a Folio declaration `Function Travel(Int destination = -1, Actor driver)`, `Travel(driver = actor)` uses `-1` for the first parameter, and `Travel(5, actor)` supplies both. Under the default argument policy, `Travel()` and `Travel(5)` report the missing `driver`. A positional argument never skips an earlier defaulted parameter based on its type.
 
 ```papyrus
 Int a = Offset(6)

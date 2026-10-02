@@ -444,3 +444,62 @@ fn hexadecimal_defaults_arrays_and_signed_minimum_share_the_literal_decoder() {
         }
     )));
 }
+
+#[test]
+fn call_defaults_fill_earlier_slots_without_reordering_argument_evaluation() {
+    let call = |callee_name: &str, arguments, argument_ordinals, parameter_defaults| {
+        let mut callee = expression(Type::Int, ExpressionKind::Reference(name(callee_name)));
+        callee.binding = Some(Binding {
+            name: name(callee_name),
+            symbol: symbol(callee_name),
+            definition: None,
+        });
+        expression(
+            Type::Int,
+            ExpressionKind::Call {
+                callee: Box::new(callee),
+                arguments,
+                argument_ordinals,
+                parameter_defaults,
+                is_global: false,
+            },
+        )
+    };
+    let driver = || call("Driver", vec![], vec![], vec![]);
+    let destination = || call("Destination", vec![], vec![], vec![]);
+    let input = function_program(vec![
+        Statement::Expression(call(
+            "Travel",
+            vec![driver()],
+            vec![1],
+            vec![Some((Type::Int, "-1".into())), None],
+        )),
+        Statement::Expression(call(
+            "Travel",
+            vec![driver(), destination()],
+            vec![1, 0],
+            vec![None, None],
+        )),
+    ]);
+    let output = lower_script(&input, TargetProfile::skyrim_se(), &[]).unwrap();
+    let calls: Vec<_> = output.functions[0]
+        .instructions
+        .iter()
+        .filter_map(|instruction| {
+            if let Op::CallMethod {
+                name, dest, args, ..
+            } = &instruction.op
+            {
+                Some((name.as_str(), dest, args))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        calls.iter().map(|call| call.0).collect::<Vec<_>>(),
+        ["Driver", "Travel", "Driver", "Destination", "Travel"]
+    );
+    assert_eq!(calls[1].2, &[Value::Int(-1), calls[0].1.clone()]);
+    assert_eq!(calls[4].2, &[calls[3].1.clone(), calls[2].1.clone()]);
+}
