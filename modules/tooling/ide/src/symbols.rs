@@ -131,12 +131,27 @@ pub(crate) fn script_reference(
     let parse = view.analysis.parse(file)?;
     let token = parse
         .syntax()
-        .descendants_with_tokens()
-        .filter_map(|item| item.into_token())
-        .find(|token| {
-            let range = token_range(token);
-            range.start <= byte && byte < range.end
-        })?;
+        .token_at_offset(byte.try_into().ok()?)
+        .right_biased()?;
+    if !contains(
+        SourceSpan {
+            file,
+            range: token_range(&token),
+        },
+        byte,
+    ) {
+        return None;
+    }
+    let script = view.analysis.hir(file)?;
+    script_reference_token(&script, file, &token)
+}
+
+/// Classifies an already visited token, keeping occurrence enumeration to one syntax walk.
+pub(crate) fn script_reference_token(
+    script: &Script,
+    file: FileId,
+    token: &folio_papyrus::SyntaxToken,
+) -> Option<(String, SourceSpan)> {
     if token.kind() != SyntaxKind::Ident {
         return None;
     }
@@ -145,12 +160,10 @@ pub(crate) fn script_reference(
     let eligible = parent.kind() == SyntaxKind::TypeRef
         || (parent.kind() == SyntaxKind::ImportDecl && !name.eq_ignore_ascii_case("import"))
         || (parent.kind() == SyntaxKind::ScriptDecl
-            && view
-                .analysis
-                .hir(file)?
+            && script
                 .parent
                 .as_ref()
-                .is_some_and(|item| contains(item.span, byte)));
+                .is_some_and(|item| contains(item.span, token_range(token).start)));
     if !eligible
         || ["int", "float", "bool", "string", "none"]
             .iter()

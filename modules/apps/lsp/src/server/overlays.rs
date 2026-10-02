@@ -77,7 +77,7 @@ pub(super) fn apply_dependency_overlays(
         .map_err(|error| {
             LspError::Project(format!("unsaved dependency {}: {error}", dependency.name))
         })?;
-        if &bundle == original {
+        if &bundle == original.as_ref() {
             continue;
         }
         if let SourceId::Dependency { digest, .. } = &mut dependency.source_id {
@@ -100,7 +100,7 @@ pub(super) fn apply_dependency_overlays(
         tracing::debug!(dependency=%dependency.name,scripts=bundle.scripts.len(),"projected unsaved PSC dependency declarations");
         loaded
             .declaration_bundles
-            .insert(dependency.source_key.clone(), bundle);
+            .insert(dependency.source_key.clone(), Arc::new(bundle));
         changed = true;
     }
     Ok(changed)

@@ -55,7 +55,7 @@ fn project() -> LoadedProject {
             source_files: Vec::new(),
         },
         dependencies: vec![dependency],
-        declaration_bundles: BTreeMap::from([("dependency:0".into(), bundle)]),
+        declaration_bundles: BTreeMap::from([("dependency:0".into(), Arc::new(bundle))]),
         source_inputs: Vec::new(),
         input_snapshots: vec![InputSnapshot::File {
             path: PathBuf::from("D:/synthetic/api/External.psc"),

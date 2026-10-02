@@ -10,6 +10,7 @@ use folio_papyrus::{Declaration, LocatedDeclaration, PapyrusDialect, Parse};
 use folio_source::{FileId, LineIndex, Revision, SourceSpan};
 use salsa::Setter as _;
 
+mod cache;
 mod intrinsics;
 mod semantic;
 pub use intrinsics::{IntrinsicSignature, intrinsic_signature};
@@ -121,7 +122,7 @@ pub struct AnalysisHost {
     active: BTreeMap<FileId, ActiveFile>,
     last_revisions: BTreeMap<FileId, Revision>,
     generation: u64,
-    external_declarations: Arc<Vec<DeclarationBundle>>,
+    external_declarations: Arc<semantic::ExternalDeclarations>,
     user_flags: Arc<Vec<folio_profiles::UserFlag>>,
     fill_missing_arguments: bool,
     view: OnceLock<AnalysisView>,
@@ -134,14 +135,14 @@ impl AnalysisHost {
 
     /// Replaces the selected external API snapshots independently of editable files.
     pub fn set_external_declarations(&mut self, bundles: Vec<DeclarationBundle>) {
-        if *self.external_declarations == bundles {
+        if self.external_declarations.bundles == bundles {
             return;
         }
         tracing::info!(
             bundles = bundles.len(),
             "replaced analysis external declarations"
         );
-        self.external_declarations = Arc::new(bundles);
+        self.external_declarations = Arc::new(semantic::ExternalDeclarations::new(bundles));
         self.generation += 1;
         self.view.take();
     }
@@ -295,7 +296,7 @@ impl AnalysisHost {
             external_declarations: Arc::clone(&self.external_declarations),
             user_flags: Arc::clone(&self.user_flags),
             fill_missing_arguments: self.fill_missing_arguments,
-            semantic: Arc::new(OnceLock::new()),
+            semantic: Arc::new(cache::SingleFlight::default()),
         }
     }
 }
@@ -314,16 +315,21 @@ struct ViewFile {
 pub struct AnalysisView {
     generation: u64,
     files: Arc<BTreeMap<FileId, ViewFile>>,
-    external_declarations: Arc<Vec<DeclarationBundle>>,
+    external_declarations: Arc<semantic::ExternalDeclarations>,
     user_flags: Arc<Vec<folio_profiles::UserFlag>>,
     fill_missing_arguments: bool,
-    semantic: Arc<OnceLock<semantic::Analysis>>,
+    semantic: Arc<cache::SingleFlight<semantic::Analysis>>,
 }
 
 impl AnalysisView {
     /// Selected immutable API snapshots, including documentation and provenance.
     pub fn external_declarations(&self) -> &[DeclarationBundle] {
-        &self.external_declarations
+        &self.external_declarations.bundles
+    }
+
+    /// Finds the selected external script using the checker's case-insensitive identity.
+    pub fn external_script(&self, name: &str) -> Option<&folio_format_declarations::Script> {
+        self.external_declarations.script(name)
     }
 
     pub fn user_flags(&self) -> &[folio_profiles::UserFlag] {
@@ -344,7 +350,9 @@ impl AnalysisView {
         semantic::completion_candidates(self, file, byte, receiver, global)
     }
     fn semantic(&self) -> &semantic::Analysis {
-        self.semantic.get_or_init(|| semantic::analyze(self))
+        self.semantic
+            .warm(&|| false, || semantic::analyze_with_cancel(self, &|| false))
+            .expect("non-cancellable analysis cannot be cancelled")
     }
 
     /// Computes semantic facts cooperatively and publishes only a complete result.
@@ -355,19 +363,11 @@ impl AnalysisView {
         &self,
         cancelled: impl Fn() -> bool,
     ) -> Result<(), AnalysisCancelled> {
-        if cancelled() {
-            return Err(AnalysisCancelled);
-        }
-        if self.semantic.get().is_some() {
-            return Ok(());
-        }
-        let analysis = semantic::analyze_with_cancel(self, &cancelled)?;
-        if cancelled() {
-            return Err(AnalysisCancelled);
-        }
-        // Another reader may have completed the same immutable view first.
-        let _ = self.semantic.set(analysis);
-        Ok(())
+        self.semantic
+            .warm(&cancelled, || {
+                semantic::analyze_with_cancel(self, &cancelled)
+            })
+            .map(|_| ())
     }
     pub fn generation(&self) -> u64 {
         self.generation
@@ -412,7 +412,7 @@ impl AnalysisView {
 
     /// Returns a partial typed model even when sibling syntax or names are invalid.
     pub fn hir(&self, file: FileId) -> Option<Arc<Script>> {
-        Some(Arc::new(self.semantic().file(file)?.script.clone()))
+        Some(Arc::clone(&self.semantic().file(file)?.script))
     }
 
     /// Finds the type of the smallest expression covering a UTF-8 byte offset.

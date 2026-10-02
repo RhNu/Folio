@@ -36,17 +36,24 @@ impl QueryContext {
                 let Some((_, byte)) = self.at(params) else {
                     return Ok(json!([]));
                 };
-                let items = folio_ide::completion(view,file,byte).iter().enumerate().filter_map(|(index,item)| {
+                let candidates = Arc::new(folio_ide::completion(view, file, byte));
+                let positions = PositionIndex::new(text);
+                let completion_id = self
+                    .completions
+                    .insert(self.generation, Arc::clone(&candidates));
+                let items = candidates.iter().enumerate().filter_map(|(index,item)| {
                     Some(json!({"label":item.label,"detail":item.detail,"kind":item.kind,
-                        "textEdit":{"range":range_json(folio_ide::range(text,item.replacement,self.encoding)?),"newText":item.insert_text},
-                        "data":{"uri":uri,"position":params["position"],"generation":self.generation,"index":index,"label":item.label}}))
+                        "textEdit":{"range":range_json(positions.range(item.replacement,self.encoding)?),"newText":item.insert_text},
+                        "data":{"generation":self.generation,"completion":completion_id,"index":index}}))
                 }).collect::<Vec<_>>();
                 tracing::debug!(
                     ?file,
                     count = items.len(),
                     "collected completion candidates"
                 );
-                json!({"isIncomplete":false,"items":items})
+                let mut result = json!({"isIncomplete":false});
+                result["items"] = Value::Array(items);
+                result
             }
             "textDocument/signatureHelp" => {
                 let Some((_, byte)) = self.at(params) else {
@@ -160,21 +167,18 @@ impl QueryContext {
         if data["generation"].as_u64() != Some(self.generation) {
             return Err((-32801, "completion snapshot changed".into()));
         }
-        let query = json!({"textDocument":{"uri":data["uri"]},"position":data["position"]});
-        let Some((file, byte)) = self.at(&query) else {
-            return Err((-32602, "invalid completion data".into()));
-        };
-        let items = folio_ide::completion(self.view.as_ref().expect("query view"), file, byte);
-        let item = data["index"]
+        let item = data["completion"]
             .as_u64()
-            .and_then(|index| items.get(index as usize))
-            .filter(|item| data["label"].as_str() == Some(item.label.as_str()))
-            .ok_or((-32801, "completion candidate changed".into()))?;
+            .zip(data["index"].as_u64())
+            .and_then(|(id, index)| self.completions.get(id, self.generation, index as usize))
+            .filter(|item| params["label"].as_str() == Some(item.label.as_str()))
+            .ok_or((-32801, "completion candidate expired".into()))?;
         let mut result = params.clone();
-        if let Some(symbol) = &item.symbol
+        if item.symbol.is_some()
             && let Some(hover) =
-                folio_ide::hover_symbol(self.view.as_ref().expect("query view"), symbol)
+                folio_ide::completion_hover(self.view.as_ref().expect("query view"), &item)
         {
+            result["detail"] = json!(hover.declaration);
             let origin = hover.owner_script.as_deref().and_then(|owner| {
                 self.metadata
                     .as_ref()

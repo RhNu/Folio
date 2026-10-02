@@ -1,6 +1,7 @@
 //! Pure, recoverable symbol and type analysis over one coherent input view.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::Arc;
 
 use folio_diagnostics::{Diagnostic, RelatedLocation, Severity};
 use folio_format_declarations::{MemberKind, ParameterDefault, Script as ExternalScript};
@@ -19,14 +20,25 @@ pub(super) struct FileAnalysis {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Finished files share their HIR directly with consumers without cloning bodies.
+pub(super) struct AnalyzedFile {
+    pub script: Arc<Script>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 pub(super) struct Analysis {
-    files: BTreeMap<FileId, FileAnalysis>,
+    files: BTreeMap<FileId, AnalyzedFile>,
     pub project_diagnostics: Vec<Diagnostic>,
     world: World,
 }
 
+struct WorkingAnalysis {
+    files: BTreeMap<FileId, FileAnalysis>,
+    pub project_diagnostics: Vec<Diagnostic>,
+}
+
 impl Analysis {
-    pub fn file(&self, file: FileId) -> Option<&FileAnalysis> {
+    pub fn file(&self, file: FileId) -> Option<&AnalyzedFile> {
         self.files.get(&file)
     }
 }
@@ -57,7 +69,7 @@ struct ScriptInfo {
 }
 
 struct World {
-    scripts: BTreeMap<String, ScriptInfo>,
+    scripts: BTreeMap<String, Arc<ScriptInfo>>,
 }
 
 fn key(name: &str) -> String {
@@ -177,11 +189,6 @@ fn source_declaration_node(
         .last()
 }
 
-/// Builds the selected source and external declaration symbol environment, then analyzes each source independently.
-pub(super) fn analyze(view: &AnalysisView) -> Analysis {
-    analyze_with_cancel(view, &|| false).expect("non-cancellable analysis cannot be cancelled")
-}
-
 #[tracing::instrument(skip(view, cancelled), fields(generation = view.generation(), phase = "analysis.semantic"))]
 pub(super) fn analyze_with_cancel(
     view: &AnalysisView,
@@ -191,12 +198,9 @@ pub(super) fn analyze_with_cancel(
     if cancelled() {
         return Err(AnalysisCancelled);
     }
-    let mut analysis = Analysis {
+    let mut analysis = WorkingAnalysis {
         files: BTreeMap::new(),
         project_diagnostics: Vec::new(),
-        world: World {
-            scripts: BTreeMap::new(),
-        },
     };
     let mut world = World {
         scripts: BTreeMap::new(),
@@ -278,7 +282,7 @@ pub(super) fn analyze_with_cancel(
                         file_scripts.insert(file, key(name));
                         world.scripts.insert(
                             key(name),
-                            ScriptInfo {
+                            Arc::new(ScriptInfo {
                                 name: name.clone(),
                                 parent: parent.clone(),
                                 definition: Some(name_span),
@@ -286,7 +290,7 @@ pub(super) fn analyze_with_cancel(
                                 variables: BTreeMap::new(),
                                 callable_overloads: BTreeMap::new(),
                                 states: BTreeMap::new(),
-                            },
+                            }),
                         );
                     }
                     break;
@@ -295,29 +299,26 @@ pub(super) fn analyze_with_cancel(
         }
         analysis.files.insert(file, file_analysis);
     }
-    for bundle in view.external_declarations.iter() {
+    for external in &view.external_declarations.entries {
         if cancelled() {
             return Err(AnalysisCancelled);
         }
-        for external in &bundle.scripts {
-            if cancelled() {
-                return Err(AnalysisCancelled);
-            }
-            let k = key(&external.name);
-            if world.scripts.contains_key(&k) {
-                analysis.project_diagnostics.push(Diagnostic::new(
-                    "semantic.duplicate-script",
-                    Severity::Error,
-                    format!(
-                        "external script {} conflicts with selected source",
-                        external.name
-                    ),
-                ));
-                continue;
-            }
-            validate_external_initializers(external, &mut analysis.project_diagnostics);
-            world.scripts.insert(k, script_from_external(external));
+        let k = key(&external.info.name);
+        if world.scripts.contains_key(&k) {
+            analysis.project_diagnostics.push(Diagnostic::new(
+                "semantic.duplicate-script",
+                Severity::Error,
+                format!(
+                    "external script {} conflicts with selected source",
+                    external.info.name
+                ),
+            ));
+            continue;
         }
+        analysis
+            .project_diagnostics
+            .extend(external.diagnostics.iter().cloned());
+        world.scripts.insert(k, Arc::clone(&external.info));
     }
     // Source member signatures are collected before bodies to support mutual calls.
     for (&file, script_key) in &file_scripts {
@@ -364,6 +365,7 @@ pub(super) fn analyze_with_cancel(
                     .scripts
                     .get_mut(script_key)
                     .expect("source script exists");
+                let script = Arc::make_mut(script);
                 let member_key = key(&member.name);
                 let state = enclosing_name(&node, SyntaxKind::StateDecl, "state");
                 let table = if let Some(state) = &state {
@@ -642,6 +644,12 @@ pub(super) fn analyze_with_cancel(
     if cancelled() {
         return Err(AnalysisCancelled);
     }
+    analysis.project_diagnostics.extend(
+        view.external_declarations
+            .validate_world(&world, cancelled)?
+            .iter()
+            .cloned(),
+    );
     validate_world(&world, &mut analysis, &file_scripts);
     for (&file, script_key) in &file_scripts {
         if cancelled() {
@@ -772,8 +780,23 @@ pub(super) fn analyze_with_cancel(
         external_scripts = world.scripts.len() - file_scripts.len(),
         "semantic analysis complete"
     );
-    analysis.world = world;
-    Ok(analysis)
+    Ok(Analysis {
+        files: analysis
+            .files
+            .into_iter()
+            .map(|(file, result)| {
+                (
+                    file,
+                    AnalyzedFile {
+                        script: Arc::new(result.script),
+                        diagnostics: result.diagnostics,
+                    },
+                )
+            })
+            .collect(),
+        project_diagnostics: analysis.project_diagnostics,
+        world,
+    })
 }
 
 #[derive(Clone)]
@@ -849,6 +872,8 @@ pub(super) use editor::completion_candidates;
 
 use file::analyze_file;
 use world::*;
+mod external;
+pub(crate) use external::ExternalDeclarations;
 
 #[cfg(test)]
 mod tests;

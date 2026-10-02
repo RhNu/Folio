@@ -55,7 +55,8 @@ fn fingerprint_ignores_provenance_host_paths_and_declaration_order() {
     let before = fingerprint::command_fingerprint(&loaded, &metadata, "compiler", &[]);
     loaded.source_inputs[0].canonical_path = PathBuf::from("F:/moved/src/Root.psc");
     loaded.dependencies[0].canonical_path = PathBuf::from("C:/elsewhere/api.fdecl");
-    let bundle = loaded.declaration_bundles.get_mut("dependency:0").unwrap();
+    let bundle =
+        std::sync::Arc::make_mut(loaded.declaration_bundles.get_mut("dependency:0").unwrap());
     bundle.scripts.reverse();
     bundle.origin.source = "another machine".into();
     let selected = selected_inputs(&loaded, &metadata).unwrap();
@@ -64,12 +65,9 @@ fn fingerprint_ignores_provenance_host_paths_and_declaration_order() {
         before,
         fingerprint::command_fingerprint(&loaded, &metadata, "compiler", &[])
     );
-    loaded
-        .declaration_bundles
-        .get_mut("dependency:0")
-        .unwrap()
-        .scripts[0]
-        .parent = Some("NewParent".into());
+    std::sync::Arc::make_mut(loaded.declaration_bundles.get_mut("dependency:0").unwrap()).scripts
+        [0]
+    .parent = Some("NewParent".into());
     assert_ne!(
         before,
         fingerprint::command_fingerprint(&loaded, &metadata, "compiler", &[])

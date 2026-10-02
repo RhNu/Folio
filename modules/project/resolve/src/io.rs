@@ -34,7 +34,7 @@ pub struct LoadedProject {
     pub root_key: String,
     pub root: LoadedRoot,
     pub dependencies: Vec<LoadedDependency>,
-    pub declaration_bundles: BTreeMap<String, DeclarationBundle>,
+    pub declaration_bundles: BTreeMap<String, Arc<DeclarationBundle>>,
     pub source_inputs: Vec<LoadedSourceInput>,
     pub input_snapshots: Vec<InputSnapshot>,
     pub watch_plan: WatchPlan,
@@ -118,6 +118,7 @@ pub enum LoadError {
         candidates: Vec<PathBuf>,
     },
     InputChanged(PathBuf),
+    Cancelled,
     Resolve(Box<graph::ResolveError>),
     InvalidPath {
         path: PathBuf,
@@ -171,6 +172,7 @@ impl std::fmt::Display for LoadError {
             Self::InputChanged(path) => {
                 write!(f, "input changed during operation: {}", path.display())
             }
+            Self::Cancelled => write!(f, "project loading cancelled"),
             Self::Resolve(cause) => write!(f, "{cause}"),
             Self::InvalidPath { path, reason } => write!(f, "{}: {reason}", path.display()),
         }
@@ -245,7 +247,37 @@ pub fn load_with_home(
     explicit: Option<&Path>,
     home: &FolioHome,
 ) -> Result<LoadedProject, LoadError> {
-    let watch_plan = watch_plan_with_home(start, explicit, home);
+    load_cached_with_home(
+        start,
+        explicit,
+        home,
+        &mut LoadCache::default(),
+        &mut |_, _, _| true,
+    )
+}
+
+/// Session-owned dependency projections, validated against exact input snapshots before reuse.
+#[derive(Default)]
+pub struct LoadCache {
+    dependencies: BTreeMap<usize, CachedDependency>,
+}
+
+struct CachedDependency {
+    specification: folio_project_model::DependencySpec,
+    dependency: LoadedDependency,
+    bundle: Arc<DeclarationBundle>,
+    snapshots: Vec<InputSnapshot>,
+}
+
+/// Loads a coherent project while reusing unchanged dependency decoding and API extraction.
+/// Returning false from progress cancels between dependencies; no partial project escapes.
+pub fn load_cached_with_home(
+    start: &Path,
+    explicit: Option<&Path>,
+    home: &FolioHome,
+    cache: &mut LoadCache,
+    progress: &mut dyn FnMut(usize, usize, &str) -> bool,
+) -> Result<LoadedProject, LoadError> {
     let path = discover(start, explicit)?;
     let base = path.parent().expect("canonical manifest has parent");
     let root_key = path_key(&path)?;
@@ -270,7 +302,17 @@ pub fn load_with_home(
     info!(manifest = %path.display(), dependency_count = manifest.dependencies.len(), "loading root and declaration dependencies");
     let mut dependencies = Vec::new();
     let mut bundles = BTreeMap::new();
+    cache
+        .dependencies
+        .retain(|index, _| *index < manifest.dependencies.len());
     for (index, specification) in manifest.dependencies.iter().enumerate() {
+        if !progress(
+            index,
+            manifest.dependencies.len(),
+            &specification.name.value,
+        ) {
+            return Err(LoadError::Cancelled);
+        }
         if specification.kind == DependencyKind::Pex && !manifest.experimental_pex_dependencies {
             return Err(LoadError::ExperimentalDependency {
                 name: specification.name.value.clone(),
@@ -289,6 +331,18 @@ pub fn load_with_home(
             canonical_path
         };
         let source_key = format!("dependency:{index}");
+        if let Some(cached) = cache.dependencies.get(&index)
+            && cached.specification == *specification
+            && cached.dependency.canonical_path == canonical_path
+            && verify_snapshots(&cached.snapshots).is_ok()
+        {
+            snapshots.extend(cached.snapshots.iter().cloned());
+            dependencies.push(cached.dependency.clone());
+            bundles.insert(source_key, Arc::clone(&cached.bundle));
+            debug!(dependency = %specification.name.value, "reused verified dependency projection");
+            continue;
+        }
+        let snapshot_start = snapshots.len();
         // The relative host path may traverse parents; provenance remains a portable label.
         let source_label = format!("dependency/{index}");
         let (bundle, pex_paths) = match specification.kind {
@@ -378,7 +432,7 @@ pub fn load_with_home(
             digest: semantic_digest(&bundle),
         };
         debug!(name = %specification.name.value, kind = ?specification.kind, script_count = bundle.scripts.len(), "normalized dependency declarations");
-        dependencies.push(LoadedDependency {
+        let dependency = LoadedDependency {
             source_key: source_key.clone(),
             source_id,
             kind: specification.kind,
@@ -388,8 +442,22 @@ pub fn load_with_home(
             declaration: specification.path.span.clone(),
             profile: bundle.profile.clone(),
             scripts,
-        });
+        };
+        let bundle = Arc::new(bundle);
+        cache.dependencies.insert(
+            index,
+            CachedDependency {
+                specification: specification.clone(),
+                dependency: dependency.clone(),
+                bundle: Arc::clone(&bundle),
+                snapshots: snapshots[snapshot_start..].to_vec(),
+            },
+        );
+        dependencies.push(dependency);
         bundles.insert(source_key, bundle);
+    }
+    if !progress(manifest.dependencies.len(), manifest.dependencies.len(), "") {
+        return Err(LoadError::Cancelled);
     }
     let root = LoadedRoot {
         source_key: root_key.clone(),
@@ -397,6 +465,9 @@ pub fn load_with_home(
         manifest,
         source_files,
     };
+    // Plan watches before final snapshot verification so a concurrently changed
+    // manifest cannot leave a successfully loaded project watching the old inputs.
+    let watch_plan = watch_plan_with_home(start, explicit, home);
     verify_snapshots(&snapshots)?;
     Ok(LoadedProject {
         root_key,

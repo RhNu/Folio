@@ -67,21 +67,24 @@ fn dependency(source: &str) -> QueryContext {
     };
     let metadata =
         folio_project_resolve::resolve(&root, std::slice::from_ref(&dependency)).unwrap();
-    context.loaded = Some(LoadedProject {
-        root_key: "root".into(),
-        root,
-        dependencies: vec![dependency],
-        declaration_bundles: BTreeMap::from([("dependency:0".into(), bundle)]),
-        source_inputs: Vec::new(),
-        input_snapshots: vec![InputSnapshot::File {
-            path: PathBuf::from("D:/synthetic/api/External.psc"),
-            bytes: Arc::from(source.as_bytes()),
-        }],
-        watch_plan: WatchPlan::default(),
-        folio_home: FolioHome {
-            path: PathBuf::from("D:/synthetic/home"),
-        },
-    });
+    context.loaded = Some(
+        LoadedProject {
+            root_key: "root".into(),
+            root,
+            dependencies: vec![dependency],
+            declaration_bundles: BTreeMap::from([("dependency:0".into(), Arc::new(bundle))]),
+            source_inputs: Vec::new(),
+            input_snapshots: vec![InputSnapshot::File {
+                path: PathBuf::from("D:/synthetic/api/External.psc"),
+                bytes: Arc::from(source.as_bytes()),
+            }],
+            watch_plan: WatchPlan::default(),
+            folio_home: FolioHome {
+                path: PathBuf::from("D:/synthetic/home"),
+            },
+        }
+        .into(),
+    );
     context.metadata = Some(Arc::new(metadata));
     context
 }

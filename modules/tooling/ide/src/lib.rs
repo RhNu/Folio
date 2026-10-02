@@ -15,7 +15,7 @@ mod navigation;
 mod presentation;
 mod rename;
 mod symbols;
-pub use assist::{CompletionItem, InlayHint, completion, inlay_hints};
+pub use assist::{CompletionItem, InlayHint, completion, completion_hover, inlay_hints};
 pub use external::{
     external_declaration_range, external_declaration_symbol, referenced_symbol, symbol_script,
 };

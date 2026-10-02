@@ -89,6 +89,51 @@ pub fn selected_inputs(
     project: &LoadedProject,
     metadata: &Metadata,
 ) -> Result<SelectedInputs, ProjectionError> {
+    let sources = selected_root_sources(project, metadata)?;
+    let mut selected_declarations = BTreeMap::<SourceId, BTreeSet<String>>::new();
+    for selection in &metadata.scripts {
+        if let Some(location) = &selection.selected.declaration {
+            selected_declarations
+                .entry(selection.selected.package.source.clone())
+                .or_default()
+                .insert(location.script_name.to_ascii_lowercase());
+        }
+    }
+    let mut bundles = Vec::new();
+    for package in &project.dependencies {
+        let Some(bundle) = project.declaration_bundles.get(&package.source_key) else {
+            continue;
+        };
+        let Some(names) = selected_declarations.get(&package.source_id) else {
+            continue;
+        };
+        let mut bundle = bundle.as_ref().clone();
+        let available = bundle
+            .scripts
+            .iter()
+            .map(|script| script.name.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        if !names.is_subset(&available) {
+            return Err(ProjectionError::MissingSelectedProvider);
+        }
+        bundle
+            .scripts
+            .retain(|script| names.contains(&script.name.to_ascii_lowercase()));
+        bundles.push(bundle);
+    }
+    let root_flags = project.root.manifest.user_flags.clone();
+    Ok(SelectedInputs {
+        sources,
+        declarations: bundles,
+        user_flags: root_flags,
+    })
+}
+
+/// Validate selected source membership on cache hits as well as fresh projections.
+fn selected_root_sources(
+    project: &LoadedProject,
+    metadata: &Metadata,
+) -> Result<Vec<ProjectSource>, ProjectionError> {
     let selected_sources = metadata
         .scripts
         .iter()
@@ -110,43 +155,7 @@ pub fn selected_inputs(
     if sources.len() != selected_sources.len() {
         return Err(ProjectionError::MissingSelectedProvider);
     }
-    let mut selected_declarations = BTreeMap::<SourceId, BTreeSet<String>>::new();
-    for selection in &metadata.scripts {
-        if let Some(location) = &selection.selected.declaration {
-            selected_declarations
-                .entry(selection.selected.package.source.clone())
-                .or_default()
-                .insert(location.script_name.to_ascii_lowercase());
-        }
-    }
-    let mut bundles = Vec::new();
-    for package in &project.dependencies {
-        let Some(bundle) = project.declaration_bundles.get(&package.source_key) else {
-            continue;
-        };
-        let Some(names) = selected_declarations.get(&package.source_id) else {
-            continue;
-        };
-        let mut bundle = bundle.clone();
-        let available = bundle
-            .scripts
-            .iter()
-            .map(|script| script.name.to_ascii_lowercase())
-            .collect::<BTreeSet<_>>();
-        if !names.is_subset(&available) {
-            return Err(ProjectionError::MissingSelectedProvider);
-        }
-        bundle
-            .scripts
-            .retain(|script| names.contains(&script.name.to_ascii_lowercase()));
-        bundles.push(bundle);
-    }
-    let root_flags = project.root.manifest.user_flags.clone();
-    Ok(SelectedInputs {
-        sources,
-        declarations: bundles,
-        user_flags: root_flags,
-    })
+    Ok(sources)
 }
 
 /// Invalid projections leave the prior analysis inputs unchanged.
@@ -299,6 +308,14 @@ pub struct ProjectAnalysis {
     active: BTreeMap<SourceKey, ActiveSource>,
     known: BTreeMap<SourceKey, (FileId, Revision)>,
     next_file_id: u32,
+    selected: Option<SelectedProjection>,
+}
+
+/// Projection also depends on the ordered mapping from dependency identities to bundles.
+struct SelectedProjection {
+    scripts: Vec<folio_project_model::ScriptSelection>,
+    providers: Vec<(String, SourceId)>,
+    bundles: BTreeMap<String, Arc<DeclarationBundle>>,
 }
 
 impl ProjectAnalysis {
@@ -316,11 +333,44 @@ impl ProjectAnalysis {
         project: &LoadedProject,
         metadata: &Metadata,
     ) -> Result<ProjectAnalysisView, ProjectionError> {
-        let selected = selected_inputs(project, metadata)?;
-        let mut view = self.sync_sources(selected.sources)?;
+        let reuse = self.selected.as_ref().is_some_and(|cached| {
+            cached.scripts == metadata.scripts
+                && cached.providers.len() == project.dependencies.len()
+                && cached.providers.iter().zip(&project.dependencies).all(
+                    |((key, source), dependency)| {
+                        key == &dependency.source_key && source == &dependency.source_id
+                    },
+                )
+                && cached.bundles.len() == project.declaration_bundles.len()
+                && cached.bundles.iter().all(|(key, bundle)| {
+                    project
+                        .declaration_bundles
+                        .get(key)
+                        .is_some_and(|other| Arc::ptr_eq(bundle, other))
+                })
+        });
+        let (sources, declarations) = if reuse {
+            (selected_root_sources(project, metadata)?, None)
+        } else {
+            let selected = selected_inputs(project, metadata)?;
+            (selected.sources, Some(selected.declarations))
+        };
+        tracing::debug!(reuse, "selected declaration projection cache");
+        let mut view = self.sync_sources(sources)?;
+        if let Some(declarations) = declarations {
+            self.analysis.set_external_declarations(declarations);
+            self.selected = Some(SelectedProjection {
+                scripts: metadata.scripts.clone(),
+                providers: project
+                    .dependencies
+                    .iter()
+                    .map(|dependency| (dependency.source_key.clone(), dependency.source_id.clone()))
+                    .collect(),
+                bundles: project.declaration_bundles.clone(),
+            });
+        }
         self.analysis
-            .set_external_declarations(selected.declarations);
-        self.analysis.set_user_flags(selected.user_flags);
+            .set_user_flags(project.root.manifest.user_flags.clone());
         self.analysis
             .set_fill_missing_arguments(metadata.fill_missing_arguments);
         view.analysis = self.analysis.view();

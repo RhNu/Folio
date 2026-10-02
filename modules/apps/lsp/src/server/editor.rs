@@ -5,14 +5,16 @@ use folio_hir::Symbol;
 use folio_ide::PositionIndex;
 use folio_source::{SourceSpan, TextRange};
 
+mod completions;
 mod features;
 mod navigation;
+pub(super) use completions::CompletionCache;
 
 #[derive(Clone)]
 pub(super) struct QueryContext {
     view: Option<Arc<ProjectAnalysisView>>,
     metadata: Option<Arc<Metadata>>,
-    loaded: Option<LoadedProject>,
+    loaded: Option<Arc<LoadedProject>>,
     paths: BTreeMap<PathBuf, FileId>,
     uris: BTreeMap<String, FileId>,
     versions: BTreeMap<FileId, Option<i32>>,
@@ -23,17 +25,50 @@ pub(super) struct QueryContext {
     commands: bool,
     virtual_documents: bool,
     overlays: BTreeMap<PathBuf, Arc<str>>,
+    completions: CompletionCache,
 }
 
 pub(super) type QueryResult = Result<Value, (i32, String)>;
 
 impl Server {
     pub(super) fn editor_request(
-        &self,
+        &mut self,
         id: Value,
         method: &str,
         params: &Value,
     ) -> Result<(), LspError> {
+        if self.shutdown {
+            return self.error(id, -32800, "server is shutting down");
+        }
+        if self.loading {
+            if matches!(method, "completionItem/resolve" | "codeLens/resolve") {
+                return self.error(id, -32801, "project snapshot changed; request a new item");
+            }
+            if matches!(
+                method,
+                "textDocument/semanticTokens/full"
+                    | "textDocument/codeLens"
+                    | "textDocument/inlayHint"
+            ) {
+                return self.reply(id, empty_answer(method));
+            }
+            // Outlines have no standard refresh notification. Keep their request,
+            // along with interactive queries, until the matching snapshot is ready.
+            if self.deferred.len() >= 64 {
+                return self.error(id, -32800, "loading query queue is full");
+            }
+            self.pending
+                .lock()
+                .map_err(|_| LspError::Protocol("pending lock poisoned".into()))?
+                .insert(id.to_string());
+            self.deferred.push_back((
+                id,
+                method.to_owned(),
+                params.clone(),
+                self.generation.load(Ordering::SeqCst),
+            ));
+            return Ok(());
+        }
         let context = QueryContext {
             view: self.view.clone(),
             metadata: self.metadata.clone(),
@@ -60,6 +95,7 @@ impl Server {
                 .overlays()
                 .map(|(path, text)| (path.clone(), Arc::<str>::from(text)))
                 .collect(),
+            completions: self.completions.clone(),
         };
         let method = method.to_owned();
         let params = params.clone();
@@ -73,7 +109,9 @@ impl Server {
             .lock()
             .map_err(|_| LspError::Protocol("pending lock poisoned".into()))?
             .insert(key.clone());
-        std::thread::spawn(move || {
+        let rejected_id = id.clone();
+        let rejected_key = key.clone();
+        let accepted = self.queries.submit(move || {
             let started = Instant::now();
             let obsolete = || {
                 requests::request_stale(
@@ -124,6 +162,44 @@ impl Server {
                 }
             }
         });
+        if !accepted {
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.remove(&rejected_key);
+            }
+            tracing::warn!(id=%rejected_id, "editor query queue full");
+            self.error(
+                rejected_id,
+                -32800,
+                "editor query queue is full; retry request",
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn poll_deferred(&mut self) -> Result<(), LspError> {
+        for (id, method, params, generation) in std::mem::take(&mut self.deferred) {
+            let key = id.to_string();
+            let cancelled = self
+                .cancelled
+                .lock()
+                .is_ok_and(|items| items.contains(&key));
+            let stale = generation != self.generation.load(Ordering::SeqCst);
+            if self.loading && !cancelled && !stale && !self.shutdown {
+                self.deferred.push_back((id, method, params, generation));
+                continue;
+            }
+            if let Ok(mut items) = self.pending.lock() {
+                items.remove(&key);
+            }
+            if let Ok(mut items) = self.cancelled.lock() {
+                items.remove(&key);
+            }
+            if cancelled || stale || self.shutdown {
+                self.error(id, -32800, "loading query cancelled")?;
+            } else {
+                self.editor_request(id, &method, &params)?;
+            }
+        }
         Ok(())
     }
 }

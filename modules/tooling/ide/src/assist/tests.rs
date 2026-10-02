@@ -146,3 +146,46 @@ fn inherited_imported_global_completion_uses_checker_lookup() {
     let items = completion(&view, file, user.find("Utility()").unwrap() + 2);
     assert!(items.iter().any(|item| item.label == "Utility"));
 }
+
+#[test]
+fn completion_resolves_only_selected_declaration_and_documentation() {
+    let text = "Scriptname Example\nInt Function Work(Int amount = 2) Native\n{ Updates the counter. }\nFunction Use()\n Wor\nEndFunction\n";
+    let view = project(&[("Example", text)]);
+    let file = file(&view, "Example");
+    let items = completion(&view, file, text.find(" Wor\n").unwrap() + 4);
+    let item = items.iter().find(|item| item.label == "Work").unwrap();
+    assert_eq!(item.kind, 3);
+    assert_eq!(item.detail, "Int");
+    assert_eq!(item.documentation, None);
+    let hover = completion_hover(&view, item).unwrap();
+    assert!(hover.declaration.contains("Int amount = 2"));
+    assert!(
+        hover
+            .documentation
+            .unwrap()
+            .contains("Updates the counter.")
+    );
+}
+
+#[test]
+fn lazy_intrinsic_completion_retains_selected_array_element_type() {
+    let text = "Scriptname Example\nFunction Use(String[] values)\n values.\nEndFunction\n";
+    let view = project(&[("Example", text)]);
+    let file = file(&view, "Example");
+    let items = completion(&view, file, text.find("values.\n").unwrap() + 7);
+    let find = items.iter().find(|item| item.label == "Find").unwrap();
+    assert_eq!(find.kind, 3);
+    assert_eq!(find.documentation, None);
+    assert!(
+        completion_hover(&view, find)
+            .unwrap()
+            .declaration
+            .contains("String akElement")
+    );
+    let length = items.iter().find(|item| item.label == "Length").unwrap();
+    assert_eq!(length.kind, 10);
+    assert_eq!(
+        completion_hover(&view, length).unwrap().declaration,
+        "Int Property Length"
+    );
+}

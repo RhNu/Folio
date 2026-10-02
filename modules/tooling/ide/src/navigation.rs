@@ -3,6 +3,7 @@ use folio_build::ProjectAnalysisView;
 use folio_hir::{ExpressionKind, MemberKind, Symbol};
 use folio_papyrus::SyntaxKind;
 use folio_source::{FileId, SourceSpan};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SymbolOccurrence {
@@ -107,6 +108,17 @@ pub(crate) fn occurrences(view: &ProjectAnalysisView, file: FileId) -> Vec<Symbo
         }
     }
     if let Some(parse) = view.analysis.parse(file) {
+        let mut script_definitions = HashMap::new();
+        for file in view.analysis.file_ids() {
+            if let Some(script) = view.analysis.hir(file)
+                && let Some(name) = &script.name
+            {
+                script_definitions
+                    .entry(name.text.to_ascii_lowercase())
+                    .or_insert(name.span);
+            }
+        }
+        let mut parameter_definitions = HashMap::new();
         for node in parse
             .syntax()
             .descendants()
@@ -153,14 +165,18 @@ pub(crate) fn occurrences(view: &ProjectAnalysisView, file: FileId) -> Vec<Symbo
                 owner: Box::new(member.symbol.clone()),
                 name: parameter.name.clone(),
             };
-            let definition = view.analysis.file_ids().find_map(|file| {
-                view.analysis
-                    .hir(file)?
-                    .declarations
-                    .iter()
-                    .find(|item| same(&item.symbol, &symbol))
-                    .map(|item| item.span)
-            });
+            let definition = *parameter_definitions
+                .entry(symbol.clone())
+                .or_insert_with(|| {
+                    view.analysis.file_ids().find_map(|file| {
+                        view.analysis
+                            .hir(file)?
+                            .declarations
+                            .iter()
+                            .find(|item| same(&item.symbol, &symbol))
+                            .map(|item| item.span)
+                    })
+                });
             result.push(SymbolOccurrence {
                 symbol,
                 span: SourceSpan {
@@ -176,20 +192,11 @@ pub(crate) fn occurrences(view: &ProjectAnalysisView, file: FileId) -> Vec<Symbo
             .filter_map(|item| item.into_token())
             .filter(|token| token.kind() == SyntaxKind::Ident)
         {
-            let byte = usize::from(token.text_range().start());
-            if let Some((name, span)) = super::symbols::script_reference(view, file, byte) {
-                let definition = view.analysis.file_ids().find_map(|file| {
-                    let script = view.analysis.hir(file)?;
-                    let found = script.name.as_ref()?;
-                    found.text.eq_ignore_ascii_case(&name).then_some(found.span)
-                });
-                let known = definition.is_some()
-                    || view
-                        .analysis
-                        .external_declarations()
-                        .iter()
-                        .flat_map(|bundle| &bundle.scripts)
-                        .any(|script| script.name.eq_ignore_ascii_case(&name));
+            if let Some((name, span)) =
+                super::symbols::script_reference_token(&script, file, &token)
+            {
+                let definition = script_definitions.get(&name.to_ascii_lowercase()).copied();
+                let known = definition.is_some() || view.analysis.external_script(&name).is_some();
                 if known {
                     result.push(SymbolOccurrence {
                         symbol: Symbol::Script(name),
@@ -232,9 +239,21 @@ pub fn definition_of(view: &ProjectAnalysisView, symbol: &Symbol) -> Option<Sour
     let mut definitions = view
         .analysis
         .file_ids()
-        .flat_map(|file| occurrences(view, file))
-        .filter(|item| same(&item.symbol, symbol) && item.definition == Some(item.span))
-        .map(|item| item.span)
+        .filter_map(|file| view.analysis.hir(file))
+        .flat_map(|script| {
+            let mut spans = script
+                .declarations
+                .iter()
+                .filter(|item| same(&item.symbol, symbol))
+                .map(|item| item.span)
+                .collect::<Vec<_>>();
+            if let Some(name) = &script.name
+                && matches!(symbol, Symbol::Script(target) if target.eq_ignore_ascii_case(&name.text))
+            {
+                spans.push(name.span);
+            }
+            spans
+        })
         .collect::<Vec<_>>();
     definitions.sort_by_key(|span| (span.file, span.range.start));
     definitions.dedup();
@@ -314,10 +333,7 @@ fn parent(view: &ProjectAnalysisView, name: &str) -> Option<String> {
         })
         .or_else(|| {
             view.analysis
-                .external_declarations()
-                .iter()
-                .flat_map(|bundle| &bundle.scripts)
-                .find(|script| script.name.eq_ignore_ascii_case(name))
+                .external_script(name)
                 .and_then(|script| script.parent.clone())
         })
 }

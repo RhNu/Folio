@@ -169,12 +169,7 @@ pub(crate) fn hover_at_definition(
         }
     }
     let owner_name = owner.as_deref()?;
-    let external = view
-        .analysis
-        .external_declarations()
-        .iter()
-        .flat_map(|bundle| &bundle.scripts)
-        .find(|script| script.name.eq_ignore_ascii_case(owner_name))?;
+    let external = view.analysis.external_script(owner_name)?;
     let (declaration, documentation) = match symbol {
         Symbol::Script(_) => (script_header(external), external.documentation.clone()),
         Symbol::Member { name, .. } => {
@@ -237,12 +232,7 @@ pub(crate) fn external_member<'a>(
     symbol: &Symbol,
 ) -> Option<&'a Member> {
     let owner = symbols::owner_script(symbol)?;
-    let script = view
-        .analysis
-        .external_declarations()
-        .iter()
-        .flat_map(|bundle| &bundle.scripts)
-        .find(|script| script.name.eq_ignore_ascii_case(&owner))?;
+    let script = view.analysis.external_script(&owner)?;
     match symbol {
         Symbol::Member { name, .. } => script
             .members
@@ -384,12 +374,7 @@ pub fn declaration_document(
     view: &ProjectAnalysisView,
     script_name: &str,
 ) -> Option<DeclarationDocument> {
-    let script = view
-        .analysis
-        .external_declarations()
-        .iter()
-        .flat_map(|bundle| &bundle.scripts)
-        .find(|script| script.name.eq_ignore_ascii_case(script_name))?;
+    let script = view.analysis.external_script(script_name)?;
     fn doc(text: &mut String, documentation: &Option<String>) {
         if let Some(doc) = documentation {
             text.push_str("{\n");

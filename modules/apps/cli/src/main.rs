@@ -263,6 +263,7 @@ fn project_error_code(error: &LoadError) -> &'static str {
         LoadError::RepoMissing { .. } => "REPO001",
         LoadError::RepoAmbiguous { .. } => "REPO002",
         LoadError::InputChanged(_) => "INPUT001",
+        LoadError::Cancelled => "INPUT002",
     }
 }
 

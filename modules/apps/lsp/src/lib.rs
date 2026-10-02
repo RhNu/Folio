@@ -38,13 +38,33 @@ impl From<io::Error> for LspError {
 pub fn serve_stdio(manifest_path: Option<&Path>) -> Result<(), LspError> {
     let cwd = std::env::current_dir()?;
     let output = Arc::new(Mutex::new(io::stdout()));
-    let input = io::stdin();
-    let mut reader = io::BufReader::new(input.lock());
+    let (messages, incoming) = std::sync::mpsc::sync_channel(128);
+    std::thread::Builder::new()
+        .name("folio-stdin".into())
+        .spawn(move || {
+            let input = io::stdin();
+            let mut reader = io::BufReader::new(input.lock());
+            loop {
+                let message = read_message(&mut reader);
+                let done = !matches!(message, Ok(Some(_)));
+                if messages.send(message).is_err() || done {
+                    break;
+                }
+            }
+        })?;
     let home = FolioHome::from_env().map_err(|error| LspError::Project(error.to_string()))?;
     let mut server = Server::new(cwd, manifest_path.map(Path::to_path_buf), output, home);
-    while let Some(message) = read_message(&mut reader)? {
-        if server.handle(message)? {
-            break;
+    loop {
+        server.poll_background()?;
+        match incoming.recv_timeout(std::time::Duration::from_millis(10)) {
+            Ok(Ok(Some(message))) => {
+                if server.handle(message)? {
+                    break;
+                }
+            }
+            Ok(Ok(None)) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Ok(Err(error)) => return Err(error),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
         }
     }
     Ok(())

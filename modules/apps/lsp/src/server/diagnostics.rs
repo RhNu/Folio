@@ -3,7 +3,6 @@ use super::*;
 use crate::protocol::{path_to_uri, range_json};
 use folio_diagnostics::Severity;
 use folio_ide::PositionIndex;
-use folio_lint::{LintConfig, lint_script};
 
 impl Server {
     pub(super) fn clear_view(&mut self) -> Result<(), LspError> {
@@ -28,8 +27,7 @@ impl Server {
         &mut self,
         view: Arc<ProjectAnalysisView>,
         generation: u64,
-        root_key: &str,
-        lint: &LintConfig,
+        diagnostics: Vec<folio_diagnostics::Diagnostic>,
     ) -> Result<(), LspError> {
         let started = Instant::now();
         let current = view
@@ -47,14 +45,6 @@ impl Server {
             .iter()
             .map(|(&file, source)| (file, PositionIndex::new(&source.text)))
             .collect::<BTreeMap<_, _>>();
-        let mut diagnostics = view.diagnostics();
-        for (&file, source) in &view.sources {
-            if source.package_key == root_key
-                && let Some(script) = view.analysis.hir(file)
-            {
-                diagnostics.extend(lint_script(&script, lint));
-            }
-        }
         tracing::debug!(
             generation,
             elapsed_us = started.elapsed().as_micros(),

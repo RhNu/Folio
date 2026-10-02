@@ -10,6 +10,7 @@ import {
 } from 'vscode-languageclient/node';
 import { navigationCommands, readEditorOptions } from './editorOptions';
 import { DeclarationDocuments, registerNavigation } from './navigation';
+import { ServerStatusTracker } from './serverStatus';
 
 let client: LanguageClient | undefined;
 let fileWatcher: vscode.FileSystemWatcher | undefined;
@@ -18,6 +19,7 @@ let declarations: DeclarationDocuments;
 let status: vscode.StatusBarItem;
 let clientEvents: vscode.Disposable[] = [];
 let pendingRestart: Promise<void> = Promise.resolve();
+let shuttingDown = false;
 
 interface ExecutableResolution {
   command: string;
@@ -34,6 +36,7 @@ function editorSettings(folder: vscode.WorkspaceFolder | undefined) {
     editor: readEditorOptions((key, fallback) => settings.get<boolean>(key, fallback)),
     clientCommands: true,
     declarationDocuments: true,
+    status: true,
   } };
 }
 
@@ -169,6 +172,7 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
     { scheme: 'file', language: 'papyrus' },
     { scheme: 'folio-declaration', language: 'papyrus' },
   ];
+  const projectStatus = new ServerStatusTracker();
   const clientOptions: LanguageClientOptions = {
     documentSelector: documentSelector as LanguageClientOptions['documentSelector'],
     workspaceFolder: folder,
@@ -177,6 +181,18 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
     revealOutputChannelOn: RevealOutputChannelOn.Error,
     initializationOptions: () => editorSettings(folder),
     markdown: { isTrusted: { enabledCommands: navigationCommands }, supportHtml: false },
+    middleware: {
+      provideDocumentSemanticTokens: (document, token, next) =>
+        projectStatus.loading ? null : next(document, token),
+      provideDocumentSemanticTokensEdits: (document, previous, token, next) =>
+        projectStatus.loading ? null : next(document, previous, token),
+      provideDocumentRangeSemanticTokens: (document, range, token, next) =>
+        projectStatus.loading ? null : next(document, range, token),
+      provideCodeLenses: (document, token, next) =>
+        projectStatus.loading ? [] : next(document, token),
+      provideInlayHints: (document, range, token, next) =>
+        projectStatus.loading ? [] : next(document, range, token),
+    },
   };
   const nextClient = new LanguageClient('folio', 'Folio Language Server', serverOptions, clientOptions);
   if (launch.configuredPathMissing) {
@@ -184,6 +200,33 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
   }
   output.appendLine(`Starting Folio LSP from ${launch.source}: ${launch.command}`);
   output.appendLine(`Project folder: ${folder.uri.fsPath}`);
+  // Register before initialize: loading may arrive before start resolves.
+  const events = [nextClient.onNotification('folio/status', (params: unknown) => {
+    if (shuttingDown || !projectStatus.accept(params)) { return; }
+    const presentation = projectStatus.presentation!;
+    showStatus(presentation.label, presentation.tooltip);
+  }), nextClient.onDidChangeState((event) => {
+    if (shuttingDown) { return; }
+    if (event.newState === State.Running) {
+      if (!projectStatus.current) {
+        showStatus('$(check) Folio', 'Folio language server connected. Click to show its output.');
+      }
+      // Running precedes initialized. Refresh only after that handshake finishes.
+      void nextClient.start().then(async () => {
+        if (shuttingDown || client !== nextClient) { return; }
+        await updateEditorSettings(nextClient);
+        if (!shuttingDown && client === nextClient) { declarations.refresh(); }
+      }).catch((error: unknown) => {
+        if (!shuttingDown) { output.error(`Folio reconnect refresh failed: ${String(error)}`); }
+      });
+    } else if (event.newState === State.Starting) {
+      projectStatus.reset();
+      showStatus('$(sync~spin) Folio', 'Folio language server is starting.');
+    } else {
+      projectStatus.reset();
+      showStatus('$(warning) Folio', 'Folio language server stopped. Use Folio: Restart Language Server.');
+    }
+  })];
   try {
     await nextClient.start();
     client = nextClient;
@@ -192,27 +235,16 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
       output.debug(`Folio project changed: generation ${params.generation}.`);
       declarations.refresh();
     }));
-    clientEvents.push(nextClient.onDidChangeState((event) => {
-      if (event.newState === State.Running) {
-        showStatus('$(check) Folio', 'Folio language server connected. Click to show its output.');
-        // Running precedes the initialized handshake. Await start before requerying documents.
-        void nextClient.start().then(async () => {
-          if (client !== nextClient) { return; }
-          await updateEditorSettings(nextClient);
-          declarations.refresh();
-        }).catch((error: unknown) => output.error(`Folio reconnect refresh failed: ${String(error)}`));
-      } else if (event.newState === State.Starting) {
-        showStatus('$(sync~spin) Folio', 'Folio language server is starting.');
-      } else {
-        showStatus('$(warning) Folio', 'Folio language server stopped. Use Folio: Restart Language Server.');
-      }
-    }));
+    clientEvents.push(...events);
     // Configuration can change while initialize is in flight, before client is assigned.
     await updateEditorSettings(nextClient);
     declarations.refresh();
-    showStatus('$(check) Folio', 'Folio language server connected. Click to show its output.');
+    if (!projectStatus.current) {
+      showStatus('$(check) Folio', 'Folio language server connected. Click to show its output.');
+    }
     output.appendLine('Folio LSP connected.');
   } catch (error) {
+    for (const event of events) { event.dispose(); }
     if (client === nextClient) {
       client = undefined;
       fileWatcher = undefined;
@@ -246,10 +278,12 @@ async function stopServer(): Promise<void> {
 /** Serializes restarts so a configuration change cannot leave two servers running. */
 function restartServer(context: vscode.ExtensionContext): Promise<void> {
   pendingRestart = pendingRestart.then(async () => {
+    if (shuttingDown) { return; }
     showStatus('$(sync~spin) Folio', 'Folio language server is starting.');
     await stopServer();
     await startServer(context);
   }).catch((error: unknown) => {
+    if (shuttingDown) { return; }
     const message = error instanceof Error ? error.message : String(error);
     output.appendLine(`Folio LSP startup failed: ${message}`);
     showStatus('$(warning) Folio', `Folio language server could not start: ${message}`);
@@ -264,8 +298,9 @@ function restartServer(context: vscode.ExtensionContext): Promise<void> {
 
 /** Registers the Papyrus LSP client and its development controls. */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  shuttingDown = false;
   output = vscode.window.createOutputChannel('Folio Language Server', { log: true });
-  context.subscriptions.push(output);
+  // Keep the logger alive until asynchronous client shutdown has completed.
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
   status.command = 'folio.showOutput';
   context.subscriptions.push(status);
@@ -282,7 +317,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const activeClient = client;
       output.info('Updating Folio editor presentation settings.');
       void updateEditorSettings(activeClient)
-        .catch((error: unknown) => output.error(`Folio editor configuration update failed: ${String(error)}`));
+        .catch((error: unknown) => {
+          if (!shuttingDown) { output.error(`Folio editor configuration update failed: ${String(error)}`); }
+        });
     }
   }));
   await restartServer(context);
@@ -290,6 +327,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 /** Releases the LSP process when VS Code unloads the extension. */
 export async function deactivate(): Promise<void> {
-  await pendingRestart;
-  await stopServer();
+  shuttingDown = true;
+  try {
+    await pendingRestart;
+    await stopServer();
+  } finally {
+    output?.dispose();
+  }
 }

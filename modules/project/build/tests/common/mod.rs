@@ -107,7 +107,7 @@ pub(crate) fn add_declarations(project: &mut LoadedProject, name: &str, bundle: 
             })
             .collect(),
     });
-    project.declaration_bundles.insert(key, bundle);
+    project.declaration_bundles.insert(key, Arc::new(bundle));
 }
 
 pub(crate) fn declarations() -> DeclarationBundle {

@@ -1,158 +1,185 @@
-//! Project reloads, document overlays, and dependency watch registration.
+//! Coalesced loading and publication of immutable project snapshots.
 use super::*;
 use crate::protocol::path_to_uri;
-use folio_lint::LintConfig;
-use folio_project_model::SourceFile;
-use folio_project_resolve::{discover, io::LoadedSourceInput, resolve};
 
 impl Server {
+    /// Broad client watchers may report unrelated project JSON and generated output.
+    pub(super) fn file_event_relevant(&self, uri: &Value) -> bool {
+        let Some(path) = uri.as_str().and_then(uri_to_path) else {
+            // A deleted subtree may no longer have a canonicalizable parent.
+            // Conservatively refresh instead of leaving stale dependency inputs.
+            return uri.as_str().is_some_and(|uri| uri.starts_with("file://"));
+        };
+        let Some(loaded) = self
+            .projected_inputs
+            .as_ref()
+            .filter(|_| self.last_error.is_none())
+        else {
+            return true;
+        };
+        relevant_path(&path, &loaded.watch_plan)
+    }
+    /// Coalesce bursts while invalidating obsolete workers immediately.
     pub(super) fn reload_report(&mut self, refresh_disk: bool) -> Result<(), LspError> {
-        if let Err(error) = self.reload(refresh_disk) {
-            tracing::error!(%error, "LSP project analysis unavailable");
-            self.clear_view()?;
-            self.disk_project = None;
-            let message = error.to_string();
-            if self.last_error.as_ref() != Some(&message) {
-                send(
-                    &self.output,
-                    &json!({"jsonrpc":"2.0","method":"window/showMessage","params":{"type":1,"message":message}}),
-                )?;
-                self.last_error = Some(message);
-            }
-        } else {
-            self.last_error = None;
+        if !self.initialized || self.shutdown {
+            return Ok(());
         }
-        Ok(())
+        self.advance_generation()?;
+        self.reload.request(refresh_disk, Instant::now());
+        self.loading = true;
+        self.completions.clear();
+        self.status("loading", "queued", "Loading project", None)
     }
 
-    /// Buffer lifecycle alone does not change semantic inputs or invalidate requests.
     pub(super) fn update_document(&mut self, path: &Path) -> Result<(), LspError> {
-        let unchanged = self
-            .paths
-            .get(path)
-            .and_then(|file| self.view.as_ref()?.analysis.text(*file))
-            .is_some_and(|text| Some(text) == self.documents.text(&path.to_path_buf()));
+        let unchanged = !self.loading
+            && self
+                .paths
+                .get(path)
+                .and_then(|file| self.view.as_ref()?.analysis.text(*file))
+                .is_some_and(|text| Some(text) == self.documents.text(&path.to_path_buf()));
         if unchanged {
             let uri = path_to_uri(path);
             if let Some(diagnostics) = self.diagnostics.get(&uri) {
                 send(
                     &self.output,
-                    &json!({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":uri,"version":self.documents.version(&path.to_path_buf()),"diagnostics":diagnostics}}),
+                    &json!({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{
+                    "uri":uri,"version":self.documents.version(&path.to_path_buf()),"diagnostics":diagnostics}}),
                 )?;
             }
-            tracing::debug!(path = %path.display(), "reused unchanged LSP project view");
             return Ok(());
         }
         self.reload_report(false)
     }
 
-    /// Re-read the closed file so discarding a buffer restores even unwatched disk edits.
-    pub(super) fn close_document(&mut self, path: &Path) -> Result<(), LspError> {
-        if let Some((loaded, _)) = self.disk_project.as_mut()
-            && let Some(source) = loaded
-                .source_inputs
-                .iter_mut()
-                .find(|source| source.canonical_path == path)
-            && let Ok(text) = std::fs::read_to_string(path)
-        {
-            source.text = Arc::from(text);
-            self.documents
-                .disk_update(path.to_path_buf(), Arc::clone(&source.text));
-            return self.update_document(path);
-        }
-        // New unsaved files and removed files require rebuilding provider selection.
+    pub(super) fn close_document(&mut self, _path: &Path) -> Result<(), LspError> {
+        // The worker rereads disk, including new/deleted files and discarded dependency buffers.
         self.reload_report(true)
     }
 
-    fn reload(&mut self, refresh_disk: bool) -> Result<(), LspError> {
-        if !self.initialized || self.shutdown {
-            return Ok(());
-        }
-        let generation = self.advance_generation()?;
-        let started = Instant::now();
-        if refresh_disk || self.disk_project.is_none() {
-            // Register candidate paths before reading carriers so missing or ambiguous
-            // inputs can recover when files or intermediate directories change.
-            self.register_file_watches(generation)?;
-            match folio_project_resolve::io::load_and_resolve_with_home(
-                &self.cwd,
-                self.manifest_path.as_deref(),
-                &self.home,
-            ) {
-                Ok(project) => self.disk_project = Some(project),
-                Err(error) => {
-                    tracing::error!(%error, "LSP project reload failed");
-                    return Err(LspError::Project(error.to_string()));
-                }
+    fn status(
+        &self,
+        state: &str,
+        phase: &str,
+        message: &str,
+        progress: Option<(usize, usize)>,
+    ) -> Result<(), LspError> {
+        if self.status_supported {
+            let mut params = json!({"state":state,"phase":phase,"message":message,"generation":self.generation.load(Ordering::SeqCst)});
+            if let Some((completed, total)) = progress {
+                params["completed"] = json!(completed);
+                params["total"] = json!(total);
             }
+            send(
+                &self.output,
+                &json!({"jsonrpc":"2.0","method":"folio/status","params":params}),
+            )?;
         }
-        let (mut loaded, mut metadata) = self
-            .disk_project
+        Ok(())
+    }
+
+    /// Called by the protocol event loop even when no client messages arrive.
+    pub(crate) fn poll_background(&mut self) -> Result<(), LspError> {
+        while let Some(event) = self
+            .loader
             .as_ref()
-            .expect("loaded disk project")
-            .clone();
-        if refresh_disk {
-            self.register_file_watches(generation)?;
-        }
-        tracing::debug!(
-            generation,
-            elapsed_us = started.elapsed().as_micros(),
-            phase = "load",
-            "LSP project phase complete"
-        );
-        let started = Instant::now();
-        let mut disk_paths = BTreeSet::new();
-        for source in &loaded.source_inputs {
-            disk_paths.insert(source.canonical_path.clone());
-            self.documents
-                .disk_update(source.canonical_path.clone(), Arc::clone(&source.text));
-        }
-        self.documents.retain_disk_paths(&disk_paths);
-        self.add_unsaved_sources(&mut loaded, &disk_paths)?;
-        let overlays = self
-            .documents
-            .overlays()
-            .map(|(path, text)| (path.clone(), Arc::<str>::from(text)))
-            .collect::<BTreeMap<_, _>>();
-        let dependency_changed = overlays::apply_dependency_overlays(&mut loaded, &overlays)?;
-        if loaded.source_inputs.len() != disk_paths.len() || dependency_changed {
-            metadata = resolve(&loaded.root, &loaded.dependencies)
-                .map_err(|error| LspError::Project(error.to_string()))?;
-        }
-        for source in &mut loaded.source_inputs {
-            if let Some(text) = self.documents.text(&source.canonical_path) {
-                source.text = Arc::from(text);
+            .and_then(|loader| loader.events.try_recv().ok())
+        {
+            match event {
+                loading::Event::Watches(generation, plan)
+                    if generation == self.generation.load(Ordering::SeqCst) && !self.shutdown =>
+                {
+                    self.register_file_watches(generation, &plan)?;
+                }
+                loading::Event::Progress(generation, phase, message, done, total)
+                    if generation == self.generation.load(Ordering::SeqCst) && !self.shutdown =>
+                {
+                    self.status("loading", phase, &message, Some((done, total)))?;
+                }
+                loading::Event::Finished(generation, result) => {
+                    self.reload.finish(false);
+                    if generation != self.generation.load(Ordering::SeqCst) || self.shutdown {
+                        continue;
+                    }
+                    match result {
+                        Ok(Some(prepared)) => {
+                            let disk_paths = prepared
+                                .disk_sources
+                                .iter()
+                                .map(|source| source.canonical_path.clone())
+                                .collect();
+                            for source in prepared.disk_sources {
+                                self.documents
+                                    .disk_update(source.canonical_path, source.text);
+                            }
+                            self.documents.retain_disk_paths(&disk_paths);
+                            self.paths = prepared
+                                .view
+                                .sources
+                                .iter()
+                                .map(|(&file, source)| (source.canonical_path.clone(), file))
+                                .collect();
+                            self.publish(
+                                Arc::clone(&prepared.view),
+                                generation,
+                                prepared.diagnostics,
+                            )?;
+                            self.view = Some(prepared.view);
+                            self.metadata = Some(prepared.metadata);
+                            self.projected_inputs = Some(prepared.loaded);
+                            self.loading = false;
+                            self.reload.finish(true);
+                            self.last_error = None;
+                            tracing::info!(
+                                generation,
+                                files = self.paths.len(),
+                                "LSP project ready"
+                            );
+                            self.status("ready", "ready", "Ready", None)?;
+                            self.refresh_editor()?;
+                        }
+                        Ok(None) => {}
+                        Err(message) => {
+                            self.loading = false;
+                            self.clear_view()?;
+                            tracing::error!(generation, %message, "LSP project analysis unavailable");
+                            self.status("error", "failed", &message, None)?;
+                            if self.last_error.as_ref() != Some(&message) {
+                                send(
+                                    &self.output,
+                                    &json!({"jsonrpc":"2.0","method":"window/showMessage","params":{"type":1,"message":message}}),
+                                )?;
+                                self.last_error = Some(message);
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
-        let view = Arc::new(
-            self.project
-                .sync_project(&loaded, &metadata)
-                .map_err(|error| LspError::Project(error.to_string()))?,
-        );
-        tracing::debug!(
-            generation,
-            elapsed_us = started.elapsed().as_micros(),
-            phase = "projection",
-            "LSP project phase complete"
-        );
-        self.metadata = Some(Arc::new(metadata));
-        self.paths = view
-            .sources
-            .iter()
-            .map(|(&file, source)| (source.canonical_path.clone(), file))
-            .collect();
-        tracing::info!(
-            generation,
-            files = self.paths.len(),
-            "LSP project view updated"
-        );
-        let rules = loaded.root.manifest.lint_rules.clone();
-        let lint =
-            LintConfig::from_rules(&rules).map_err(|error| LspError::Project(error.to_string()))?;
-        self.publish(view.clone(), generation, &loaded.root_key, &lint)?;
-        self.view = Some(view);
-        self.projected_inputs = Some(loaded);
-        self.refresh_editor()?;
+        if !self.shutdown
+            && let Some(refresh_disk) = self.reload.take_due(Instant::now())
+        {
+            if self.loader.is_none() {
+                self.loader = Some(loading::Loader::new(
+                    self.cwd.clone(),
+                    self.manifest_path.clone(),
+                    self.home.clone(),
+                    Arc::clone(&self.generation),
+                ));
+            }
+            let job = loading::Job {
+                generation: self.generation.load(Ordering::SeqCst),
+                refresh_disk,
+                overlays: self
+                    .documents
+                    .overlays()
+                    .map(|(path, text)| (path.clone(), Arc::from(text)))
+                    .collect(),
+            };
+            self.loader.as_ref().unwrap().submit(job)?;
+        }
+        self.poll_deferred()?;
         Ok(())
     }
 
@@ -169,6 +196,7 @@ impl Server {
             )?;
         }
         for (supported, feature) in [
+            (self.semantic_tokens_refresh, "semanticTokens"),
             (self.code_lens_refresh, "codeLens"),
             (self.inlay_hint_refresh, "inlayHint"),
         ] {
@@ -183,16 +211,15 @@ impl Server {
     }
 
     /// The resolver owns dependency paths, including carriers outside the editor folder.
-    fn register_file_watches(&mut self, generation: u64) -> Result<(), LspError> {
+    fn register_file_watches(
+        &mut self,
+        generation: u64,
+        plan: &folio_project_resolve::io::WatchPlan,
+    ) -> Result<(), LspError> {
         // Capability registration is allowed only after the initialized notification.
         if !self.dynamic_watches || !self.client_ready {
             return Ok(());
         }
-        let plan = folio_project_resolve::io::watch_plan_with_home(
-            &self.cwd,
-            self.manifest_path.as_deref(),
-            &self.home,
-        );
         let mut patterns = BTreeSet::new();
         for directory in &plan.directories {
             patterns.insert((path_to_uri(directory), String::from("**/*")));
@@ -232,66 +259,24 @@ impl Server {
         self.watchers = Some(watchers);
         Ok(())
     }
-
-    /// Projects new open files through the same root manifest and resolver graph as disk files.
-    fn add_unsaved_sources(
-        &self,
-        loaded: &mut folio_project_resolve::LoadedProject,
-        disk_paths: &BTreeSet<PathBuf>,
-    ) -> Result<(), LspError> {
-        let manifest_path = discover(&self.cwd, self.manifest_path.as_deref())
-            .map_err(|error| LspError::Project(error.to_string()))?;
-        let base = manifest_path
-            .parent()
-            .ok_or_else(|| LspError::Project("manifest has no parent".into()))?;
-        let manifest = loaded.root.manifest.clone();
-        for (path, text) in self.documents.overlays() {
-            if disk_paths.contains(path) {
-                continue;
-            }
-            let display_path = std::fs::canonicalize(base.join(&manifest.source_path.value))
-                .ok()
-                .and_then(|source_root| path.strip_prefix(source_root).ok().map(Path::to_path_buf))
-                .map(|relative| {
-                    Path::new(&manifest.source_path.value)
-                        .join(relative)
-                        .to_string_lossy()
-                        .replace('\\', "/")
-                });
-            let extension_allowed = path.extension().is_some_and(|extension| {
-                manifest
-                    .extensions
-                    .iter()
-                    .any(|item| extension.eq_ignore_ascii_case(item))
-            });
-            if !extension_allowed {
-                continue;
-            }
-            let Some(display_path) = display_path else {
-                continue;
-            };
-            let candidate = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .ok_or_else(|| {
-                    LspError::Project(format!("invalid script name: {}", path.display()))
-                })?;
-            let portable = folio_project_resolve::io::relative_portable(base, path)
-                .map_err(|error| LspError::Project(error.to_string()))?;
-            tracing::debug!(path = %path.display(), "added unsaved project source");
-            loaded.root.source_files.push(SourceFile {
-                path: portable.clone(),
-                display_path: display_path.clone(),
-                script_candidate: candidate.to_owned(),
-            });
-            loaded.source_inputs.push(LoadedSourceInput {
-                package_key: loaded.root_key.clone(),
-                canonical_path: path.clone(),
-                display_path,
-                script_candidate: candidate.to_owned(),
-                text: Arc::from(text),
-            });
-        }
-        Ok(())
-    }
 }
+
+fn relevant_path(path: &Path, plan: &folio_project_resolve::io::WatchPlan) -> bool {
+    if plan
+        .files
+        .iter()
+        .any(|file| path == file || file.starts_with(path))
+    {
+        return true;
+    }
+    let source = path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("psc") || extension.eq_ignore_ascii_case("pex")
+    });
+    plan.directories.iter().any(|directory| {
+        directory.starts_with(path)
+            || (path.starts_with(directory) && (source || path.extension().is_none()))
+    })
+}
+
+#[cfg(test)]
+mod tests;

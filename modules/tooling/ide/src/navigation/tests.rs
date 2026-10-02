@@ -60,6 +60,27 @@ fn parameter_references_include_named_argument_labels() {
 }
 
 #[test]
+fn script_occurrences_preserve_identifier_ranges_and_skip_unknown_types() {
+    let target = "Scriptname Target\n";
+    let text = "Scriptname Example Extends Target\nImport tArGeT\nTarget[] Property Owners Auto\nMissing Property Unknown Auto\nFunction Use(Target value)\n Target local = value\nEndFunction\n";
+    let view = project(&[("Target", target), ("Example", text)]);
+    let file = file(&view, "Example");
+    let target_file = crate::tests::file(&view, "Target");
+    let spans = references(&view, target_file, target.find("Target").unwrap(), false);
+    assert_eq!(spans.len(), 5);
+    assert!(spans.iter().all(|span| span.file == file
+        && text[span.range.start..span.range.end].eq_ignore_ascii_case("Target")));
+    for span in spans {
+        assert_eq!(
+            crate::source_declaration(&view, file, span.range.start),
+            definition_of(&view, &Symbol::Script("target".into()))
+        );
+    }
+    assert!(symbol_at(&view, file, text.find("Missing").unwrap()).is_none());
+    assert!(symbol_at(&view, file, text.len()).is_none());
+}
+
+#[test]
 fn selected_external_descendants_and_state_implementations_are_included() {
     use folio_format_declarations::{DeclarationBundle, Member, MemberData, Origin, Script, State};
     let text = "Scriptname Base\nFunction Work()\nEndFunction\nInt Property Count Auto\nFunction Utility() Global\nEndFunction\n";

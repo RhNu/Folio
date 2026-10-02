@@ -56,6 +56,7 @@ fn context_source(
         commands: true,
         virtual_documents: true,
         overlays: BTreeMap::new(),
+        completions: CompletionCache::default(),
     }
 }
 
@@ -73,6 +74,46 @@ fn unsupported_documents_return_protocol_appropriate_empty_results() {
     );
     assert_eq!(empty_answer("textDocument/codeLens"), json!([]));
     assert_eq!(empty_answer("textDocument/signatureHelp"), Value::Null);
+}
+
+#[test]
+fn completion_resolution_preserves_the_candidate_and_adds_selected_documentation() {
+    let context = context();
+    let result = context
+        .answer(
+            "textDocument/completion",
+            &query(&context, SOURCE.rfind("Add(1)").unwrap()),
+        )
+        .unwrap();
+    let item = result["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["label"] == "Add")
+        .unwrap();
+    assert!(item.get("documentation").is_none());
+    let resolved = context.answer("completionItem/resolve", item).unwrap();
+    assert_eq!(resolved["textEdit"], item["textEdit"]);
+    assert!(
+        resolved["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Int Function Add")
+    );
+    assert!(
+        resolved["documentation"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("Adds values.")
+    );
+    context.completions.clear();
+    assert_eq!(
+        context
+            .answer("completionItem/resolve", item)
+            .unwrap_err()
+            .0,
+        -32801
+    );
 }
 
 #[test]

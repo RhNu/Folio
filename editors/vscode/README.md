@@ -38,7 +38,7 @@ Completion follows visible local, inherited, imported, and selected dependency d
 
 Rename handles locals, parameters, and verifiable root members after checking conflicts and reanalyzing the proposed changes. Scripts, state members, native/event APIs, inherited or overridden APIs, dependency declarations, and unresolved projects are rejected. Runtime strings and consumers outside the project still require review.
 
-The Folio status item opens the output panel. **Folio: Show Language Server Output** and **Folio: Restart Language Server** are also available in the Command Palette.
+The Folio status item shows project loading phases and completed/total progress where available, then indicates readiness or a loading error. Semantic highlighting, CodeLens, and parameter hints wait while the project loads and refresh when it becomes ready. Clicking the status item opens the output panel. **Folio: Show Language Server Output** and **Folio: Restart Language Server** are also available in the Command Palette.
 
 ## Settings
 

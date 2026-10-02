@@ -204,78 +204,9 @@ pub(super) fn member_from_source(
 
 pub(super) fn validate_world(
     world: &World,
-    analysis: &mut Analysis,
+    analysis: &mut WorkingAnalysis,
     file_scripts: &BTreeMap<FileId, String>,
 ) {
-    for script in world
-        .scripts
-        .values()
-        .filter(|script| script.definition.is_none())
-    {
-        if let Some(parent) = &script.parent
-            && !world.scripts.contains_key(&key(parent))
-        {
-            analysis.project_diagnostics.push(Diagnostic::new(
-                "semantic.unknown-parent",
-                Severity::Error,
-                format!(
-                    "external script {} has unknown parent {parent}",
-                    script.name
-                ),
-            ));
-        }
-        let mut visited = HashSet::new();
-        let mut current = Some(key(&script.name));
-        while let Some(name) = current {
-            if !visited.insert(name.clone()) {
-                analysis.project_diagnostics.push(Diagnostic::new(
-                    "semantic.inheritance-cycle",
-                    Severity::Error,
-                    format!(
-                        "external script {} participates in an inheritance cycle",
-                        script.name
-                    ),
-                ));
-                break;
-            }
-            current = world
-                .scripts
-                .get(&name)
-                .and_then(|item| item.parent.as_ref())
-                .map(|parent| key(parent));
-        }
-        for member in script
-            .members
-            .values()
-            .chain(script.states.values().flat_map(|members| members.values()))
-        {
-            for (name, ty, default) in &member.parameters {
-                if let ParameterDefault::Literal(text) = default {
-                    let actual = literal_type(text);
-                    if !constant_matches_type(text, ty) {
-                        analysis.project_diagnostics.push(Diagnostic::new(
-                            "semantic.parameter-default-type", Severity::Error,
-                            format!("external {}.{} default for {name} is not a valid {ty:?} literal (found {actual:?})", script.name, member.name),
-                        ));
-                    }
-                }
-            }
-            for ty in
-                std::iter::once(&member.ty).chain(member.parameters.iter().map(|(_, ty, _)| ty))
-            {
-                if !known_type(world, ty) {
-                    analysis.project_diagnostics.push(Diagnostic::new(
-                        "semantic.unknown-type",
-                        Severity::Error,
-                        format!(
-                            "external member {}.{} has unknown type {ty:?}",
-                            script.name, member.name
-                        ),
-                    ));
-                }
-            }
-        }
-    }
     for (&file, script_key) in file_scripts {
         let script = &world.scripts[script_key];
         let file_analysis = analysis.files.get_mut(&file).unwrap();
@@ -331,14 +262,85 @@ pub(super) fn validate_world(
             }
         }
     }
-    let source_keys = file_scripts.values().collect::<BTreeSet<_>>();
-    for (script_key, script) in &world.scripts {
-        if source_keys.contains(script_key) {
+}
+
+/// Checks external facts against only source script names and ancestry.
+pub(super) fn validate_external_world(
+    world: &World,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<Diagnostic>, AnalysisCancelled> {
+    let mut diagnostics = Vec::new();
+    for script in world
+        .scripts
+        .values()
+        .filter(|script| script.definition.is_none())
+    {
+        if cancelled() {
+            return Err(AnalysisCancelled);
+        }
+        if let Some(parent) = &script.parent
+            && !world.scripts.contains_key(&key(parent))
+        {
+            diagnostics.push(Diagnostic::new(
+                "semantic.unknown-parent",
+                Severity::Error,
+                format!(
+                    "external script {} has unknown parent {parent}",
+                    script.name
+                ),
+            ));
+        }
+        let mut visited = HashSet::new();
+        let mut current = Some(key(&script.name));
+        while let Some(name) = current {
+            if !visited.insert(name.clone()) {
+                diagnostics.push(Diagnostic::new(
+                    "semantic.inheritance-cycle",
+                    Severity::Error,
+                    format!(
+                        "external script {} participates in an inheritance cycle",
+                        script.name
+                    ),
+                ));
+                break;
+            }
+            current = world
+                .scripts
+                .get(&name)
+                .and_then(|item| item.parent.as_ref())
+                .map(|parent| key(parent));
+        }
+        for member in script
+            .members
+            .values()
+            .chain(script.states.values().flat_map(|members| members.values()))
+        {
+            for ty in
+                std::iter::once(&member.ty).chain(member.parameters.iter().map(|(_, ty, _)| ty))
+            {
+                if !known_type(world, ty) {
+                    diagnostics.push(Diagnostic::new(
+                        "semantic.unknown-type",
+                        Severity::Error,
+                        format!(
+                            "external member {}.{} has unknown type {ty:?}",
+                            script.name, member.name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    for script in world.scripts.values() {
+        if cancelled() {
+            return Err(AnalysisCancelled);
+        }
+        if script.definition.is_some() {
             continue;
         }
         if let Some(parent) = &script.parent {
             if !world.scripts.contains_key(&key(parent)) {
-                analysis.project_diagnostics.push(Diagnostic::new(
+                diagnostics.push(Diagnostic::new(
                     "semantic.unknown-parent",
                     Severity::Error,
                     format!(
@@ -348,10 +350,10 @@ pub(super) fn validate_world(
                 ));
             } else {
                 let mut visited = HashSet::new();
-                let mut current = Some(script_key.clone());
+                let mut current = Some(key(&script.name));
                 while let Some(name) = current {
                     if !visited.insert(name.clone()) {
-                        analysis.project_diagnostics.push(Diagnostic::new(
+                        diagnostics.push(Diagnostic::new(
                             "semantic.inheritance-cycle",
                             Severity::Error,
                             format!(
@@ -379,13 +381,38 @@ pub(super) fn validate_world(
                 std::iter::once(&member.ty).chain(member.parameters.iter().map(|(_, ty, _)| ty))
             {
                 if !known_type(world, ty) {
-                    analysis.project_diagnostics.push(Diagnostic::new(
+                    diagnostics.push(Diagnostic::new(
                         "semantic.unknown-type",
                         Severity::Error,
                         format!(
                             "external script {} member {} refers to unknown type {ty:?}",
                             script.name, member.name
                         ),
+                    ));
+                }
+            }
+        }
+    }
+    if cancelled() {
+        return Err(AnalysisCancelled);
+    }
+    Ok(diagnostics)
+}
+
+/// Literal defaults do not depend on the source-selected inheritance world.
+pub(super) fn validate_external_defaults(script: &ScriptInfo, diagnostics: &mut Vec<Diagnostic>) {
+    for member in script
+        .members
+        .values()
+        .chain(script.states.values().flat_map(|members| members.values()))
+    {
+        for (name, ty, default) in &member.parameters {
+            if let ParameterDefault::Literal(text) = default {
+                let actual = literal_type(text);
+                if !constant_matches_type(text, ty) {
+                    diagnostics.push(Diagnostic::new(
+                        "semantic.parameter-default-type", Severity::Error,
+                        format!("external {}.{} default for {name} is not a valid {ty:?} literal (found {actual:?})", script.name, member.name),
                     ));
                 }
             }

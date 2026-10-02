@@ -9,6 +9,7 @@ This is the workspace's record of outstanding work and unresolved verification. 
 
 ## Tooling and editor services
 
+- Verify loading progress, deferred semantic highlighting, refresh after readiness, reconnect, shutdown, and sustained editing with Cadence in real VS Code. Stdio probes do not establish UI behavior or long-session CPU/memory stability. Investigate the reported interruption separately; retained logs do not establish a language-server crash.
 - Verify missing repository carrier recovery, ambiguous dual carriers, path alias retargeting, and PSC navigation across drives in a real editor.
 - Verify LSP session cache reuse, buffer close recovery, dynamic watch registration, stale and cancelled navigation responses, and stdio message framing in a real editor. Compilation and in-memory Rust tests do not verify these session behaviors.
 - Add `folio explain` for stable diagnostic codes, separating general explanations from rejection reasons in a specific project.

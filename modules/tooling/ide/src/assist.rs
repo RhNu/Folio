@@ -4,6 +4,7 @@ use folio_build::ProjectAnalysisView;
 use folio_hir::{ExpressionKind, Symbol, Type};
 use folio_papyrus::SyntaxKind;
 use folio_source::{FileId, TextRange};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompletionItem {
@@ -14,6 +15,19 @@ pub struct CompletionItem {
     pub replacement: TextRange,
     pub insert_text: String,
     pub documentation: Option<String>,
+    /// Receiver type retained for lazy presentation of array intrinsics.
+    pub receiver: Option<Type>,
+}
+
+/// Expands only the selected completion into its full declaration and documentation.
+pub fn completion_hover(view: &ProjectAnalysisView, item: &CompletionItem) -> Option<crate::Hover> {
+    let symbol = item.symbol.as_ref()?;
+    tracing::debug!(?symbol, "resolving completion presentation");
+    if let Symbol::Intrinsic { name } = symbol {
+        crate::presentation::intrinsic_hover(name, item.receiver.as_ref())
+    } else {
+        crate::hover_symbol(view, symbol)
+    }
 }
 
 /// Offers selected semantic names; the checker owns scope and member precedence.
@@ -81,6 +95,17 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
         }
     }
     let replacement = TextRange { start, end };
+    let prefix = prefix.to_ascii_lowercase();
+    let mut members = HashMap::new();
+    for member in script
+        .members
+        .iter()
+        .chain(&script.external_members)
+        .chain(&script.referenced_members)
+    {
+        members.entry(&member.symbol).or_insert(member);
+    }
+    let mut external_kinds = HashMap::new();
     let mut result = view
         .analysis
         .completion_candidates(file, byte, receiver, global)
@@ -88,15 +113,10 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
         .filter(|candidate| {
             name(&candidate.symbol)
                 .to_ascii_lowercase()
-                .starts_with(&prefix.to_ascii_lowercase())
+                .starts_with(&prefix)
         })
         .map(|candidate| {
             let label = name(&candidate.symbol).to_owned();
-            let hover = if let Symbol::Intrinsic { name } = &candidate.symbol {
-                crate::presentation::intrinsic_hover(name, receiver)
-            } else {
-                crate::hover_symbol(view, &candidate.symbol)
-            };
             let kind = match &candidate.symbol {
                 Symbol::Script(_) => 7,
                 Symbol::Parameter { .. } | Symbol::Local { .. } => 6,
@@ -110,21 +130,11 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
                     }
                 }
                 _ => {
-                    let member = symbols::find_member(&script, &candidate.symbol);
+                    let member = members.get(&candidate.symbol);
                     match member.map(|item| &item.kind) {
                         Some(folio_hir::MemberKind::Function { .. }) => 3,
                         Some(folio_hir::MemberKind::Property { .. }) => 10,
-                        _ => match crate::presentation::external_member(view, &candidate.symbol)
-                            .map(|member| member.kind())
-                        {
-                            Some(
-                                folio_format_declarations::MemberKind::Function
-                                | folio_format_declarations::MemberKind::Event
-                                | folio_format_declarations::MemberKind::UnknownCallable,
-                            ) => 3,
-                            Some(folio_format_declarations::MemberKind::Property) => 10,
-                            _ => 6,
-                        },
+                        _ => external_completion_kind(view, &candidate.symbol, &mut external_kinds),
                     }
                 }
             };
@@ -132,11 +142,11 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
                 label: label.clone(),
                 insert_text: label,
                 kind,
-                detail: hover.as_ref().map_or_else(
-                    || crate::display_type(&candidate.ty),
-                    |hover| hover.declaration.clone(),
-                ),
-                documentation: hover.and_then(|hover| hover.documentation),
+                detail: crate::display_type(&candidate.ty),
+                documentation: None,
+                receiver: matches!(candidate.symbol, Symbol::Intrinsic { .. })
+                    .then(|| receiver.cloned())
+                    .flatten(),
                 symbol: Some(candidate.symbol),
                 replacement,
             }
@@ -179,10 +189,7 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
             "Native",
             "Auto State",
         ] {
-            if keyword
-                .to_ascii_lowercase()
-                .starts_with(&prefix.to_ascii_lowercase())
-            {
+            if keyword.to_ascii_lowercase().starts_with(&prefix) {
                 result.push(CompletionItem {
                     label: keyword.into(),
                     detail: "Papyrus keyword".into(),
@@ -191,6 +198,7 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
                     replacement,
                     insert_text: keyword.into(),
                     documentation: None,
+                    receiver: None,
                 });
             }
         }
@@ -201,7 +209,61 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
             .cmp(&b.label.to_ascii_lowercase())
     });
     result.dedup_by(|a, b| a.label.eq_ignore_ascii_case(&b.label));
+    tracing::debug!(
+        ?file,
+        byte,
+        candidates = result.len(),
+        "completion candidates collected"
+    );
     result
+}
+
+type ExternalKinds = HashMap<String, HashMap<(Option<String>, String), u32>>;
+
+/// Index declaration kinds once per owner, without rendering candidate signatures or docs.
+fn external_completion_kind(
+    view: &ProjectAnalysisView,
+    symbol: &Symbol,
+    kinds: &mut ExternalKinds,
+) -> u32 {
+    let (owner, state, name) = match symbol {
+        Symbol::Member { script, name } => (script, None, name),
+        Symbol::StateMember {
+            script,
+            state,
+            name,
+        } => (script, Some(state.to_ascii_lowercase()), name),
+        _ => return 6,
+    };
+    let members = kinds.entry(owner.to_ascii_lowercase()).or_insert_with(|| {
+        let mut result = HashMap::new();
+        if let Some(script) = view.analysis.external_script(owner) {
+            for (state, member) in script.members.iter().map(|member| (None, member)).chain(
+                script.states.iter().flat_map(|state| {
+                    state
+                        .members
+                        .iter()
+                        .map(move |member| (Some(state.name.to_ascii_lowercase()), member))
+                }),
+            ) {
+                let kind = match member.kind() {
+                    folio_format_declarations::MemberKind::Function
+                    | folio_format_declarations::MemberKind::Event
+                    | folio_format_declarations::MemberKind::UnknownCallable => 3,
+                    folio_format_declarations::MemberKind::Property => 10,
+                    _ => 6,
+                };
+                result
+                    .entry((state, member.name.to_ascii_lowercase()))
+                    .or_insert(kind);
+            }
+        }
+        result
+    });
+    members
+        .get(&(state, name.to_ascii_lowercase()))
+        .copied()
+        .unwrap_or(6)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

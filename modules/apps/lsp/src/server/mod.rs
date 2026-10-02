@@ -10,7 +10,7 @@ use folio_project_resolve::{LoadedProject, io::FolioHome};
 use folio_source::FileId;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -21,10 +21,12 @@ use std::{
 
 mod diagnostics;
 mod editor;
+mod loading;
 mod overlays;
 mod presentation;
 mod project;
 mod requests;
+mod scheduling;
 mod settings;
 
 /// Session inputs and publication state shared by handlers and navigation workers.
@@ -34,9 +36,15 @@ pub(super) struct Server {
     manifest_path: Option<PathBuf>,
     output: Output,
     documents: Documents,
-    project: ProjectAnalysis,
-    disk_project: Option<(LoadedProject, Metadata)>,
-    projected_inputs: Option<LoadedProject>,
+    projected_inputs: Option<Arc<LoadedProject>>,
+    loader: Option<loading::Loader>,
+    loading: bool,
+    reload: scheduling::ReloadSchedule,
+    status_supported: bool,
+    semantic_tokens_refresh: bool,
+    queries: scheduling::QueryPool,
+    completions: editor::CompletionCache,
+    deferred: VecDeque<(Value, String, Value, u64)>,
     view: Option<Arc<ProjectAnalysisView>>,
     metadata: Option<Arc<Metadata>>,
     paths: BTreeMap<PathBuf, FileId>,
@@ -75,9 +83,15 @@ impl Server {
             manifest_path,
             output,
             documents: Documents::default(),
-            project: ProjectAnalysis::new(),
-            disk_project: None,
             projected_inputs: None,
+            loader: None,
+            loading: false,
+            reload: scheduling::ReloadSchedule::default(),
+            status_supported: false,
+            semantic_tokens_refresh: false,
+            queries: scheduling::QueryPool::new(),
+            completions: editor::CompletionCache::default(),
+            deferred: VecDeque::new(),
             view: None,
             metadata: None,
             paths: BTreeMap::new(),
@@ -151,6 +165,11 @@ impl Server {
                     }
                 }
                 self.initialized = true;
+                self.status_supported =
+                    params["initializationOptions"]["folio"]["status"].as_bool() == Some(true);
+                self.semantic_tokens_refresh = params["capabilities"]["workspace"]["semanticTokens"]
+                    ["refreshSupport"]
+                    .as_bool() == Some(true);
                 let name = match self.encoding {
                     PositionEncoding::Utf8 => "utf-8",
                     PositionEncoding::Utf16 => "utf-16",
@@ -252,11 +271,27 @@ impl Server {
                     }
                 }
             }
-            "textDocument/didSave" => self.reload_report(true)?,
-            "workspace/didChangeWatchedFiles" => self.reload_report(true)?,
+            "textDocument/didSave" => {
+                if self.file_event_relevant(&params["textDocument"]["uri"]) {
+                    self.reload_report(true)?;
+                }
+            }
+            "workspace/didChangeWatchedFiles" => {
+                if params["changes"].as_array().is_some_and(|changes| {
+                    changes
+                        .iter()
+                        .any(|change| self.file_event_relevant(&change["uri"]))
+                }) {
+                    self.reload_report(true)?;
+                }
+            }
             "workspace/didChangeConfiguration" => {
                 self.editor_settings = settings::EditorSettings::read(&params["settings"]);
-                self.advance_generation()?;
+                if self.loading {
+                    self.reload_report(false)?;
+                } else {
+                    self.advance_generation()?;
+                }
                 self.refresh_editor()?;
                 tracing::debug!(?self.editor_settings, "updated editor presentation settings");
             }

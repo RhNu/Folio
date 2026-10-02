@@ -70,6 +70,101 @@ fn source(text: &str) -> Arc<str> {
 }
 
 #[test]
+fn repeated_hir_queries_share_the_completed_model_and_old_views_retain_it() {
+    let mut host = AnalysisHost::new();
+    let file = FileId(0);
+    host.upsert(
+        file,
+        Revision(1),
+        source("ScriptName Shared\nInt Function Value()\n Return 1\nEndFunction\n"),
+        PapyrusDialect::Skyrim,
+    )
+    .unwrap();
+    let old = host.view();
+    let first = old.hir(file).unwrap();
+    assert!(Arc::ptr_eq(&first, &old.hir(file).unwrap()));
+    assert!(Arc::ptr_eq(&first, &host.view().hir(file).unwrap()));
+    host.upsert(
+        file,
+        Revision(2),
+        source("ScriptName Changed\n"),
+        PapyrusDialect::Skyrim,
+    )
+    .unwrap();
+    let changed = host.view().hir(file).unwrap();
+    assert_eq!(changed.name.as_ref().unwrap().text, "Changed");
+    assert_eq!(first.name.as_ref().unwrap().text, "Shared");
+    assert!(Arc::ptr_eq(&first, &old.hir(file).unwrap()));
+}
+
+#[test]
+fn indexed_external_selection_is_case_insensitive_and_retains_old_views() {
+    let mut host = AnalysisHost::new();
+    let first = folio_format_declarations::decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[]}]}"#).unwrap();
+    let duplicate = folio_format_declarations::decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"BASE","parent":"Other","members":[]}]}"#).unwrap();
+    host.set_external_declarations(vec![first, duplicate]);
+    let old = host.view();
+    assert_eq!(old.external_script("bAsE").unwrap().name, "Base");
+    assert!(old.external_script("base").unwrap().parent.is_none());
+    assert!(old.external_script("missing").is_none());
+    host.set_external_declarations(vec![]);
+    assert!(host.view().external_script("Base").is_none());
+    assert!(old.external_script("Base").is_some());
+}
+
+#[test]
+fn external_validation_tracks_source_type_visibility_and_inheritance() {
+    let mut host = AnalysisHost::new();
+    let bundle = folio_format_declarations::decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"External","parent":"Local","members":[]}]}"#).unwrap();
+    host.set_external_declarations(vec![bundle]);
+    let absent = host.view();
+    assert!(
+        absent
+            .project_diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "semantic.unknown-parent")
+    );
+    let file = FileId(0);
+    host.upsert(
+        file,
+        Revision(1),
+        source("ScriptName Local\n"),
+        PapyrusDialect::Skyrim,
+    )
+    .unwrap();
+    let valid = host.view();
+    assert!(valid.project_diagnostics().is_empty());
+    host.upsert(
+        file,
+        Revision(2),
+        source("ScriptName Local\nFunction Work() Native\n"),
+        PapyrusDialect::Skyrim,
+    )
+    .unwrap();
+    assert!(host.view().project_diagnostics().is_empty());
+    host.upsert(
+        file,
+        Revision(3),
+        source("ScriptName Local Extends External\n"),
+        PapyrusDialect::Skyrim,
+    )
+    .unwrap();
+    assert!(
+        host.view()
+            .project_diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "semantic.inheritance-cycle")
+    );
+    assert!(valid.project_diagnostics().is_empty());
+    assert!(
+        absent
+            .project_diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "semantic.unknown-parent")
+    );
+}
+
+#[test]
 fn replacement_and_removal_leave_old_views_consistent() {
     let mut host = AnalysisHost::new();
     let file = FileId(7);
