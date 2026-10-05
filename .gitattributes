@@ -1,0 +1,27 @@
+# Normalize text in the repository and use LF on every platform.
+* text=auto eol=lf
+*.rs text eol=lf
+
+# Use CRLF for Windows command scripts.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Keep common binary assets and build artifacts out of text conversion and merging.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.7z binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.exe binary
+*.dll binary
+
+# Papyrus bytecode is binary; declaration files use automatic content detection.
+*.pex binary
