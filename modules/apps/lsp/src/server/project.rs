@@ -124,6 +124,8 @@ impl Server {
                                 generation,
                                 prepared.diagnostics,
                             )?;
+                            self.ide =
+                                Some(folio_ide::IdeSnapshot::new(Arc::clone(&prepared.view)));
                             self.view = Some(prepared.view);
                             self.metadata = Some(prepared.metadata);
                             self.projected_inputs = Some(prepared.loaded);

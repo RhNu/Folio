@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use folio_build::ProjectAnalysisView;
 use folio_hir::Type;
 use folio_source::{FileId, LineIndex, SourceSpan, TextRange};
 
@@ -12,6 +11,8 @@ mod assist;
 mod external;
 mod language_help;
 mod navigation;
+mod snapshot;
+pub use snapshot::IdeSnapshot;
 mod presentation;
 mod rename;
 mod symbols;
@@ -319,7 +320,7 @@ pub struct Hover {
 }
 
 /// Returns a typed hover from the same semantic facts used by project checks.
-pub fn hover(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Option<Hover> {
+pub fn hover(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<Hover> {
     if !view.analysis.text(file)?.is_char_boundary(byte) {
         return None;
     }
@@ -528,7 +529,7 @@ pub(crate) fn display_type(ty: &Type) -> String {
     }
 }
 
-pub fn definition(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Option<SourceSpan> {
+pub fn definition(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<SourceSpan> {
     view.analysis.definition(file, byte)
 }
 

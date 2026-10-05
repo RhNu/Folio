@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/node';
+import { DeclarationRefresh } from './declarationRefresh';
 import {
   declarationText, isLocation, isNavigationUri, isPosition, isRange, ProtocolPosition, ProtocolRange,
 } from './editorOptions';
@@ -24,6 +25,9 @@ function range(value: ProtocolRange): vscode.Range {
 /** Fetches declaration snapshots on demand; buffers belong exclusively to the server. */
 export class DeclarationDocuments implements vscode.TextDocumentContentProvider, vscode.Disposable {
   private readonly changes = new vscode.EventEmitter<vscode.Uri>();
+  private readonly refreshes = new DeclarationRefresh();
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private session = 0;
   readonly onDidChange = this.changes.event;
 
   constructor(private readonly activeClient: () => LanguageClient | undefined) {}
@@ -31,20 +35,36 @@ export class DeclarationDocuments implements vscode.TextDocumentContentProvider,
   async provideTextDocumentContent(uri: vscode.Uri, token: vscode.CancellationToken): Promise<string> {
     const client = this.activeClient();
     if (!client) { throw new Error('The Folio language server is not connected.'); }
+    const session = this.session;
     const result = await client.sendRequest<unknown>(
       'folio/declarationContent', { uri: uri.toString() }, token,
     );
+    if (token.isCancellationRequested || session !== this.session || client !== this.activeClient()) {
+      throw new vscode.CancellationError();
+    }
     return declarationText(result);
   }
 
   /** Requery only open declaration buffers when the server's project inputs change. */
-  refresh(): void {
-    for (const document of vscode.workspace.textDocuments) {
-      if (document.uri.scheme === 'folio-declaration') { this.changes.fire(document.uri); }
-    }
+  refresh(generation?: number): void {
+    if (!this.refreshes.request(generation) || this.timer !== undefined) { return; }
+    // Keep the first deadline so sustained edits cannot postpone a refresh forever.
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      if (!this.refreshes.take() || !this.activeClient()) { return; }
+      for (const document of vscode.workspace.textDocuments) {
+        if (document.uri.scheme === 'folio-declaration') { this.changes.fire(document.uri); }
+      }
+    }, 40);
   }
 
-  dispose(): void { this.changes.dispose(); }
+  reset(): void {
+    this.session += 1;
+    if (this.timer !== undefined) { clearTimeout(this.timer); this.timer = undefined; }
+    this.refreshes.reset();
+  }
+
+  dispose(): void { this.reset(); this.changes.dispose(); }
 }
 
 /** Registers a small command allowlist used by server-generated navigation links. */

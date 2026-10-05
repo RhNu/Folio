@@ -146,6 +146,8 @@ impl Worker {
         if obsolete() {
             return Ok(None);
         }
+        let load_us = started.elapsed().as_micros();
+        let projection_started = Instant::now();
         let (disk, metadata) = self.disk.as_ref().expect("loaded project");
         let disk_sources = disk.source_inputs.clone();
         let mut loaded = disk.clone();
@@ -190,9 +192,13 @@ impl Worker {
                 .sync_project(&loaded, &metadata)
                 .map_err(|error| error.to_string())?,
         );
+        let projection_us = projection_started.elapsed().as_micros();
+        let analysis_started = Instant::now();
         if view.analysis.try_warm_semantics(obsolete).is_err() {
             return Ok(None);
         }
+        let analysis_us = analysis_started.elapsed().as_micros();
+        let diagnostics_started = Instant::now();
         let mut diagnostics = view.diagnostics();
         let lint = LintConfig::from_rules(&loaded.root.manifest.lint_rules)
             .map_err(|error| error.to_string())?;
@@ -216,6 +222,10 @@ impl Worker {
         tracing::debug!(
             generation = job.generation,
             files,
+            load_us,
+            projection_us,
+            analysis_us,
+            diagnostics_us = diagnostics_started.elapsed().as_micros(),
             elapsed_us = started.elapsed().as_micros(),
             "prepared LSP project snapshot"
         );

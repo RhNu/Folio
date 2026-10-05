@@ -7,6 +7,7 @@ use folio_ide::PositionIndex;
 impl Server {
     pub(super) fn clear_view(&mut self) -> Result<(), LspError> {
         self.view = None;
+        self.ide = None;
         self.projected_inputs = None;
         self.metadata = None;
         self.paths.clear();

@@ -5,7 +5,7 @@ use folio_format_declarations::{
     DeclarationBundle, Member, MemberData, Origin, Parameter, ParameterDefault, Script,
 };
 
-fn external() -> ProjectAnalysisView {
+fn external() -> IdeSnapshot {
     let member = Member {
         name: "Work".into(),
         documentation: Some("Performs work.".into()),
@@ -43,11 +43,11 @@ fn external() -> ProjectAnalysisView {
     };
     let mut host = AnalysisHost::new();
     host.set_external_declarations(vec![bundle]);
-    ProjectAnalysisView {
+    IdeSnapshot::from(folio_build::ProjectAnalysisView {
         analysis: host.view(),
         sources: Default::default(),
         issues: Vec::new(),
-    }
+    })
 }
 
 #[test]
@@ -100,7 +100,11 @@ fn external_manual_property_hover_includes_known_accessor_shapes() {
     });
     let mut host = AnalysisHost::new();
     host.set_external_declarations(vec![bundle]);
-    view.analysis = host.view();
+    view = IdeSnapshot::from(folio_build::ProjectAnalysisView {
+        analysis: host.view(),
+        sources: view.sources.clone(),
+        issues: Vec::new(),
+    });
     let hover = hover_symbol(
         &view,
         &Symbol::Member {

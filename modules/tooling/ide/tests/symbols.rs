@@ -1,5 +1,4 @@
 //! Public crate behavior over in-memory inputs.
-use folio_build::ProjectAnalysisView;
 use folio_ide::*;
 use folio_source::FileId;
 
@@ -9,7 +8,7 @@ use std::sync::Arc;
 use folio_build::{ProjectAnalysis, ProjectSource};
 use folio_papyrus::PapyrusDialect;
 
-fn view(text: &str) -> (ProjectAnalysisView, FileId) {
+fn view(text: &str) -> (IdeSnapshot, FileId) {
     let mut project = ProjectAnalysis::new();
     let view = project
         .sync_sources([ProjectSource {
@@ -22,7 +21,7 @@ fn view(text: &str) -> (ProjectAnalysisView, FileId) {
         }])
         .unwrap();
     let file = *view.sources.keys().next().unwrap();
-    (view, file)
+    (view.into(), file)
 }
 
 #[test]
@@ -140,6 +139,7 @@ fn declaration_navigation_reaches_selected_dependency_source() {
             },
         ])
         .unwrap();
+    let view = IdeSnapshot::from(view);
     let child = view
         .sources
         .iter()

@@ -1,7 +1,7 @@
 //! Project rename is accepted only after rechecking the complete edited semantic input.
+use crate::IdeSnapshot;
 use crate::navigation::{self, SymbolOccurrence, name, same};
 use folio_analysis::AnalysisHost;
-use folio_build::ProjectAnalysisView;
 use folio_hir::{MemberKind, Symbol};
 use folio_source::{FileId, Revision, SourceSpan};
 
@@ -47,7 +47,7 @@ pub struct RenameEdit {
 }
 
 pub fn prepare_rename(
-    view: &ProjectAnalysisView,
+    view: &IdeSnapshot,
     file: FileId,
     byte: usize,
 ) -> Result<RenameTarget, RenameError> {
@@ -149,7 +149,7 @@ fn valid_name(value: &str) -> bool {
 }
 
 pub fn rename(
-    view: &ProjectAnalysisView,
+    view: &IdeSnapshot,
     file: FileId,
     byte: usize,
     new_name: &str,
@@ -232,11 +232,11 @@ pub fn rename(
     {
         return Err(RenameError::Collision);
     }
-    let edited = ProjectAnalysisView {
+    let edited = IdeSnapshot::from(folio_build::ProjectAnalysisView {
         analysis,
         sources: view.sources.clone(),
         issues: Vec::new(),
-    };
+    });
     // Every original occurrence must retain its selected declaration, including unrelated names.
     for file in view.analysis.file_ids() {
         for original in navigation::occurrences(view, file) {

@@ -12,7 +12,7 @@ pub(super) use completions::CompletionCache;
 
 #[derive(Clone)]
 pub(super) struct QueryContext {
-    view: Option<Arc<ProjectAnalysisView>>,
+    view: Option<folio_ide::IdeSnapshot>,
     metadata: Option<Arc<Metadata>>,
     loaded: Option<Arc<LoadedProject>>,
     paths: BTreeMap<PathBuf, FileId>,
@@ -30,12 +30,64 @@ pub(super) struct QueryContext {
 
 pub(super) type QueryResult = Result<Value, (i32, String)>;
 
+/// Retains the original arrival time while the matching project snapshot is loading.
+pub(super) struct DeferredQuery {
+    id: Value,
+    method: String,
+    params: Value,
+    generation: u64,
+    received: Instant,
+}
+
+/// Only interchangeable automatic requests may supersede each other while waiting.
+fn query_meta(id: &str, generation: u64, method: &str, params: &Value) -> scheduling::QueryMeta {
+    let interactive = matches!(
+        method,
+        "textDocument/completion"
+            | "completionItem/resolve"
+            | "textDocument/hover"
+            | "textDocument/signatureHelp"
+            | "textDocument/definition"
+            | "textDocument/declaration"
+            | "textDocument/documentSymbol"
+            | "textDocument/documentHighlight"
+    );
+    let coalesce_key = matches!(
+        method,
+        "textDocument/semanticTokens/full" | "textDocument/codeLens" | "textDocument/inlayHint"
+    )
+    .then(|| format!("{method}:{params}"));
+    scheduling::QueryMeta {
+        id: id.into(),
+        generation,
+        interactive,
+        coalesce_key,
+    }
+}
+
+/// Retire bookkeeping before making a response visible: clients may then reuse its id.
+fn finish_request(
+    pending: &Mutex<BTreeSet<String>>,
+    cancelled: &Mutex<BTreeSet<String>>,
+    key: &str,
+    publish: impl FnOnce() -> Result<(), LspError>,
+) -> Result<(), LspError> {
+    if let Ok(mut items) = pending.lock() {
+        items.remove(key);
+        if let Ok(mut items) = cancelled.lock() {
+            items.remove(key);
+        }
+    }
+    publish()
+}
+
 impl Server {
     pub(super) fn editor_request(
         &mut self,
         id: Value,
         method: &str,
         params: &Value,
+        received: Instant,
     ) -> Result<(), LspError> {
         if self.shutdown {
             return self.error(id, -32800, "server is shutting down");
@@ -61,16 +113,29 @@ impl Server {
                 .lock()
                 .map_err(|_| LspError::Protocol("pending lock poisoned".into()))?
                 .insert(id.to_string());
-            self.deferred.push_back((
+            self.deferred.push_back(DeferredQuery {
                 id,
-                method.to_owned(),
-                params.clone(),
-                self.generation.load(Ordering::SeqCst),
-            ));
+                method: method.to_owned(),
+                params: params.clone(),
+                generation: self.generation.load(Ordering::SeqCst),
+                received,
+            });
             return Ok(());
         }
-        let context = QueryContext {
-            view: self.view.clone(),
+        self.enqueue_query(id, method, params, received, 0)
+    }
+
+    fn enqueue_query(
+        &mut self,
+        id: Value,
+        method: &str,
+        params: &Value,
+        received: Instant,
+        loading_wait_us: u128,
+    ) -> Result<(), LspError> {
+        let context_started = Instant::now();
+        let mut context = QueryContext {
+            view: self.ide.clone(),
             metadata: self.metadata.clone(),
             loaded: self.projected_inputs.clone(),
             paths: self.paths.clone(),
@@ -111,25 +176,41 @@ impl Server {
             .insert(key.clone());
         let rejected_id = id.clone();
         let rejected_key = key.clone();
-        let accepted = self.queries.submit(move || {
+        let meta = query_meta(&key, context.generation, &method, &params);
+        let cancelled_id = id.clone();
+        let cancelled_key = key.clone();
+        let cancelled_method = method.clone();
+        let cancelled_output = Arc::clone(&output);
+        let cancelled_pending = Arc::clone(&pending);
+        let cancelled_items = Arc::clone(&cancelled);
+        let context_us = context_started.elapsed().as_micros();
+        let queued = Instant::now();
+        let accepted = self.queries.submit(meta, move || {
             let started = Instant::now();
-            let obsolete = || {
+            let queue_wait_us = queued.elapsed().as_micros();
+            let request_generation = context.generation;
+            let query_cancelled = Arc::clone(&cancelled);
+            let query_key = key.clone();
+            let obsolete: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
                 requests::request_stale(
-                    context.generation,
+                    request_generation,
                     generation.load(Ordering::SeqCst),
-                    cancelled.lock().is_ok_and(|items| items.contains(&key)),
+                    query_cancelled.lock().is_ok_and(|items| items.contains(&query_key)),
                 )
-            };
+            });
+            context.view = context.view.map(|view| view.with_cancellation(Arc::clone(&obsolete)));
             let result = if obsolete()
                 || context
                     .view
                     .as_ref()
-                    .is_some_and(|view| view.analysis.try_warm_semantics(obsolete).is_err())
+                    .is_some_and(|view| view.analysis.try_warm_semantics(|| obsolete()).is_err())
             {
                 Err((-32800, "request cancelled".into()))
             } else {
                 context.answer(&method, &params)
             };
+            let query_us = started.elapsed().as_micros();
+            let publication_started = Instant::now();
             // The handler cannot invalidate or cancel between this check and the write.
             let publication_guard = publication.lock();
             let result = if publication_guard.is_err() {
@@ -139,28 +220,41 @@ impl Server {
             } else {
                 result
             };
+            let publication_wait_us = publication_started.elapsed().as_micros();
+            let cancelled_response = result.as_ref().is_err_and(|error| error.0 == -32800);
+            let response_started = Instant::now();
             let response = match result {
                 Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
                 Err((code, message)) => {
                     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
                 }
             };
-            if let Err(error) = send(&output, &response) {
+            if let Err(error) = finish_request(&pending, &cancelled, &key, || send(&output, &response)) {
                 tracing::error!(%error, method, "failed to send editor query response");
             }
             drop(publication_guard);
             tracing::debug!(
                 method,
                 generation = context.generation,
-                elapsed_us = started.elapsed().as_micros(),
+                loading_wait_us,
+                context_us,
+                queue_wait_us,
+                query_us,
+                publication_wait_us,
+                response_us = response_started.elapsed().as_micros(),
+                elapsed_us = received.elapsed().as_micros(),
+                cancelled = cancelled_response,
                 "completed editor query"
             );
-            if let Ok(mut items) = pending.lock() {
-                items.remove(&key);
-                if let Ok(mut items) = cancelled.lock() {
-                    items.remove(&key);
-                }
+        }, move || {
+            let response = json!({"jsonrpc":"2.0","id":cancelled_id,
+                "error":{"code":-32800,"message":"queued request cancelled"}});
+            if let Err(error) = finish_request(&cancelled_pending, &cancelled_items, &cancelled_key,
+                || send(&cancelled_output, &response)) {
+                tracing::error!(%error, method = cancelled_method, "failed to send query cancellation");
             }
+            tracing::debug!(method = cancelled_method, loading_wait_us,
+                elapsed_us = received.elapsed().as_micros(), "cancelled queued editor query");
         });
         if !accepted {
             if let Ok(mut pending) = self.pending.lock() {
@@ -177,7 +271,14 @@ impl Server {
     }
 
     pub(super) fn poll_deferred(&mut self) -> Result<(), LspError> {
-        for (id, method, params, generation) in std::mem::take(&mut self.deferred) {
+        for query in std::mem::take(&mut self.deferred) {
+            let DeferredQuery {
+                id,
+                method,
+                params,
+                generation,
+                received,
+            } = query;
             let key = id.to_string();
             let cancelled = self
                 .cancelled
@@ -185,7 +286,13 @@ impl Server {
                 .is_ok_and(|items| items.contains(&key));
             let stale = generation != self.generation.load(Ordering::SeqCst);
             if self.loading && !cancelled && !stale && !self.shutdown {
-                self.deferred.push_back((id, method, params, generation));
+                self.deferred.push_back(DeferredQuery {
+                    id,
+                    method,
+                    params,
+                    generation,
+                    received,
+                });
                 continue;
             }
             if let Ok(mut items) = self.pending.lock() {
@@ -196,8 +303,20 @@ impl Server {
             }
             if cancelled || stale || self.shutdown {
                 self.error(id, -32800, "loading query cancelled")?;
+                tracing::debug!(
+                    method,
+                    generation,
+                    elapsed_us = received.elapsed().as_micros(),
+                    "cancelled deferred editor query"
+                );
             } else {
-                self.editor_request(id, &method, &params)?;
+                self.enqueue_query(
+                    id,
+                    &method,
+                    &params,
+                    received,
+                    received.elapsed().as_micros(),
+                )?;
             }
         }
         Ok(())

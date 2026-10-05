@@ -160,7 +160,11 @@ fn warning_only_analysis_allows_independently_verified_local_rename() {
         view.analysis.dialect(file).unwrap(),
     )
     .unwrap();
-    view.analysis = host.view();
+    view = IdeSnapshot::from(folio_build::ProjectAnalysisView {
+        analysis: host.view(),
+        sources: view.sources.clone(),
+        issues: Vec::new(),
+    });
     let diagnostics = view.analysis.diagnostics(file).unwrap();
     assert!(
         diagnostics

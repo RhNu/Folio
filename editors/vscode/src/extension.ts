@@ -52,6 +52,16 @@ function showStatus(label: string, tooltip: string): void {
   status.show();
 }
 
+/** Measures the full client wait, including server loading and query queues. */
+async function timedQuery<T>(method: string, action: () => T | Thenable<T>): Promise<T> {
+  const started = performance.now();
+  try {
+    return await action();
+  } finally {
+    output.debug(`Folio ${method}: ${(performance.now() - started).toFixed(1)} ms.`);
+  }
+}
+
 /** Checks an executable candidate without treating a directory as a launchable file. */
 function isExecutableFile(candidate: string): boolean {
   try {
@@ -182,6 +192,14 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
     initializationOptions: () => editorSettings(folder),
     markdown: { isTrusted: { enabledCommands: navigationCommands }, supportHtml: false },
     middleware: {
+      provideCompletionItem: (document, position, context, token, next) =>
+        timedQuery('completion', () => next(document, position, context, token)),
+      resolveCompletionItem: (item, token, next) =>
+        timedQuery('completion resolve', () => next(item, token)),
+      provideHover: (document, position, token, next) =>
+        timedQuery('hover', () => next(document, position, token)),
+      provideSignatureHelp: (document, position, context, token, next) =>
+        timedQuery('signature help', () => next(document, position, context, token)),
       provideDocumentSemanticTokens: (document, token, next) =>
         projectStatus.loading ? null : next(document, token),
       provideDocumentSemanticTokensEdits: (document, previous, token, next) =>
@@ -220,9 +238,11 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
         if (!shuttingDown) { output.error(`Folio reconnect refresh failed: ${String(error)}`); }
       });
     } else if (event.newState === State.Starting) {
+      declarations.reset();
       projectStatus.reset();
       showStatus('$(sync~spin) Folio', 'Folio language server is starting.');
     } else {
+      declarations.reset();
       projectStatus.reset();
       showStatus('$(warning) Folio', 'Folio language server stopped. Use Folio: Restart Language Server.');
     }
@@ -233,7 +253,7 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
     fileWatcher = watcher;
     clientEvents.push(nextClient.onNotification('folio/projectChanged', (params: { generation: number }) => {
       output.debug(`Folio project changed: generation ${params.generation}.`);
-      declarations.refresh();
+      declarations.refresh(params.generation);
     }));
     clientEvents.push(...events);
     // Configuration can change while initialize is in flight, before client is assigned.
@@ -262,6 +282,7 @@ async function stopServer(): Promise<void> {
   const activeClient = client;
   const activeWatcher = fileWatcher;
   client = undefined;
+  declarations.reset();
   fileWatcher = undefined;
   for (const event of clientEvents) { event.dispose(); }
   clientEvents = [];

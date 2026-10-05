@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn project(texts: &[(&str, &str)]) -> ProjectAnalysisView {
+pub(crate) fn project(texts: &[(&str, &str)]) -> IdeSnapshot {
     let mut project = folio_build::ProjectAnalysis::new();
     project
         .sync_sources(texts.iter().map(|(name, text)| folio_build::ProjectSource {
@@ -12,8 +12,9 @@ pub(crate) fn project(texts: &[(&str, &str)]) -> ProjectAnalysisView {
             text: Arc::from(*text),
         }))
         .unwrap()
+        .into()
 }
-pub(crate) fn file(view: &ProjectAnalysisView, name: &str) -> FileId {
+pub(crate) fn file(view: &IdeSnapshot, name: &str) -> FileId {
     *view
         .sources
         .iter()

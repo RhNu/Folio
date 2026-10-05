@@ -11,13 +11,22 @@ use std::{
 pub(super) type Output = Arc<Mutex<io::Stdout>>;
 
 pub(super) fn send(output: &Output, value: &Value) -> Result<(), LspError> {
+    let started = std::time::Instant::now();
     let bytes = serde_json::to_vec(value).map_err(|error| LspError::Protocol(error.to_string()))?;
+    let serialize_us = started.elapsed().as_micros();
+    let waiting = std::time::Instant::now();
     let mut stream = output
         .lock()
         .map_err(|_| LspError::Protocol("stdout lock poisoned".into()))?;
+    let output_wait_us = waiting.elapsed().as_micros();
+    let writing = std::time::Instant::now();
     write!(stream, "Content-Length: {}\r\n\r\n", bytes.len())?;
     stream.write_all(&bytes)?;
     stream.flush()?;
+    drop(stream);
+    tracing::trace!(id = ?value.get("id"), method = value.get("method").and_then(|method| method.as_str()),
+        bytes = bytes.len(), serialize_us, output_wait_us,
+        write_us = writing.elapsed().as_micros(), "sent LSP message");
     Ok(())
 }
 

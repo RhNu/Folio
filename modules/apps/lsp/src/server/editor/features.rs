@@ -36,19 +36,45 @@ impl QueryContext {
                 let Some((_, byte)) = self.at(params) else {
                     return Ok(json!([]));
                 };
-                let candidates = Arc::new(folio_ide::completion(view, file, byte));
+                let started = Instant::now();
+                let candidates = Arc::new(
+                    folio_ide::completion(view, file, byte, &|| view.is_cancelled())
+                        .map_err(|_| (-32800, "completion cancelled".into()))?,
+                );
+                let candidates_us = started.elapsed().as_micros();
+                let response_started = Instant::now();
                 let positions = PositionIndex::new(text);
                 let completion_id = self
                     .completions
                     .insert(self.generation, Arc::clone(&candidates));
-                let items = candidates.iter().enumerate().filter_map(|(index,item)| {
-                    Some(json!({"label":item.label,"detail":item.detail,"kind":item.kind,
-                        "textEdit":{"range":range_json(positions.range(item.replacement,self.encoding)?),"newText":item.insert_text},
-                        "data":{"generation":self.generation,"completion":completion_id,"index":index}}))
-                }).collect::<Vec<_>>();
+                let mut items = Vec::with_capacity(candidates.len());
+                let mut cached_range: Option<(TextRange, Option<folio_ide::Range>)> = None;
+                for (index, item) in candidates.iter().enumerate() {
+                    if index % 128 == 0 && view.is_cancelled() {
+                        return Err((-32800, "completion cancelled".into()));
+                    }
+                    // Most candidates share one edit range; avoid rescanning its UTF-16 line.
+                    if cached_range
+                        .as_ref()
+                        .is_none_or(|(range, _)| *range != item.replacement)
+                    {
+                        cached_range = Some((
+                            item.replacement,
+                            positions.range(item.replacement, self.encoding),
+                        ));
+                    }
+                    let Some(range) = cached_range.as_ref().and_then(|(_, range)| *range) else {
+                        continue;
+                    };
+                    items.push(json!({"label":item.label,"detail":item.detail,"kind":item.kind,
+                        "textEdit":{"range":range_json(range),"newText":item.insert_text},
+                        "data":{"generation":self.generation,"completion":completion_id,"index":index}}));
+                }
                 tracing::debug!(
                     ?file,
                     count = items.len(),
+                    candidates_us,
+                    response_us = response_started.elapsed().as_micros(),
                     "collected completion candidates"
                 );
                 let mut result = json!({"isIncomplete":false});

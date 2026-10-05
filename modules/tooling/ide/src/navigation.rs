@@ -1,6 +1,6 @@
 //! Semantic occurrences and hierarchy facts for every editor navigation request.
-use folio_build::ProjectAnalysisView;
-use folio_hir::{ExpressionKind, MemberKind, Symbol};
+use crate::IdeSnapshot;
+use folio_hir::{ExpressionKind, Symbol};
 use folio_papyrus::SyntaxKind;
 use folio_source::{FileId, SourceSpan};
 use std::collections::HashMap;
@@ -79,9 +79,12 @@ pub(crate) fn same(left: &Symbol, right: &Symbol) -> bool {
     }
 }
 
-pub(crate) fn occurrences(view: &ProjectAnalysisView, file: FileId) -> Vec<SymbolOccurrence> {
+pub(crate) fn collect_occurrences(
+    view: &IdeSnapshot,
+    file: FileId,
+) -> Option<Vec<SymbolOccurrence>> {
     let Some(script) = view.analysis.hir(file) else {
-        return Vec::new();
+        return Some(Vec::new());
     };
     let mut result = Vec::new();
     if let Some(name) = &script.name {
@@ -92,6 +95,9 @@ pub(crate) fn occurrences(view: &ProjectAnalysisView, file: FileId) -> Vec<Symbo
         });
     }
     for item in &script.declarations {
+        if view.is_cancelled() {
+            return None;
+        }
         result.push(SymbolOccurrence {
             symbol: item.symbol.clone(),
             span: item.span,
@@ -99,6 +105,9 @@ pub(crate) fn occurrences(view: &ProjectAnalysisView, file: FileId) -> Vec<Symbo
         });
     }
     for fact in &script.expressions {
+        if view.is_cancelled() {
+            return None;
+        }
         if let Some(binding) = &fact.binding {
             result.push(SymbolOccurrence {
                 symbol: binding.symbol.clone(),
@@ -108,22 +117,15 @@ pub(crate) fn occurrences(view: &ProjectAnalysisView, file: FileId) -> Vec<Symbo
         }
     }
     if let Some(parse) = view.analysis.parse(file) {
-        let mut script_definitions = HashMap::new();
-        for file in view.analysis.file_ids() {
-            if let Some(script) = view.analysis.hir(file)
-                && let Some(name) = &script.name
-            {
-                script_definitions
-                    .entry(name.text.to_ascii_lowercase())
-                    .or_insert(name.span);
-            }
-        }
         let mut parameter_definitions = HashMap::new();
         for node in parse
             .syntax()
             .descendants()
             .filter(|node| node.kind() == SyntaxKind::NamedArgument)
         {
+            if view.is_cancelled() {
+                return None;
+            }
             let Some(token) = node
                 .descendants_with_tokens()
                 .filter_map(|item| item.into_token())
@@ -166,16 +168,10 @@ pub(crate) fn occurrences(view: &ProjectAnalysisView, file: FileId) -> Vec<Symbo
                 name: parameter.name.clone(),
             };
             let definition = *parameter_definitions
-                .entry(symbol.clone())
+                .entry(crate::snapshot::SymbolKey::new(&symbol))
                 .or_insert_with(|| {
-                    view.analysis.file_ids().find_map(|file| {
-                        view.analysis
-                            .hir(file)?
-                            .declarations
-                            .iter()
-                            .find(|item| same(&item.symbol, &symbol))
-                            .map(|item| item.span)
-                    })
+                    view.definitions(&symbol)
+                        .and_then(|spans| spans.first().copied())
                 });
             result.push(SymbolOccurrence {
                 symbol,
@@ -192,10 +188,13 @@ pub(crate) fn occurrences(view: &ProjectAnalysisView, file: FileId) -> Vec<Symbo
             .filter_map(|item| item.into_token())
             .filter(|token| token.kind() == SyntaxKind::Ident)
         {
+            if view.is_cancelled() {
+                return None;
+            }
             if let Some((name, span)) =
                 super::symbols::script_reference_token(&script, file, &token)
             {
-                let definition = script_definitions.get(&name.to_ascii_lowercase()).copied();
+                let definition = view.script_definition(&name);
                 let known = definition.is_some() || view.analysis.external_script(&name).is_some();
                 if known {
                     result.push(SymbolOccurrence {
@@ -209,22 +208,28 @@ pub(crate) fn occurrences(view: &ProjectAnalysisView, file: FileId) -> Vec<Symbo
     }
     result.sort_by_key(|item| (item.span.range.start, item.span.range.end));
     result.dedup_by(|a, b| a.span == b.span && same(&a.symbol, &b.symbol));
-    result
+    tracing::debug!(
+        ?file,
+        occurrences = result.len(),
+        "editor file occurrences indexed"
+    );
+    Some(result)
 }
 
-pub fn symbol_at(
-    view: &ProjectAnalysisView,
-    file: FileId,
-    byte: usize,
-) -> Option<SymbolOccurrence> {
+pub(crate) fn occurrences(view: &IdeSnapshot, file: FileId) -> &[SymbolOccurrence] {
+    view.occurrences(file).unwrap_or(&[])
+}
+
+pub fn symbol_at(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<SymbolOccurrence> {
     occurrences(view, file)
-        .into_iter()
+        .iter()
         .filter(|item| item.span.range.start <= byte && byte < item.span.range.end)
         .min_by_key(|item| item.span.range.end - item.span.range.start)
+        .cloned()
 }
 
 pub fn references(
-    view: &ProjectAnalysisView,
+    view: &IdeSnapshot,
     file: FileId,
     byte: usize,
     include_declaration: bool,
@@ -235,37 +240,13 @@ pub fn references(
     references_to(view, &target, include_declaration)
 }
 
-pub fn definition_of(view: &ProjectAnalysisView, symbol: &Symbol) -> Option<SourceSpan> {
-    let mut definitions = view
-        .analysis
-        .file_ids()
-        .filter_map(|file| view.analysis.hir(file))
-        .flat_map(|script| {
-            let mut spans = script
-                .declarations
-                .iter()
-                .filter(|item| same(&item.symbol, symbol))
-                .map(|item| item.span)
-                .collect::<Vec<_>>();
-            if let Some(name) = &script.name
-                && matches!(symbol, Symbol::Script(target) if target.eq_ignore_ascii_case(&name.text))
-            {
-                spans.push(name.span);
-            }
-            spans
-        })
-        .collect::<Vec<_>>();
-    definitions.sort_by_key(|span| (span.file, span.range.start));
-    definitions.dedup();
-    if definitions.len() == 1 {
-        definitions.pop()
-    } else {
-        None
-    }
+pub fn definition_of(view: &IdeSnapshot, symbol: &Symbol) -> Option<SourceSpan> {
+    let definitions = view.definitions(symbol)?;
+    (definitions.len() == 1).then(|| definitions[0])
 }
 
 pub fn references_of(
-    view: &ProjectAnalysisView,
+    view: &IdeSnapshot,
     symbol: &Symbol,
     include_declaration: bool,
 ) -> Vec<SourceSpan> {
@@ -274,7 +255,7 @@ pub fn references_of(
 }
 
 pub(crate) fn references_to(
-    view: &ProjectAnalysisView,
+    view: &IdeSnapshot,
     target: &SymbolOccurrence,
     include_declaration: bool,
 ) -> Vec<SourceSpan> {
@@ -282,7 +263,7 @@ pub(crate) fn references_to(
 }
 
 fn reference_spans(
-    view: &ProjectAnalysisView,
+    view: &IdeSnapshot,
     symbol: &Symbol,
     definition: Option<SourceSpan>,
     include_declaration: bool,
@@ -292,9 +273,9 @@ fn reference_spans(
         return Vec::new();
     }
     let mut result = view
-        .analysis
-        .file_ids()
-        .flat_map(|file| occurrences(view, file))
+        .references(symbol)
+        .unwrap_or(&[])
+        .iter()
         .filter(|item| {
             same(&item.symbol, symbol)
                 && (!local || item.definition == definition)
@@ -307,61 +288,43 @@ fn reference_spans(
     result
 }
 
-pub fn document_highlights(
-    view: &ProjectAnalysisView,
-    file: FileId,
-    byte: usize,
-) -> Vec<SourceSpan> {
-    references(view, file, byte, true)
-        .into_iter()
-        .filter(|span| span.file == file)
-        .collect()
-}
-
-fn parent(view: &ProjectAnalysisView, name: &str) -> Option<String> {
-    view.analysis
-        .file_ids()
-        .find_map(|file| {
-            let script = view.analysis.hir(file)?;
-            script
-                .name
-                .as_ref()?
-                .text
-                .eq_ignore_ascii_case(name)
-                .then(|| script.parent.as_ref().map(|parent| parent.text.clone()))
-                .flatten()
-        })
-        .or_else(|| {
-            view.analysis
-                .external_script(name)
-                .and_then(|script| script.parent.clone())
-        })
-}
-
-pub(crate) fn derives(view: &ProjectAnalysisView, child: &str, ancestor: &str) -> bool {
-    let mut current = parent(view, child);
-    let mut seen = std::collections::BTreeSet::new();
-    while let Some(name) = current {
-        if name.eq_ignore_ascii_case(ancestor) {
-            return true;
-        }
-        if !seen.insert(name.to_ascii_lowercase()) {
-            break;
-        }
-        current = parent(view, &name);
+pub fn document_highlights(view: &IdeSnapshot, file: FileId, byte: usize) -> Vec<SourceSpan> {
+    let Some(target) = symbol_at(view, file, byte) else {
+        return Vec::new();
+    };
+    let local = matches!(
+        target.symbol,
+        Symbol::Local { .. } | Symbol::Parameter { .. }
+    );
+    if local && target.definition.is_none() {
+        return Vec::new();
     }
-    false
+    let mut result = occurrences(view, file)
+        .iter()
+        .filter(|item| {
+            same(&item.symbol, &target.symbol) && (!local || item.definition == target.definition)
+        })
+        .map(|item| item.span)
+        .collect::<Vec<_>>();
+    result.sort_by_key(|span| (span.range.start, span.range.end));
+    result.dedup();
+    result
+}
+
+pub(crate) fn derives(view: &IdeSnapshot, child: &str, ancestor: &str) -> bool {
+    view.hierarchy()
+        .is_some_and(|index| index.derives(child, ancestor))
 }
 
 /// Derived scripts and callable overrides, including state implementations.
-pub fn implementations(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<SourceSpan> {
+pub fn implementations(view: &IdeSnapshot, file: FileId, byte: usize) -> Vec<SourceSpan> {
     let Some(target) = symbol_at(view, file, byte) else {
         return Vec::new();
     };
     implementations_of(view, &target.symbol)
 }
 
-pub fn implementations_of(view: &ProjectAnalysisView, target: &Symbol) -> Vec<SourceSpan> {
+pub fn implementations_of(view: &IdeSnapshot, target: &Symbol) -> Vec<SourceSpan> {
     let mut result = implementation_symbols(view, target)
         .iter()
         .filter_map(|symbol| definition_of(view, symbol))
@@ -371,94 +334,11 @@ pub fn implementations_of(view: &ProjectAnalysisView, target: &Symbol) -> Vec<So
     result
 }
 
-fn callable_kind(view: &ProjectAnalysisView, symbol: &Symbol) -> Option<(bool, bool)> {
-    for file in view.analysis.file_ids() {
-        let script = view.analysis.hir(file)?;
-        if let Some(member) = script
-            .members
-            .iter()
-            .find(|member| same(&member.symbol, symbol))
-        {
-            return match member.kind {
-                MemberKind::Function { event, global, .. } => Some((event, global)),
-                _ => None,
-            };
-        }
-    }
-    let member = crate::presentation::external_member(view, symbol)?;
-    match member.data {
-        folio_format_declarations::MemberData::Function { global, .. } => Some((false, global)),
-        folio_format_declarations::MemberData::Event { .. } => Some((true, false)),
-        _ => None,
-    }
-}
-
 /// Selected source and external descendants share semantic identity; callers choose verified carriers.
-pub fn implementation_symbols(view: &ProjectAnalysisView, target: &Symbol) -> Vec<Symbol> {
-    let target_kind = callable_kind(view, target);
-    if !matches!(target, Symbol::Script(_)) && !matches!(target_kind, Some((_, false))) {
-        return Vec::new();
-    }
-    let mut candidates = Vec::new();
-    for file in view.analysis.file_ids() {
-        if let Some(script) = view.analysis.hir(file) {
-            if let Some(name) = &script.name {
-                candidates.push(Symbol::Script(name.text.clone()));
-            }
-            candidates.extend(script.members.iter().map(|member| member.symbol.clone()));
-        }
-    }
-    for script in view
-        .analysis
-        .external_declarations()
-        .iter()
-        .flat_map(|bundle| &bundle.scripts)
-    {
-        candidates.push(Symbol::Script(script.name.clone()));
-        candidates.extend(script.members.iter().map(|member| Symbol::Member {
-            script: script.name.clone(),
-            name: member.name.clone(),
-        }));
-        candidates.extend(script.states.iter().flat_map(|state| {
-            state.members.iter().map(|member| Symbol::StateMember {
-                script: script.name.clone(),
-                state: state.name.clone(),
-                name: member.name.clone(),
-            })
-        }));
-    }
-    candidates.retain(|candidate| match (target, candidate) {
-        (Symbol::Script(ancestor), Symbol::Script(child)) => derives(view, child, ancestor),
-        (
-            Symbol::Member {
-                script: owner,
-                name: target_name,
-            }
-            | Symbol::StateMember {
-                script: owner,
-                name: target_name,
-                ..
-            },
-            Symbol::Member {
-                script: child,
-                name,
-            }
-            | Symbol::StateMember {
-                script: child,
-                name,
-                ..
-            },
-        ) => {
-            !same(target, candidate)
-                && target_name.eq_ignore_ascii_case(name)
-                && (child.eq_ignore_ascii_case(owner) || derives(view, child, owner))
-                && callable_kind(view, candidate) == target_kind
-        }
-        _ => false,
-    });
-    candidates.sort_by_key(|symbol| format!("{symbol:?}").to_ascii_lowercase());
-    candidates.dedup_by(|a, b| same(a, b));
-    candidates
+pub fn implementation_symbols(view: &IdeSnapshot, target: &Symbol) -> Vec<Symbol> {
+    view.hierarchy()
+        .and_then(|index| index.implementations(view, target))
+        .map_or_else(Vec::new, |symbols| (*symbols).clone())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -469,7 +349,7 @@ pub struct WorkspaceSymbol {
     pub container: Option<String>,
 }
 
-pub fn workspace_symbols(view: &ProjectAnalysisView, query: &str) -> Vec<WorkspaceSymbol> {
+pub fn workspace_symbols(view: &IdeSnapshot, query: &str) -> Vec<WorkspaceSymbol> {
     fn flatten(
         file: FileId,
         items: Vec<super::DocumentSymbol>,

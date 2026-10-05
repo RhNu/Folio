@@ -78,7 +78,7 @@ path = "../OtherMod/Source/Scripts"
 
 The VS Code client provides `.psc` file icons, syntax and semantic highlighting, declaration hover with documentation and source links, offline Skyrim language hover for keywords, built-in types, literals, and operators, completion, signature help, references, inheritance navigation, CodeLens, parameter hints, verified project renames, symbol search, and formatting. Language hover includes literal values, examples, and Creation Kit reference links in source and read-only API documents. Dependencies without PSC source open as read-only API declarations. It uses a configured Folio executable or directory, then searches `PATH`. To package the client, run `npm ci` and `npm run package` in `editors/vscode`. The VSIX does not include the Folio executable. See the [extension README](editors/vscode/README.md) for installation, settings, debugging, and publishing.
 
-Project loading and analysis run in the background. The VS Code status bar reports loading phases and progress; semantic highlighting, CodeLens, and parameter hints refresh after the project is ready. Session caches reuse unchanged dependency declarations and share analysis results across editor queries.
+Project loading and analysis run in the background. The VS Code status bar reports loading phases and progress; semantic highlighting, CodeLens, and parameter hints refresh after the project is ready. Session caches reuse unchanged dependency declarations and share analysis and symbol indices across editor queries. Completion filters indexed names before creating candidates, and interactive queries take priority over automatic refresh work with bounded background fairness.
 
 ## Development
 

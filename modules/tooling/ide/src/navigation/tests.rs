@@ -136,7 +136,11 @@ fn selected_external_descendants_and_state_implementations_are_included() {
         )
         .unwrap();
     }
-    view.analysis = host.view();
+    view = IdeSnapshot::from(folio_build::ProjectAnalysisView {
+        analysis: host.view(),
+        sources: view.sources.clone(),
+        issues: Vec::new(),
+    });
     assert_eq!(
         implementation_symbols(&view, &Symbol::Script("Base".into())),
         vec![Symbol::Script("ExternalChild".into())]

@@ -44,8 +44,9 @@ pub(super) struct Server {
     semantic_tokens_refresh: bool,
     queries: scheduling::QueryPool,
     completions: editor::CompletionCache,
-    deferred: VecDeque<(Value, String, Value, u64)>,
+    deferred: VecDeque<editor::DeferredQuery>,
     view: Option<Arc<ProjectAnalysisView>>,
+    ide: Option<folio_ide::IdeSnapshot>,
     metadata: Option<Arc<Metadata>>,
     paths: BTreeMap<PathBuf, FileId>,
     published: BTreeSet<String>,
@@ -93,6 +94,7 @@ impl Server {
             completions: editor::CompletionCache::default(),
             deferred: VecDeque::new(),
             view: None,
+            ide: None,
             metadata: None,
             paths: BTreeMap::new(),
             published: BTreeSet::new(),
@@ -195,7 +197,7 @@ impl Server {
             }
             "exit" => return Ok(true),
             "$/cancelRequest" => {
-                let _publication = self
+                let publication = self
                     .publication
                     .lock()
                     .map_err(|_| LspError::Protocol("publication lock poisoned".into()))?;
@@ -213,6 +215,10 @@ impl Server {
                         cancelled.insert(key);
                         tracing::debug!(id = %id, "LSP request cancelled");
                     }
+                }
+                drop(publication);
+                if let Some(id) = params.get("id") {
+                    self.queries.cancel(&id.to_string());
                 }
             }
             "textDocument/didOpen" => {
@@ -311,14 +317,14 @@ impl Server {
             | "textDocument/rename"
             | "folio/declarationContent" => {
                 if let Some(id) = id {
-                    self.editor_request(id, method, params)?;
+                    self.editor_request(id, method, params, started)?;
                 }
             }
             "textDocument/signatureHelp"
             | "textDocument/documentSymbol"
             | "textDocument/semanticTokens/full" => {
                 if let Some(id) = id {
-                    self.editor_request(id, method, params)?;
+                    self.editor_request(id, method, params, started)?;
                 }
             }
             "textDocument/formatting" => {
@@ -346,11 +352,14 @@ impl Server {
 
     /// Invalidation and final worker publication share a barrier to close the stale-send race.
     fn advance_generation(&self) -> Result<u64, LspError> {
-        let _publication = self
+        let publication = self
             .publication
             .lock()
             .map_err(|_| LspError::Protocol("publication lock poisoned".into()))?;
-        Ok(self.generation.fetch_add(1, Ordering::SeqCst) + 1)
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        drop(publication);
+        self.queries.retain_generation(generation);
+        Ok(generation)
     }
 
     fn error(&self, id: Value, code: i32, message: &str) -> Result<(), LspError> {

@@ -9,6 +9,7 @@ This is the workspace's record of outstanding work and unresolved verification. 
 
 ## Tooling and editor services
 
+- Verify the reported completion and symbol-information latency with CK and SKSE declarations in real VS Code after the query/index refactor. Cover empty and narrow prefixes, member completion, SDK hover with command links, concurrent CodeLens/semantic/inlay refreshes, rapid edit cancellation, and declaration-view reconnects. Confirm current binary/client provenance and compare client wait with loading, queue, query, and serialization phases; historical stdio reports omit command-link work and automatic request contention. Pure logic tests and compilation do not establish a latency improvement or UI smoothness.
 - Verify loading progress, deferred semantic highlighting, refresh after readiness, reconnect, shutdown, and sustained editing with Cadence in real VS Code. Stdio probes do not establish UI behavior or long-session CPU/memory stability. Investigate the reported interruption separately; retained logs do not establish a language-server crash.
 - Verify missing repository carrier recovery, ambiguous dual carriers, path alias retargeting, and PSC navigation across drives in a real editor.
 - Verify LSP session cache reuse, buffer close recovery, dynamic watch registration, stale and cancelled navigation responses, and stdio message framing in a real editor. Compilation and in-memory Rust tests do not verify these session behaviors.

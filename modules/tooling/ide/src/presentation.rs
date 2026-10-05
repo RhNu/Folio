@@ -1,12 +1,12 @@
 //! Source and portable declarations share one presentation and virtual source format.
+use crate::IdeSnapshot;
 use crate::{Hover, navigation::same, symbols};
-use folio_build::ProjectAnalysisView;
 use folio_format_declarations::{Member, MemberData, PropertyAccess};
 use folio_hir::Symbol;
 use folio_papyrus::SyntaxKind;
 use folio_source::TextRange;
 
-pub fn hover_symbol(view: &ProjectAnalysisView, symbol: &Symbol) -> Option<Hover> {
+pub fn hover_symbol(view: &IdeSnapshot, symbol: &Symbol) -> Option<Hover> {
     if let Symbol::Intrinsic { name } = symbol {
         return intrinsic_hover(name, None);
     }
@@ -105,7 +105,7 @@ pub(crate) fn intrinsic_call_member(
 }
 
 pub(crate) fn hover_at_definition(
-    view: &ProjectAnalysisView,
+    view: &IdeSnapshot,
     symbol: &Symbol,
     definition: Option<folio_source::SourceSpan>,
 ) -> Option<Hover> {
@@ -113,60 +113,59 @@ pub(crate) fn hover_at_definition(
         return intrinsic_hover(name, None);
     }
     let owner = symbols::owner_script(symbol);
-    for file in view.analysis.file_ids() {
-        let script = view.analysis.hir(file)?;
-        let found = script.declarations.iter().find(|item| {
-            same(&item.symbol, symbol) && definition.is_none_or(|span| span == item.span)
-        });
-        let at = if let Some(item) = found {
-            Some(item.span)
-        } else {
-            script.name.as_ref().filter(|item|matches!(symbol,Symbol::Script(name) if name.eq_ignore_ascii_case(&item.text))).map(|item|item.span)
-        };
-        if let Some(at) = at {
-            let parse = view.analysis.parse(file)?;
-            let node = parse
-                .syntax()
-                .descendants()
-                .filter(|node| {
-                    matches!(
-                        node.kind(),
-                        SyntaxKind::ScriptDecl
-                            | SyntaxKind::FunctionDecl
-                            | SyntaxKind::EventDecl
-                            | SyntaxKind::PropertyDecl
-                            | SyntaxKind::VariableDecl
-                            | SyntaxKind::Parameter
-                    )
-                })
-                .filter(|node| {
-                    usize::from(node.text_range().start()) <= at.range.start
-                        && at.range.end <= usize::from(node.text_range().end())
-                })
-                .min_by_key(|node| u32::from(node.text_range().len()))?;
-            let declaration = folio_papyrus::declaration_header(&node);
-            let documentation = folio_papyrus::declaration_documentation(&node);
-            let details = match symbol {
-                Symbol::Local { .. } => vec!["Local variable".into()],
-                Symbol::Parameter { .. } => vec!["Parameter".into()],
-                _ => Vec::new(),
-            };
-            let content = if let Some(item) = found {
-                symbols::describe_symbol(&script, symbol, &item.ty)
-            } else {
-                declaration.clone()
-            };
-            return Some(Hover {
-                content,
-                symbol: Some(symbol.clone()),
-                declaration,
-                documentation,
-                language: None,
-                details,
-                span: Some(at),
-                owner_script: owner,
-            });
+    let at = definition.or_else(|| view.definitions(symbol)?.first().copied());
+    if let Some(at) = at {
+        if view.is_cancelled() {
+            return None;
         }
+        let file = at.file;
+        let script = view.analysis.hir(file)?;
+        let found = script
+            .declarations
+            .iter()
+            .find(|item| same(&item.symbol, symbol) && at == item.span);
+        let parse = view.analysis.parse(file)?;
+        let node = parse
+            .syntax()
+            .descendants()
+            .filter(|node| {
+                matches!(
+                    node.kind(),
+                    SyntaxKind::ScriptDecl
+                        | SyntaxKind::FunctionDecl
+                        | SyntaxKind::EventDecl
+                        | SyntaxKind::PropertyDecl
+                        | SyntaxKind::VariableDecl
+                        | SyntaxKind::Parameter
+                )
+            })
+            .filter(|node| {
+                usize::from(node.text_range().start()) <= at.range.start
+                    && at.range.end <= usize::from(node.text_range().end())
+            })
+            .min_by_key(|node| u32::from(node.text_range().len()))?;
+        let declaration = folio_papyrus::declaration_header(&node);
+        let documentation = folio_papyrus::declaration_documentation(&node);
+        let details = match symbol {
+            Symbol::Local { .. } => vec!["Local variable".into()],
+            Symbol::Parameter { .. } => vec!["Parameter".into()],
+            _ => Vec::new(),
+        };
+        let content = if let Some(item) = found {
+            symbols::describe_symbol(&script, symbol, &item.ty)
+        } else {
+            declaration.clone()
+        };
+        return Some(Hover {
+            content,
+            symbol: Some(symbol.clone()),
+            declaration,
+            documentation,
+            language: None,
+            details,
+            span: Some(at),
+            owner_script: owner,
+        });
     }
     let owner_name = owner.as_deref()?;
     let external = view.analysis.external_script(owner_name)?;
@@ -227,10 +226,7 @@ pub(crate) fn hover_at_definition(
     })
 }
 
-pub(crate) fn external_member<'a>(
-    view: &'a ProjectAnalysisView,
-    symbol: &Symbol,
-) -> Option<&'a Member> {
+pub(crate) fn external_member<'a>(view: &'a IdeSnapshot, symbol: &Symbol) -> Option<&'a Member> {
     let owner = symbols::owner_script(symbol)?;
     let script = view.analysis.external_script(&owner)?;
     match symbol {
@@ -370,10 +366,7 @@ pub struct DeclarationDocument {
 }
 
 /// Render only recovered API facts; the virtual document contains no invented bodies.
-pub fn declaration_document(
-    view: &ProjectAnalysisView,
-    script_name: &str,
-) -> Option<DeclarationDocument> {
+pub fn declaration_document(view: &IdeSnapshot, script_name: &str) -> Option<DeclarationDocument> {
     let script = view.analysis.external_script(script_name)?;
     fn doc(text: &mut String, documentation: &Option<String>) {
         if let Some(doc) = documentation {

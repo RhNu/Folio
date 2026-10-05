@@ -6,6 +6,59 @@ use folio_source::Revision;
 
 mod language_hover;
 
+#[test]
+fn response_publication_may_reuse_the_completed_request_identity() {
+    let pending = Mutex::new(BTreeSet::from(["1".to_owned(), "other".to_owned()]));
+    let cancelled = Mutex::new(BTreeSet::from(["1".to_owned()]));
+    finish_request(&pending, &cancelled, "1", || {
+        assert!(!pending.lock().unwrap().contains("1"));
+        assert!(!cancelled.lock().unwrap().contains("1"));
+        // A response consumer may immediately register and cancel a new request with this id.
+        pending.lock().unwrap().insert("1".into());
+        cancelled.lock().unwrap().insert("1".into());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        *pending.lock().unwrap(),
+        BTreeSet::from(["1".into(), "other".into()])
+    );
+    assert!(cancelled.lock().unwrap().contains("1"));
+}
+
+#[test]
+fn only_identical_automatic_requests_are_coalesced() {
+    let first = json!({"textDocument":{"uri":"file:///Demo.psc"},
+        "range":{"start":{"line":0,"character":0},"end":{"line":4,"character":0}}});
+    let mut other = first.clone();
+    other["range"]["end"]["line"] = json!(8);
+    let hints = query_meta("1", 2, "textDocument/inlayHint", &first);
+    assert!(!hints.interactive);
+    assert!(hints.coalesce_key.is_some());
+    assert_eq!(
+        hints.coalesce_key,
+        query_meta("2", 2, "textDocument/inlayHint", &first).coalesce_key
+    );
+    assert_ne!(
+        hints.coalesce_key,
+        query_meta("3", 2, "textDocument/inlayHint", &other).coalesce_key
+    );
+    for method in [
+        "textDocument/hover",
+        "textDocument/completion",
+        "textDocument/signatureHelp",
+    ] {
+        let meta = query_meta("4", 2, method, &first);
+        assert!(meta.interactive);
+        assert!(meta.coalesce_key.is_none());
+    }
+    assert!(
+        query_meta("5", 2, "codeLens/resolve", &first)
+            .coalesce_key
+            .is_none()
+    );
+}
+
 const SOURCE: &str = "ScriptName Demo\n{Demo documentation.}\nInt Function Add(Int left, Int right = 2)\n{Adds values.}\n Return left + right\nEndFunction\nInt Function Use()\n Return Add(1)\nEndFunction\n";
 
 fn context() -> QueryContext {
@@ -43,7 +96,7 @@ fn context_source(
         issues: Vec::new(),
     };
     QueryContext {
-        view: Some(Arc::new(view)),
+        view: Some(folio_ide::IdeSnapshot::new(Arc::new(view))),
         metadata: None,
         loaded: None,
         paths: BTreeMap::from([(path, file)]),

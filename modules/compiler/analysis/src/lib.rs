@@ -339,15 +339,20 @@ impl AnalysisView {
         self.fill_missing_arguments
     }
 
-    /// Enumerates names through the same selected world and lookup precedence as checking.
+    /// Enumerates matching names through the checker's selected world and lookup precedence.
+    /// The prefix is ASCII case insensitive; cancellation never returns partial candidates.
+    /// Results follow normalized checker-name order, which is ASCII case-insensitive order
+    /// for ordinary Papyrus identifiers.
     pub fn completion_candidates(
         &self,
         file: FileId,
         byte: usize,
         receiver: Option<&Type>,
         global: bool,
-    ) -> Vec<CompletionCandidate> {
-        semantic::completion_candidates(self, file, byte, receiver, global)
+        prefix: &str,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<CompletionCandidate>, AnalysisCancelled> {
+        semantic::completion_candidates(self, file, byte, receiver, global, prefix, cancelled)
     }
     fn semantic(&self) -> &semantic::Analysis {
         self.semantic

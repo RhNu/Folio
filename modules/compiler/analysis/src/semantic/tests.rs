@@ -341,8 +341,16 @@ fn completion_filters_locals_outside_their_lexical_block() {
     )
     .unwrap();
     let view = host.view();
-    let candidates =
-        view.completion_candidates(file, text.find("EndFunction").unwrap(), None, false);
+    let candidates = view
+        .completion_candidates(
+            file,
+            text.find("EndFunction").unwrap(),
+            None,
+            false,
+            "",
+            &|| false,
+        )
+        .unwrap();
     assert!(!candidates.iter().any(
         |candidate| matches!(&candidate.symbol, Symbol::Local { name, .. } if name == "hidden")
     ));

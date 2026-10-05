@@ -1,12 +1,12 @@
 //! Pure navigation into a supplied PSC snapshot; never resolves filesystem paths.
 
-use folio_build::ProjectAnalysisView;
+use crate::IdeSnapshot;
 use folio_hir::Symbol;
 use folio_papyrus::{PapyrusDialect, SyntaxKind, SyntaxNode, parse};
 use folio_source::{FileId, TextRange};
 
 /// Preserve the selected semantic owner when navigating inherited external members.
-pub fn referenced_symbol(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Option<Symbol> {
+pub fn referenced_symbol(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<Symbol> {
     super::symbol_at(view, file, byte).map(|item| item.symbol)
 }
 

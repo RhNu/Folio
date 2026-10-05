@@ -52,9 +52,16 @@ pub fn intrinsic_signature(name: &str, receiver: Option<&Type>) -> Option<Intrin
     })
 }
 
-pub(crate) fn intrinsic_candidates(receiver: &Type) -> Vec<super::CompletionCandidate> {
+pub(crate) fn intrinsic_candidates(
+    receiver: &Type,
+    prefix: &str,
+) -> Vec<super::CompletionCandidate> {
     ["Length", "Find", "RFind", "GetState", "GotoState"]
         .iter()
+        .filter(|name| {
+            name.get(..prefix.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+        })
         .filter_map(|name| intrinsic_signature(name, Some(receiver)))
         .map(|signature| super::CompletionCandidate {
             symbol: Symbol::Intrinsic {

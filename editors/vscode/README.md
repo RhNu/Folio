@@ -40,6 +40,8 @@ Rename handles locals, parameters, and verifiable root members after checking co
 
 The Folio status item shows project loading phases and completed/total progress where available, then indicates readiness or a loading error. Semantic highlighting, CodeLens, and parameter hints wait while the project loads and refresh when it becomes ready. Clicking the status item opens the output panel. **Folio: Show Language Server Output** and **Folio: Restart Language Server** are also available in the Command Palette.
 
+Repeated project notifications coalesce into one refresh of open declaration documents over a short interval. Reconnecting resets the generation tracker and rejects responses from the previous connection. At the output channel's Debug level, completion, completion resolution, hover, and signature help report their full client wait in milliseconds. Server debug logs distinguish loading and queue waits from query work; protocol Trace logs add serialization and output timings. These measurements describe requests, not editor rendering time.
+
 ## Settings
 
 | Setting | Purpose |

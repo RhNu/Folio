@@ -4,6 +4,7 @@ use folio_build::ProjectAnalysisView;
 use folio_hir::{ExpressionKind, Symbol, Type};
 use folio_papyrus::SyntaxKind;
 use folio_source::{FileId, TextRange};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,7 +21,7 @@ pub struct CompletionItem {
 }
 
 /// Expands only the selected completion into its full declaration and documentation.
-pub fn completion_hover(view: &ProjectAnalysisView, item: &CompletionItem) -> Option<crate::Hover> {
+pub fn completion_hover(view: &crate::IdeSnapshot, item: &CompletionItem) -> Option<crate::Hover> {
     let symbol = item.symbol.as_ref()?;
     tracing::debug!(?symbol, "resolving completion presentation");
     if let Symbol::Intrinsic { name } = symbol {
@@ -31,27 +32,33 @@ pub fn completion_hover(view: &ProjectAnalysisView, item: &CompletionItem) -> Op
 }
 
 /// Offers selected semantic names; the checker owns scope and member precedence.
-pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<CompletionItem> {
+pub fn completion(
+    view: &ProjectAnalysisView,
+    file: FileId,
+    byte: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<CompletionItem>, folio_analysis::AnalysisCancelled> {
+    checkpoint(cancelled)?;
     let Some(text) = view.analysis.text(file) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     if byte > text.len() || !text.is_char_boundary(byte) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let parse = view.analysis.parse(file).unwrap();
-    if parse
-        .syntax()
-        .descendants_with_tokens()
-        .filter_map(|item| item.into_token())
-        .any(|token| {
-            let range = token.text_range();
-            usize::from(range.start()) <= byte
-                && byte < usize::from(range.end())
-                && matches!(token.kind(), SyntaxKind::String | SyntaxKind::Comment)
-        })
-    {
-        return Vec::new();
+    let Some(offset) = byte.try_into().ok() else {
+        return Ok(Vec::new());
+    };
+    if let Some(token) = parse.syntax().token_at_offset(offset).right_biased() {
+        let range = token.text_range();
+        if usize::from(range.start()) <= byte
+            && byte < usize::from(range.end())
+            && matches!(token.kind(), SyntaxKind::String | SyntaxKind::Comment)
+        {
+            return Ok(Vec::new());
+        }
     }
+    let mut cancellation = Cancellation::new(cancelled);
     let mut start = byte;
     while start > 0 && text.as_bytes()[start - 1].is_ascii_alphanumeric()
         || start > 0 && text.as_bytes()[start - 1] == b'_'
@@ -66,19 +73,25 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
     }
     let prefix = &text[start..byte];
     let before = text[..start].trim_end();
+    view.analysis.try_warm_semantics(cancelled)?;
     let script = view.analysis.hir(file).unwrap();
     let mut receiver = None;
     let mut global = false;
     if let Some(before_dot) = before.strip_suffix('.') {
         let dot = before_dot.len();
-        let fact = script
-            .expressions
-            .iter()
-            .filter(|fact| {
-                fact.span.range.end <= dot && text[fact.span.range.end..dot].trim().is_empty()
-            })
-            .max_by_key(|fact| fact.span.range.end);
-        if let Some(fact) = fact {
+        let mut selected = None;
+        for fact in &script.expressions {
+            cancellation.check()?;
+            if fact.span.range.end <= dot
+                && text[fact.span.range.end..dot].trim().is_empty()
+                && selected.is_none_or(|previous: &folio_hir::ExpressionFact| {
+                    previous.span.range.end <= fact.span.range.end
+                })
+            {
+                selected = Some(fact);
+            }
+        }
+        if let Some(fact) = selected {
             if matches!(fact.ty, Type::Script(_) | Type::Array(_)) {
                 receiver = Some(&fact.ty);
                 global = matches!(
@@ -91,11 +104,10 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
             }
         }
         if receiver.is_none() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
     }
     let replacement = TextRange { start, end };
-    let prefix = prefix.to_ascii_lowercase();
     let mut members = HashMap::new();
     for member in script
         .members
@@ -103,19 +115,22 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
         .chain(&script.external_members)
         .chain(&script.referenced_members)
     {
+        cancellation.check()?;
+        if !name(&member.symbol)
+            .get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+        {
+            continue;
+        }
         members.entry(&member.symbol).or_insert(member);
     }
     let mut external_kinds = HashMap::new();
     let mut result = view
         .analysis
-        .completion_candidates(file, byte, receiver, global)
+        .completion_candidates(file, byte, receiver, global, prefix, cancelled)?
         .into_iter()
-        .filter(|candidate| {
-            name(&candidate.symbol)
-                .to_ascii_lowercase()
-                .starts_with(&prefix)
-        })
         .map(|candidate| {
+            cancellation.check()?;
             let label = name(&candidate.symbol).to_owned();
             let kind = match &candidate.symbol {
                 Symbol::Script(_) => 7,
@@ -134,11 +149,17 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
                     match member.map(|item| &item.kind) {
                         Some(folio_hir::MemberKind::Function { .. }) => 3,
                         Some(folio_hir::MemberKind::Property { .. }) => 10,
-                        _ => external_completion_kind(view, &candidate.symbol, &mut external_kinds),
+                        _ => external_completion_kind(
+                            view,
+                            &candidate.symbol,
+                            &mut external_kinds,
+                            prefix,
+                            &mut cancellation,
+                        )?,
                     }
                 }
             };
-            CompletionItem {
+            Ok(CompletionItem {
                 label: label.clone(),
                 insert_text: label,
                 kind,
@@ -149,48 +170,58 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
                     .flatten(),
                 symbol: Some(candidate.symbol),
                 replacement,
-            }
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, folio_analysis::AnalysisCancelled>>()?;
+    // Checker maps already order ASCII identifiers; preserve legacy ordering for
+    // declaration carriers with Unicode names using an allocation-free comparator.
+    if result.iter().any(|item| !item.label.is_ascii()) {
+        result.sort_by(|a, b| compare_labels(&a.label, &b.label));
+    }
     if receiver.is_none() {
+        let mut keywords = Vec::new();
         for keyword in [
-            "Int",
-            "Float",
-            "Bool",
-            "String",
-            "None",
-            "Self",
-            "Parent",
-            "If",
-            "ElseIf",
-            "Else",
-            "EndIf",
-            "While",
-            "EndWhile",
-            "Return",
-            "Function",
-            "EndFunction",
-            "Event",
-            "EndEvent",
-            "Property",
-            "EndProperty",
-            "Auto",
-            "AutoReadOnly",
-            "State",
-            "EndState",
-            "Import",
-            "New",
             "As",
-            "True",
-            "False",
-            "Hidden",
-            "Conditional",
-            "Global",
-            "Native",
+            "Auto",
             "Auto State",
+            "AutoReadOnly",
+            "Bool",
+            "Conditional",
+            "Else",
+            "ElseIf",
+            "EndEvent",
+            "EndFunction",
+            "EndIf",
+            "EndProperty",
+            "EndState",
+            "EndWhile",
+            "Event",
+            "False",
+            "Float",
+            "Function",
+            "Global",
+            "Hidden",
+            "If",
+            "Import",
+            "Int",
+            "Native",
+            "New",
+            "None",
+            "Parent",
+            "Property",
+            "Return",
+            "Self",
+            "State",
+            "String",
+            "True",
+            "While",
         ] {
-            if keyword.to_ascii_lowercase().starts_with(&prefix) {
-                result.push(CompletionItem {
+            cancellation.check()?;
+            if keyword
+                .get(..prefix.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+            {
+                keywords.push(CompletionItem {
                     label: keyword.into(),
                     detail: "Papyrus keyword".into(),
                     kind: 14,
@@ -202,20 +233,72 @@ pub fn completion(view: &ProjectAnalysisView, file: FileId, byte: usize) -> Vec<
                 });
             }
         }
+        // Merge already ordered inputs, retaining the semantic item on keyword collisions.
+        let mut candidates = result.into_iter().peekable();
+        let mut keywords = keywords.into_iter().peekable();
+        result = Vec::with_capacity(candidates.len() + keywords.len());
+        while let (Some(candidate), Some(keyword)) = (candidates.peek(), keywords.peek()) {
+            cancellation.check()?;
+            match compare_labels(&candidate.label, &keyword.label) {
+                Ordering::Less => result.push(candidates.next().unwrap()),
+                Ordering::Greater => result.push(keywords.next().unwrap()),
+                Ordering::Equal => {
+                    result.push(candidates.next().unwrap());
+                    keywords.next();
+                }
+            }
+        }
+        result.extend(candidates);
+        result.extend(keywords);
     }
-    result.sort_by(|a, b| {
-        a.label
-            .to_ascii_lowercase()
-            .cmp(&b.label.to_ascii_lowercase())
-    });
     result.dedup_by(|a, b| a.label.eq_ignore_ascii_case(&b.label));
+    checkpoint(cancelled)?;
     tracing::debug!(
         ?file,
         byte,
         candidates = result.len(),
         "completion candidates collected"
     );
-    result
+    Ok(result)
+}
+
+fn compare_labels(left: &str, right: &str) -> Ordering {
+    left.bytes()
+        .map(|byte| byte.to_ascii_lowercase())
+        .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
+}
+
+fn checkpoint(cancelled: &dyn Fn() -> bool) -> Result<(), folio_analysis::AnalysisCancelled> {
+    if cancelled() {
+        Err(folio_analysis::AnalysisCancelled)
+    } else {
+        Ok(())
+    }
+}
+
+/// Bound cancellation latency without acquiring the adapter's request lock per item.
+struct Cancellation<'a> {
+    cancelled: &'a dyn Fn() -> bool,
+    remaining: u8,
+}
+
+impl<'a> Cancellation<'a> {
+    fn new(cancelled: &'a dyn Fn() -> bool) -> Self {
+        Self {
+            cancelled,
+            remaining: 0,
+        }
+    }
+
+    fn check(&mut self) -> Result<(), folio_analysis::AnalysisCancelled> {
+        if self.remaining == 0 {
+            checkpoint(self.cancelled)?;
+            self.remaining = 63;
+        } else {
+            self.remaining -= 1;
+        }
+        Ok(())
+    }
 }
 
 type ExternalKinds = HashMap<String, HashMap<(Option<String>, String), u32>>;
@@ -225,7 +308,9 @@ fn external_completion_kind(
     view: &ProjectAnalysisView,
     symbol: &Symbol,
     kinds: &mut ExternalKinds,
-) -> u32 {
+    prefix: &str,
+    cancellation: &mut Cancellation<'_>,
+) -> Result<u32, folio_analysis::AnalysisCancelled> {
     let (owner, state, name) = match symbol {
         Symbol::Member { script, name } => (script, None, name),
         Symbol::StateMember {
@@ -233,9 +318,10 @@ fn external_completion_kind(
             state,
             name,
         } => (script, Some(state.to_ascii_lowercase()), name),
-        _ => return 6,
+        _ => return Ok(6),
     };
-    let members = kinds.entry(owner.to_ascii_lowercase()).or_insert_with(|| {
+    let owner_key = owner.to_ascii_lowercase();
+    if !kinds.contains_key(&owner_key) {
         let mut result = HashMap::new();
         if let Some(script) = view.analysis.external_script(owner) {
             for (state, member) in script.members.iter().map(|member| (None, member)).chain(
@@ -243,9 +329,17 @@ fn external_completion_kind(
                     state
                         .members
                         .iter()
-                        .map(move |member| (Some(state.name.to_ascii_lowercase()), member))
+                        .map(move |member| (Some(state.name.as_str()), member))
                 }),
             ) {
+                cancellation.check()?;
+                if !member
+                    .name
+                    .get(..prefix.len())
+                    .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+                {
+                    continue;
+                }
                 let kind = match member.kind() {
                     folio_format_declarations::MemberKind::Function
                     | folio_format_declarations::MemberKind::Event
@@ -254,16 +348,19 @@ fn external_completion_kind(
                     _ => 6,
                 };
                 result
-                    .entry((state, member.name.to_ascii_lowercase()))
+                    .entry((
+                        state.map(str::to_ascii_lowercase),
+                        member.name.to_ascii_lowercase(),
+                    ))
                     .or_insert(kind);
             }
         }
-        result
-    });
-    members
+        kinds.insert(owner_key.clone(), result);
+    }
+    Ok(kinds[&owner_key]
         .get(&(state, name.to_ascii_lowercase()))
         .copied()
-        .unwrap_or(6)
+        .unwrap_or(6))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

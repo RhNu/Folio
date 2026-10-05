@@ -1,6 +1,6 @@
 //! Editor symbol views derived from the parser and the shared typed HIR.
 
-use folio_build::ProjectAnalysisView;
+use crate::IdeSnapshot;
 use folio_hir::{ExpressionKind, MemberFact, MemberKind, Script, Symbol, Type};
 use folio_papyrus::{SyntaxKind, SyntaxNode};
 use folio_source::{FileId, SourceSpan, TextRange};
@@ -124,7 +124,7 @@ pub(crate) fn describe_symbol(script: &Script, symbol: &Symbol, ty: &Type) -> St
 
 /// Finds a script name written as a type, import, or parent without inventing a binding.
 pub(crate) fn script_reference(
-    view: &ProjectAnalysisView,
+    view: &IdeSnapshot,
     file: FileId,
     byte: usize,
 ) -> Option<(String, SourceSpan)> {
@@ -181,11 +181,7 @@ pub(crate) fn script_reference_token(
 }
 
 /// Navigates only to selected PSC source spans; external declaration carriers have no FileId.
-pub fn source_declaration(
-    view: &ProjectAnalysisView,
-    file: FileId,
-    byte: usize,
-) -> Option<SourceSpan> {
+pub fn source_declaration(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<SourceSpan> {
     if let Some(span) = view.analysis.definition(file, byte) {
         return Some(span);
     }
@@ -203,17 +199,7 @@ pub fn source_declaration(
         return Some(declaration.span);
     }
     let (target_name, _) = script_reference(view, file, byte)?;
-    for candidate in view.analysis.file_ids() {
-        let Some(other) = view.analysis.hir(candidate) else {
-            continue;
-        };
-        if let Some(name) = &other.name
-            && name.text.eq_ignore_ascii_case(&target_name)
-        {
-            return Some(name.span);
-        }
-    }
-    None
+    view.script_definition(&target_name)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -261,7 +247,7 @@ fn classify(script: &Script, symbol: &Symbol) -> SemanticTokenKind {
 }
 
 /// Classifies identifiers using typed bindings, plus parser roles for type names.
-pub fn semantic_tokens(view: &ProjectAnalysisView, file: FileId) -> Vec<SemanticToken> {
+pub fn semantic_tokens(view: &IdeSnapshot, file: FileId) -> Vec<SemanticToken> {
     let Some(script) = view.analysis.hir(file) else {
         return Vec::new();
     };
@@ -350,7 +336,7 @@ pub fn semantic_tokens(view: &ProjectAnalysisView, file: FileId) -> Vec<Semantic
         }
     }
     for occurrence in crate::navigation::occurrences(view, file)
-        .into_iter()
+        .iter()
         .filter(|item| matches!(item.symbol, Symbol::Parameter { .. }))
     {
         add(
@@ -457,7 +443,7 @@ fn node_symbol(node: &SyntaxNode, script: &Script) -> Option<DocumentSymbol> {
 }
 
 /// Builds a source-order outline from declarations in the parsed document.
-pub fn document_symbols(view: &ProjectAnalysisView, file: FileId) -> Vec<DocumentSymbol> {
+pub fn document_symbols(view: &IdeSnapshot, file: FileId) -> Vec<DocumentSymbol> {
     let Some(parse) = view.analysis.parse(file) else {
         return Vec::new();
     };
@@ -492,11 +478,7 @@ pub struct SignatureInfo {
 }
 
 /// Uses the innermost typed call and its declaration-order argument map.
-pub fn signature_help(
-    view: &ProjectAnalysisView,
-    file: FileId,
-    byte: usize,
-) -> Option<SignatureInfo> {
+pub fn signature_help(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<SignatureInfo> {
     let script = view.analysis.hir(file)?;
     let call = script
         .expressions

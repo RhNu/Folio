@@ -37,7 +37,7 @@ fn completion_uses_visible_locals_and_replaces_whole_identifier() {
     let view = project(&[("Example", text)]);
     let file = file(&view, "Example");
     let byte = text.rfind("amount").unwrap() + 2;
-    let items = completion(&view, file, byte);
+    let items = completion(&view, file, byte, &|| false).unwrap();
     let item = items.iter().find(|item| item.label == "amount").unwrap();
     assert_eq!(
         &text[item.replacement.start..item.replacement.end],
@@ -52,11 +52,16 @@ fn completion_does_not_expose_other_callable_locals_or_comment_names() {
     let view = project(&[("Example", text)]);
     let file = file(&view, "Example");
     assert!(
-        !completion(&view, file, text.find(" ; comment").unwrap())
+        !completion(&view, file, text.find(" ; comment").unwrap(), &|| false)
+            .unwrap()
             .iter()
             .any(|item| item.label == "secret")
     );
-    assert!(completion(&view, file, text.find("comment").unwrap() + 2).is_empty());
+    assert!(
+        completion(&view, file, text.find("comment").unwrap() + 2, &|| false)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -88,11 +93,11 @@ fn member_completion_preserves_instance_and_global_receiver_distinction() {
         "Scriptname User\nApi Property Owner Auto\nFunction Use()\n Owner.\n Api.\nEndFunction\n";
     let view = project(&[("Api", api), ("User", user)]);
     let file = file(&view, "User");
-    let instance = completion(&view, file, user.find("Owner.\n").unwrap() + 6);
+    let instance = completion(&view, file, user.find("Owner.\n").unwrap() + 6, &|| false).unwrap();
     assert!(instance.iter().any(|item| item.label == "Count"));
     assert!(instance.iter().any(|item| item.label == "Work"));
     assert!(!instance.iter().any(|item| item.label == "Utility"));
-    let global = completion(&view, file, user.find("Api.\n").unwrap() + 4);
+    let global = completion(&view, file, user.find("Api.\n").unwrap() + 4, &|| false).unwrap();
     assert!(global.iter().any(|item| item.label == "Utility"));
     assert!(!global.iter().any(|item| item.label == "Count"));
     assert!(!global.iter().any(|item| item.label == "Work"));
@@ -103,7 +108,7 @@ fn intrinsic_completion_signature_and_hover_reuse_semantic_shapes() {
     let text = "Scriptname Example\nFunction Use(Int[] values)\n values.Find(1)\n values.RFind(2, 3)\n Int size = values.Length\n String stateName = GetState()\n GotoState(\"Busy\")\n values.\nEndFunction\n";
     let view = project(&[("Example", text)]);
     let file = file(&view, "Example");
-    let items = completion(&view, file, text.find("values.\n").unwrap() + 7);
+    let items = completion(&view, file, text.find("values.\n").unwrap() + 7, &|| false).unwrap();
     assert_eq!(
         items
             .iter()
@@ -111,7 +116,7 @@ fn intrinsic_completion_signature_and_hover_reuse_semantic_shapes() {
             .collect::<Vec<_>>(),
         ["Find", "Length", "RFind"]
     );
-    let unqualified = completion(&view, file, text.find(" GotoState").unwrap());
+    let unqualified = completion(&view, file, text.find(" GotoState").unwrap(), &|| false).unwrap();
     assert!(unqualified.iter().any(|item| item.label == "GetState"));
     assert!(unqualified.iter().any(|item| item.label == "GotoState"));
     let help = crate::signature_help(&view, file, text.find("Find(1)").unwrap() + 5).unwrap();
@@ -143,7 +148,7 @@ fn inherited_imported_global_completion_uses_checker_lookup() {
     let user = "Scriptname User\nImport Child\nFunction Use()\n Utility()\nEndFunction\n";
     let view = project(&[("Base", base), ("Child", child), ("User", user)]);
     let file = file(&view, "User");
-    let items = completion(&view, file, user.find("Utility()").unwrap() + 2);
+    let items = completion(&view, file, user.find("Utility()").unwrap() + 2, &|| false).unwrap();
     assert!(items.iter().any(|item| item.label == "Utility"));
 }
 
@@ -152,7 +157,7 @@ fn completion_resolves_only_selected_declaration_and_documentation() {
     let text = "Scriptname Example\nInt Function Work(Int amount = 2) Native\n{ Updates the counter. }\nFunction Use()\n Wor\nEndFunction\n";
     let view = project(&[("Example", text)]);
     let file = file(&view, "Example");
-    let items = completion(&view, file, text.find(" Wor\n").unwrap() + 4);
+    let items = completion(&view, file, text.find(" Wor\n").unwrap() + 4, &|| false).unwrap();
     let item = items.iter().find(|item| item.label == "Work").unwrap();
     assert_eq!(item.kind, 3);
     assert_eq!(item.detail, "Int");
@@ -172,7 +177,7 @@ fn lazy_intrinsic_completion_retains_selected_array_element_type() {
     let text = "Scriptname Example\nFunction Use(String[] values)\n values.\nEndFunction\n";
     let view = project(&[("Example", text)]);
     let file = file(&view, "Example");
-    let items = completion(&view, file, text.find("values.\n").unwrap() + 7);
+    let items = completion(&view, file, text.find("values.\n").unwrap() + 7, &|| false).unwrap();
     let find = items.iter().find(|item| item.label == "Find").unwrap();
     assert_eq!(find.kind, 3);
     assert_eq!(find.documentation, None);
@@ -188,4 +193,91 @@ fn lazy_intrinsic_completion_retains_selected_array_element_type() {
         completion_hover(&view, length).unwrap().declaration,
         "Int Property Length"
     );
+}
+
+#[test]
+fn completion_merges_keywords_in_order_and_retains_semantic_collisions() {
+    let text = "ScriptName Example\nFunction Use()\n Int While = 1\n While = 2\nEndFunction\n";
+    let view = project(&[
+        ("Example", text),
+        ("Zulu", "ScriptName Zulu\n"),
+        ("Alpha", "ScriptName Alpha\n"),
+    ]);
+    let file = file(&view, "Example");
+    let items = completion(&view, file, text.find(" While = 2").unwrap(), &|| false).unwrap();
+    assert!(
+        items
+            .windows(2)
+            .all(|pair| pair[0].label.to_ascii_lowercase() < pair[1].label.to_ascii_lowercase())
+    );
+    let item = items
+        .iter()
+        .find(|item| item.label.eq_ignore_ascii_case("While"))
+        .unwrap();
+    assert!(matches!(item.symbol, Some(Symbol::Local { .. })));
+    assert!(items.iter().any(|item| item.label == "Auto State"));
+    assert!(items.iter().any(|item| item.label == "Alpha"));
+    assert!(items.iter().any(|item| item.label == "Zulu"));
+}
+
+#[test]
+fn completion_filters_array_intrinsics_before_presentation() {
+    let text = "ScriptName Example\nFunction Use(Int[] values)\n values.rF\nEndFunction\n";
+    let view = project(&[("Example", text)]);
+    let file = file(&view, "Example");
+    let items = completion(
+        &view,
+        file,
+        text.find("values.rF").unwrap() + "values.rF".len(),
+        &|| false,
+    )
+    .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].label, "RFind");
+}
+
+#[test]
+fn completion_returns_cancellation_without_partial_results() {
+    let text = "ScriptName Example\nFunction Use()\nEndFunction\n";
+    let view = project(&[("Example", text)]);
+    let file = file(&view, "Example");
+    assert_eq!(
+        completion(&view, file, text.find("EndFunction").unwrap(), &|| true),
+        Err(folio_analysis::AnalysisCancelled)
+    );
+    let checks = std::cell::Cell::new(0);
+    let cancelled = || {
+        checks.set(checks.get() + 1);
+        checks.get() >= 3
+    };
+    assert_eq!(
+        completion(&view, file, text.find("EndFunction").unwrap(), &cancelled),
+        Err(folio_analysis::AnalysisCancelled)
+    );
+    assert!(
+        !completion(&view, file, text.find("EndFunction").unwrap(), &|| false)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn completion_suppresses_token_contents_and_accepts_their_end_boundaries() {
+    let text =
+        "ScriptName Example\nFunction Use()\n String text = \"value\"\n ; marker \nEndFunction\n";
+    let view = project(&[("Example", text)]);
+    let file = file(&view, "Example");
+    for content in ["\"value\"", "; marker "] {
+        let start = text.find(content).unwrap();
+        assert!(
+            completion(&view, file, start, &|| false)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !completion(&view, file, start + content.len(), &|| false)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
