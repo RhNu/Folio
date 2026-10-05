@@ -1,6 +1,7 @@
 //! Minimal source-mapped MIR builders shared by validation tests.
-use crate::{Function, Instruction, Local, Op};
 use folio_source::{FileId, SourceSpan, TextRange};
+
+use crate::{Function, Instruction, Local, Op};
 
 pub(crate) fn source() -> SourceSpan {
     SourceSpan {

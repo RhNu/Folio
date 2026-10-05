@@ -78,9 +78,7 @@ impl LineIndex {
     }
 
     /// Returns the number of lines, including a trailing empty line after a newline.
-    pub fn line_count(&self) -> usize {
-        self.line_starts.len()
-    }
+    pub fn line_count(&self) -> usize { self.line_starts.len() }
 }
 
 #[cfg(test)]

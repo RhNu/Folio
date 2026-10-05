@@ -31,7 +31,7 @@ impl std::fmt::Display for ManifestError {
             ManifestErrorKind::Toml(reason) => write!(f, ": {reason}"),
             ManifestErrorKind::InvalidValue { field, reason } => {
                 write!(f, ": invalid {field}: {reason}")
-            }
+            },
         }
     }
 }
@@ -126,6 +126,9 @@ struct RawLint {
 }
 
 /// Parse a manifest from supplied text, preserving spans of every leaf field.
+///
+/// # Errors
+/// Returns an error for malformed TOML, unknown fields, unsupported settings, or invalid manifest values.
 pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
     let raw: RawManifest =
         toml::from_str(input).map_err(|error: toml::de::Error| ManifestError {
@@ -135,6 +138,66 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
         })?;
 
     let mut fields = BTreeMap::new();
+    validate_core_fields(source, &raw, &mut fields)?;
+    let source_path = path_setting(
+        source,
+        "paths.source",
+        raw.paths.source,
+        "Source/Scripts",
+        &mut fields,
+    )?;
+    let output_path = path_setting(
+        source,
+        "paths.output",
+        raw.paths.output,
+        "Scripts",
+        &mut fields,
+    )?;
+    if paths_overlap(&source_path.value, &output_path.value) {
+        return Err(invalid(
+            source,
+            "paths.output",
+            "source and output paths must not overlap",
+            Some(output_path.span.start..output_path.span.end),
+        ));
+    }
+    let extensions = parse_extensions(source, raw.languages.papyrus.extensions, &mut fields)?;
+    let user_flags = parse_user_flags(source, raw.languages.papyrus.user_flags, &mut fields)?;
+    let emit = parse_emit(source, raw.build.emit, &mut fields)?;
+    let dependencies = parse_dependencies(source, raw.dependencies, &mut fields)?;
+    let lint_rules = parse_lint_rules(source, raw.lint.rules, &mut fields)?;
+    Ok(Manifest {
+        source: source.to_owned(),
+        fields,
+        name: raw.package.name.into_inner(),
+        version: raw.package.version.into_inner(),
+        source_path,
+        output_path,
+        language: "papyrus".into(),
+        dialect: raw.languages.papyrus.dialect.into_inner(),
+        extensions,
+        user_flags,
+        fill_missing_arguments: raw
+            .languages
+            .papyrus
+            .fill_missing_arguments
+            .is_some_and(Spanned::into_inner),
+        lint_rules,
+        target: raw.build.target.into_inner(),
+        profile: raw.build.profile.into_inner(),
+        debug_info: raw.build.debug_info.is_none_or(Spanned::into_inner),
+        experimental_pex_dependencies: raw.experimental.pex_dependencies,
+        emit,
+        dependencies,
+    })
+}
+
+/// Validate supported language and build settings and retain their source locations.
+fn validate_core_fields(
+    source: &str,
+    raw: &RawManifest,
+    fields: &mut BTreeMap<String, SourceSpan>,
+) -> Result<(), ManifestError> {
     for (field, value) in [
         ("package.name", &raw.package.name),
         ("package.version", &raw.package.version),
@@ -191,32 +254,16 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
             Some(raw.build.target.span()),
         ));
     }
-    let source_path = path_setting(
-        source,
-        "paths.source",
-        raw.paths.source,
-        "Source/Scripts",
-        &mut fields,
-    )?;
-    let output_path = path_setting(
-        source,
-        "paths.output",
-        raw.paths.output,
-        "Scripts",
-        &mut fields,
-    )?;
-    if paths_overlap(&source_path.value, &output_path.value) {
-        return Err(invalid(
-            source,
-            "paths.output",
-            "source and output paths must not overlap",
-            Some(output_path.span.start..output_path.span.end),
-        ));
-    }
-    let extensions = raw
-        .languages
-        .papyrus
-        .extensions
+    Ok(())
+}
+
+/// Parse and validate manifest extensions while preserving field spans.
+fn parse_extensions(
+    source: &str,
+    values: Spanned<Vec<Spanned<String>>>,
+    fields: &mut BTreeMap<String, SourceSpan>,
+) -> Result<Vec<String>, ManifestError> {
+    let extensions = values
         .into_inner()
         .into_iter()
         .enumerate()
@@ -235,11 +282,17 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
             Ok(value.into_inner())
         })
         .collect::<Result<Vec<_>, ManifestError>>()?;
+    Ok(extensions)
+}
+
+/// Parse and validate manifest user flags while preserving field spans.
+fn parse_user_flags(
+    source: &str,
+    values: Vec<Spanned<RawUserFlag>>,
+    fields: &mut BTreeMap<String, SourceSpan>,
+) -> Result<Vec<folio_profiles::UserFlag>, ManifestError> {
     let mut seen_flags = std::collections::BTreeSet::new();
-    let user_flags = raw
-        .languages
-        .papyrus
-        .user_flags
+    let user_flags = values
         .into_iter()
         .enumerate()
         .map(|(index, value)| {
@@ -293,7 +346,7 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
             Ok(definition)
         })
         .collect::<Result<Vec<_>, ManifestError>>()?;
-    folio_profiles::resolve_user_flags(&user_flags, 31).map_err(|_| {
+    folio_profiles::resolve_user_flags(&user_flags, 31).map_err(|_cause| {
         invalid(
             source,
             "languages.papyrus.user-flags",
@@ -301,9 +354,16 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
             None,
         )
     })?;
-    let emit = raw
-        .build
-        .emit
+    Ok(user_flags)
+}
+
+/// Parse and validate manifest emit while preserving field spans.
+fn parse_emit(
+    source: &str,
+    values: Spanned<Vec<Spanned<String>>>,
+    fields: &mut BTreeMap<String, SourceSpan>,
+) -> Result<Vec<String>, ManifestError> {
+    let emit = values
         .into_inner()
         .into_iter()
         .enumerate()
@@ -321,9 +381,17 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
             Ok(value.into_inner())
         })
         .collect::<Result<Vec<_>, ManifestError>>()?;
+    Ok(emit)
+}
+
+/// Parse and validate manifest dependencies while preserving field spans.
+fn parse_dependencies(
+    source: &str,
+    values: Vec<RawDependency>,
+    fields: &mut BTreeMap<String, SourceSpan>,
+) -> Result<Vec<DependencySpec>, ManifestError> {
     let mut dependency_names = std::collections::BTreeSet::new();
-    let dependencies = raw
-        .dependencies
+    let dependencies = values
         .into_iter()
         .enumerate()
         .map(|(index, dep)| {
@@ -376,9 +444,16 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
             })
         })
         .collect::<Result<Vec<_>, ManifestError>>()?;
-    let lint_rules = raw
-        .lint
-        .rules
+    Ok(dependencies)
+}
+
+/// Parse and validate manifest lint rules while preserving field spans.
+fn parse_lint_rules(
+    source: &str,
+    values: BTreeMap<String, Spanned<String>>,
+    fields: &mut BTreeMap<String, SourceSpan>,
+) -> Result<BTreeMap<String, String>, ManifestError> {
+    let lint_rules = values
         .into_iter()
         .map(|(rule, level)| {
             let field = format!("lint.rules.{rule}");
@@ -397,30 +472,7 @@ pub fn parse(source: &str, input: &str) -> Result<Manifest, ManifestError> {
             Ok((rule, level.into_inner()))
         })
         .collect::<Result<BTreeMap<_, _>, ManifestError>>()?;
-    Ok(Manifest {
-        source: source.to_owned(),
-        fields,
-        name: raw.package.name.into_inner(),
-        version: raw.package.version.into_inner(),
-        source_path,
-        output_path,
-        language: "papyrus".into(),
-        dialect: raw.languages.papyrus.dialect.into_inner(),
-        extensions,
-        user_flags,
-        fill_missing_arguments: raw
-            .languages
-            .papyrus
-            .fill_missing_arguments
-            .is_some_and(|value| value.into_inner()),
-        lint_rules,
-        target: raw.build.target.into_inner(),
-        profile: raw.build.profile.into_inner(),
-        debug_info: raw.build.debug_info.is_none_or(|value| value.into_inner()),
-        experimental_pex_dependencies: raw.experimental.pex_dependencies,
-        emit,
-        dependencies,
-    })
+    Ok(lint_rules)
 }
 
 fn span(source: &str, range: Range<usize>) -> SourceSpan {
@@ -514,6 +566,9 @@ fn paths_overlap(source: &str, output: &str) -> bool {
 }
 
 /// Repository keys use a portable, normalized path and never traverse parents.
+///
+/// # Errors
+/// Returns an error if the key is empty, nonportable, reserved, or traverses parent directories.
 pub fn validate_repo_key(key: &str) -> Result<(), &'static str> {
     if key.is_empty()
         || key.contains(['\\', ':', '*', '?', '<', '>', '|', '"'])

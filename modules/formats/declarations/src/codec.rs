@@ -31,14 +31,18 @@ impl std::fmt::Display for DecodeError {
             Self::Binary(error) => write!(f, "invalid binary declaration: {error}"),
             Self::UnsupportedSchema(version) => {
                 write!(f, "unsupported declaration schema {version}")
-            }
+            },
             Self::Invalid { field, reason } => write!(f, "invalid {field}: {reason}"),
         }
     }
 }
+
 impl std::error::Error for DecodeError {}
 
 /// Detect the carrier from bytes and apply the same declaration validator.
+///
+/// # Errors
+/// Returns an error for malformed, unsupported, oversized, or structurally invalid carriers.
 pub fn decode(input: &[u8]) -> Result<DeclarationBundle, DecodeError> {
     if input.len() > MAX_BYTES {
         return Err(invalid("input", "carrier exceeds capacity limit"));
@@ -59,6 +63,9 @@ pub fn decode(input: &[u8]) -> Result<DeclarationBundle, DecodeError> {
 }
 
 /// Encode an already validated declaration model in either supported carrier.
+///
+/// # Errors
+/// Returns an error if validation, serialization, compression, or carrier size checks fail.
 pub fn encode(
     bundle: &DeclarationBundle,
     format: DeclarationFormat,
@@ -70,7 +77,7 @@ pub fn encode(
     let bytes = match format {
         DeclarationFormat::Json => {
             serde_json::to_vec_pretty(bundle).map_err(DecodeError::Syntax)?
-        }
+        },
         DeclarationFormat::Binary => encode_binary(bundle)?,
     };
     if bytes.len() > MAX_BYTES {
@@ -119,11 +126,11 @@ fn decode_binary(input: &[u8]) -> Result<DeclarationBundle, DecodeError> {
     if raw_len > MAX_BYTES as u64 || compressed_len > MAX_BYTES as u64 {
         return Err(binary("length exceeds capacity limit"));
     }
-    if compressed_len as usize != input.len() - HEADER_SIZE {
+    if usize::try_from(compressed_len).map_err(binary)? != input.len() - HEADER_SIZE {
         return Err(binary("compressed length mismatch or trailing bytes"));
     }
     let mut decoder = flate2::Decompress::new(false);
-    let mut payload = Vec::with_capacity(raw_len as usize + 1);
+    let mut payload = Vec::with_capacity(usize::try_from(raw_len).map_err(binary)? + 1);
     let status = decoder
         .decompress_vec(
             &input[HEADER_SIZE..],

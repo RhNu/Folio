@@ -1,4 +1,5 @@
 use super::*;
+
 #[test]
 fn version_periods_are_not_format_suffixes() {
     assert_eq!(
@@ -13,6 +14,7 @@ fn version_periods_are_not_format_suffixes() {
         vec![PathBuf::from("/repo/ck/1.6.1170.0.json")]
     );
 }
+
 #[test]
 fn ambiguity_requires_explicit_format() {
     let candidates = repo_candidates(Path::new("/repo"), "api");
@@ -25,6 +27,7 @@ fn ambiguity_requires_explicit_format() {
         candidates[0]
     );
 }
+
 #[test]
 fn explicit_home_must_be_absolute() {
     assert!(FolioHome::from_values(Some(std::ffi::OsStr::new("relative")), None).is_err());

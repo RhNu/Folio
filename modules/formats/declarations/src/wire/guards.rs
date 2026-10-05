@@ -1,11 +1,12 @@
 //! Bound allocations before deserializing either carrier into owned values.
 
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
+
 use crate::{
     DecodeError,
     codec::binary,
     validation::{MAX_CONTAINER, MAX_DEPTH, MAX_STRING, MAX_VALUES},
 };
-use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 
 pub(crate) fn guard_messagepack(input: &[u8]) -> Result<(), DecodeError> {
     let mut scanner = Scanner {
@@ -39,12 +40,14 @@ impl Scanner<'_> {
         self.cursor = end;
         Ok(bytes)
     }
+
     fn number(&mut self, bytes: usize) -> Result<usize, DecodeError> {
         Ok(self
             .take(bytes)?
             .iter()
             .fold(0usize, |value, byte| (value << 8) | usize::from(*byte)))
     }
+
     fn value(&mut self, depth: usize) -> Result<(), DecodeError> {
         self.values += 1;
         if self.values > MAX_VALUES || depth > MAX_DEPTH {
@@ -52,49 +55,50 @@ impl Scanner<'_> {
         }
         let tag = self.take(1)?[0];
         match tag {
-            0x00..=0x7f | 0xc0 | 0xc2 | 0xc3 | 0xe0..=0xff => {}
-            0xcc | 0xd0 => {
+            0x00..=0x7F | 0xC0 | 0xC2 | 0xC3 | 0xE0..=0xFF => {},
+            0xCC | 0xD0 => {
                 self.take(1)?;
-            }
-            0xcd | 0xd1 => {
+            },
+            0xCD | 0xD1 => {
                 self.take(2)?;
-            }
-            0xce | 0xd2 => {
+            },
+            0xCE | 0xD2 => {
                 self.take(4)?;
-            }
-            0xcf | 0xd3 => {
+            },
+            0xCF | 0xD3 => {
                 self.take(8)?;
-            }
-            0xa0..=0xbf => self.string(usize::from(tag & 31))?,
-            0xd9 => {
+            },
+            0xA0..=0xBF => self.string(usize::from(tag & 31))?,
+            0xD9 => {
                 let len = self.number(1)?;
                 self.string(len)?;
-            }
-            0xda => {
+            },
+            0xDA => {
                 let len = self.number(2)?;
                 self.string(len)?;
-            }
-            0xdb => {
+            },
+            0xDB => {
                 let len = self.number(4)?;
                 self.string(len)?;
-            }
-            0x90..=0x9f => self.array(usize::from(tag & 15), depth)?,
-            0xdc => {
+            },
+            0x90..=0x9F => self.array(usize::from(tag & 15), depth)?,
+            0xDC => {
                 let len = self.number(2)?;
                 self.array(len, depth)?;
-            }
-            0xdd => {
+            },
+            0xDD => {
                 let len = self.number(4)?;
                 self.array(len, depth)?;
-            }
+            },
             _ => {
                 return Err(binary(
                     "unexpected MessagePack tag for declaration wire format",
                 ));
-            }
+            },
         }
         Ok(())
     }
+
     fn string(&mut self, len: usize) -> Result<(), DecodeError> {
         if len > MAX_STRING {
             return Err(binary("MessagePack string exceeds capacity limit"));
@@ -103,6 +107,7 @@ impl Scanner<'_> {
         std::str::from_utf8(bytes).map_err(binary)?;
         Ok(())
     }
+
     fn array(&mut self, len: usize, depth: usize) -> Result<(), DecodeError> {
         if len > MAX_CONTAINER || len > MAX_VALUES - self.values {
             return Err(binary("MessagePack container exceeds capacity limit"));
@@ -133,6 +138,7 @@ struct Guard<'a> {
 
 impl<'de> DeserializeSeed<'de> for Guard<'_> {
     type Value = ();
+
     fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
         *self.values += 1;
         if *self.values > MAX_VALUES || self.depth > MAX_DEPTH {
@@ -144,24 +150,21 @@ impl<'de> DeserializeSeed<'de> for Guard<'_> {
 
 impl<'de> Visitor<'de> for Guard<'_> {
     type Value = ();
+
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("bounded JSON declaration data")
     }
-    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
-        Ok(())
-    }
+
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<(), E> { Ok(()) }
+
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<(), E> { Ok(()) }
+
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<(), E> { Ok(()) }
+
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<(), E> { Ok(()) }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> { Ok(()) }
+
     fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<(), E> {
         if value.len() > MAX_STRING {
             Err(E::custom("JSON string exceeds capacity limit"))
@@ -169,6 +172,7 @@ impl<'de> Visitor<'de> for Guard<'_> {
             Ok(())
         }
     }
+
     fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<(), A::Error> {
         let mut count = 0;
         while sequence
@@ -187,6 +191,7 @@ impl<'de> Visitor<'de> for Guard<'_> {
         }
         Ok(())
     }
+
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
         let mut count = 0;
         while map

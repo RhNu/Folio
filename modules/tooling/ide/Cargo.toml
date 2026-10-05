@@ -15,6 +15,3 @@ folio-papyrus = { path = "../../languages/papyrus" }
 folio-source = { path = "../../foundation/source" }
 folio-profiles = { path = "../../foundation/profiles" }
 tracing.workspace = true
-
-[lints]
-workspace = true

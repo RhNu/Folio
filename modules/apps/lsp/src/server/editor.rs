@@ -1,9 +1,14 @@
 //! All semantic editor queries run against one cancellable immutable snapshot.
-use super::*;
-use crate::protocol::{parse_position, path_to_uri, range_json};
 use folio_hir::Symbol;
 use folio_ide::PositionIndex;
 use folio_source::{SourceSpan, TextRange};
+
+use super::{
+    Arc, BTreeMap, BTreeSet, FileId, Instant, LoadedProject, LspError, Metadata, Mutex, Ordering,
+    PathBuf, PositionEncoding, Server, Value, json, presentation, requests, scheduling, send,
+    settings, uri_to_path,
+};
+use crate::protocol::{parse_position, path_to_uri, range_json};
 
 mod completions;
 mod features;
@@ -89,12 +94,12 @@ impl Server {
         params: &Value,
         received: Instant,
     ) -> Result<(), LspError> {
-        if self.shutdown {
-            return self.error(id, -32800, "server is shutting down");
+        if self.session.shutdown {
+            return self.error(&id, -32800, "server is shutting down");
         }
         if self.loading {
             if matches!(method, "completionItem/resolve" | "codeLens/resolve") {
-                return self.error(id, -32801, "project snapshot changed; request a new item");
+                return self.error(&id, -32801, "project snapshot changed; request a new item");
             }
             if matches!(
                 method,
@@ -102,16 +107,16 @@ impl Server {
                     | "textDocument/codeLens"
                     | "textDocument/inlayHint"
             ) {
-                return self.reply(id, empty_answer(method));
+                return self.reply(&id, &empty_answer(method));
             }
             // Outlines have no standard refresh notification. Keep their request,
             // along with interactive queries, until the matching snapshot is ready.
             if self.deferred.len() >= 64 {
-                return self.error(id, -32800, "loading query queue is full");
+                return self.error(&id, -32800, "loading query queue is full");
             }
             self.pending
                 .lock()
-                .map_err(|_| LspError::Protocol("pending lock poisoned".into()))?
+                .map_err(|_poisoned| LspError::Protocol("pending lock poisoned".into()))?
                 .insert(id.to_string());
             self.deferred.push_back(DeferredQuery {
                 id,
@@ -134,34 +139,7 @@ impl Server {
         loading_wait_us: u128,
     ) -> Result<(), LspError> {
         let context_started = Instant::now();
-        let mut context = QueryContext {
-            view: self.ide.clone(),
-            metadata: self.metadata.clone(),
-            loaded: self.projected_inputs.clone(),
-            paths: self.paths.clone(),
-            uris: self
-                .paths
-                .iter()
-                .map(|(path, file)| (path_to_uri(path), *file))
-                .collect(),
-            versions: self
-                .paths
-                .iter()
-                .map(|(path, file)| (*file, self.documents.version(path)))
-                .collect(),
-            encoding: self.encoding,
-            generation: self.generation.load(Ordering::SeqCst),
-            settings: self.editor_settings.clone(),
-            markdown: self.markdown,
-            commands: self.client_commands,
-            virtual_documents: self.declaration_documents,
-            overlays: self
-                .documents
-                .overlays()
-                .map(|(path, text)| (path.clone(), Arc::<str>::from(text)))
-                .collect(),
-            completions: self.completions.clone(),
-        };
+        let mut context = self.query_context();
         let method = method.to_owned();
         let params = params.clone();
         let generation = Arc::clone(&self.generation);
@@ -172,7 +150,7 @@ impl Server {
         let key = id.to_string();
         pending
             .lock()
-            .map_err(|_| LspError::Protocol("pending lock poisoned".into()))?
+            .map_err(|_poisoned| LspError::Protocol("pending lock poisoned".into()))?
             .insert(key.clone());
         let rejected_id = id.clone();
         let rejected_key = key.clone();
@@ -199,16 +177,7 @@ impl Server {
                 )
             });
             context.view = context.view.map(|view| view.with_cancellation(Arc::clone(&obsolete)));
-            let result = if obsolete()
-                || context
-                    .view
-                    .as_ref()
-                    .is_some_and(|view| view.analysis.try_warm_semantics(|| obsolete()).is_err())
-            {
-                Err((-32800, "request cancelled".into()))
-            } else {
-                context.answer(&method, &params)
-            };
+            let result = context.answer_cancellable(&method, &params, &*obsolete);
             let query_us = started.elapsed().as_micros();
             let publication_started = Instant::now();
             // The handler cannot invalidate or cancel between this check and the write.
@@ -262,12 +231,44 @@ impl Server {
             }
             tracing::warn!(id=%rejected_id, "editor query queue full");
             self.error(
-                rejected_id,
+                &rejected_id,
                 -32800,
                 "editor query queue is full; retry request",
             )?;
         }
         Ok(())
+    }
+
+    /// Capture all query inputs before a worker starts using the immutable generation.
+    fn query_context(&self) -> QueryContext {
+        QueryContext {
+            view: self.ide.clone(),
+            metadata: self.metadata.clone(),
+            loaded: self.projected_inputs.clone(),
+            paths: self.paths.clone(),
+            uris: self
+                .paths
+                .iter()
+                .map(|(path, file)| (path_to_uri(path), *file))
+                .collect(),
+            versions: self
+                .paths
+                .iter()
+                .map(|(path, file)| (*file, self.documents.version(path)))
+                .collect(),
+            encoding: self.encoding,
+            generation: self.generation.load(Ordering::SeqCst),
+            settings: self.editor_settings.clone(),
+            markdown: self.client.presentation.markdown,
+            commands: self.client.presentation.commands,
+            virtual_documents: self.client.presentation.declaration_documents,
+            overlays: self
+                .documents
+                .overlays()
+                .map(|(path, text)| (path.clone(), Arc::<str>::from(text)))
+                .collect(),
+            completions: self.completions.clone(),
+        }
     }
 
     pub(super) fn poll_deferred(&mut self) -> Result<(), LspError> {
@@ -285,7 +286,7 @@ impl Server {
                 .lock()
                 .is_ok_and(|items| items.contains(&key));
             let stale = generation != self.generation.load(Ordering::SeqCst);
-            if self.loading && !cancelled && !stale && !self.shutdown {
+            if self.loading && !cancelled && !stale && !self.session.shutdown {
                 self.deferred.push_back(DeferredQuery {
                     id,
                     method,
@@ -301,8 +302,8 @@ impl Server {
             if let Ok(mut items) = self.cancelled.lock() {
                 items.remove(&key);
             }
-            if cancelled || stale || self.shutdown {
-                self.error(id, -32800, "loading query cancelled")?;
+            if cancelled || stale || self.session.shutdown {
+                self.error(&id, -32800, "loading query cancelled")?;
                 tracing::debug!(
                     method,
                     generation,
@@ -324,6 +325,25 @@ impl Server {
 }
 
 impl QueryContext {
+    /// Warm and answer only while the captured generation remains current.
+    fn answer_cancellable(
+        &self,
+        method: &str,
+        params: &Value,
+        obsolete: &dyn Fn() -> bool,
+    ) -> QueryResult {
+        if obsolete()
+            || self
+                .view
+                .as_ref()
+                .is_some_and(|view| view.analysis.try_warm_semantics(obsolete).is_err())
+        {
+            Err((-32800, "request cancelled".into()))
+        } else {
+            self.answer(method, params)
+        }
+    }
+
     fn answer(&self, method: &str, params: &Value) -> QueryResult {
         if self.view.is_none() {
             return Ok(empty_answer(method));

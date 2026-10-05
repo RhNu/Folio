@@ -1,7 +1,8 @@
-use super::*;
 use folio_mir::{Instruction, Property, Variable};
 use folio_profiles::TargetProfile;
 use folio_source::TextRange;
+
+use super::*;
 
 fn source() -> SourceSpan {
     SourceSpan {

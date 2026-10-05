@@ -8,13 +8,10 @@ impl ScriptAst {
     pub fn cast(node: SyntaxNode) -> Option<Self> {
         (node.kind() == SyntaxKind::ScriptDecl).then_some(Self(node))
     }
-    pub fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
 
-    pub fn name(&self) -> Option<String> {
-        self.words().nth(1)
-    }
+    pub fn syntax(&self) -> &SyntaxNode { &self.0 }
+
+    pub fn name(&self) -> Option<String> { self.words().nth(1) }
 
     pub fn parent(&self) -> Option<String> {
         let mut words = self.words();
@@ -46,7 +43,7 @@ impl ScriptAst {
     fn words(&self) -> impl Iterator<Item = String> + '_ {
         self.0
             .children_with_tokens()
-            .filter_map(|element| element.into_token())
+            .filter_map(rowan::NodeOrToken::into_token)
             .filter(|token| token.kind() == SyntaxKind::Ident)
             .map(|token| token.text().to_string())
     }
@@ -60,9 +57,8 @@ impl FunctionAst {
     pub fn cast(node: SyntaxNode) -> Option<Self> {
         (node.kind() == SyntaxKind::FunctionDecl).then_some(Self(node))
     }
-    pub fn syntax(&self) -> &SyntaxNode {
-        &self.0
-    }
+
+    pub fn syntax(&self) -> &SyntaxNode { &self.0 }
 
     pub fn has_complete_signature(&self) -> bool {
         !self
@@ -83,7 +79,7 @@ impl FunctionAst {
             .0
             .children_with_tokens()
             .take_while(|element| element.kind() != SyntaxKind::ParameterList)
-            .filter_map(|element| element.into_token())
+            .filter_map(rowan::NodeOrToken::into_token)
         {
             if token.kind() != SyntaxKind::Ident {
                 continue;
@@ -100,16 +96,12 @@ impl FunctionAst {
         self.0
             .children()
             .find(|child| child.kind() == SyntaxKind::TypeRef)
-            .map(type_text)
+            .map(|node| type_text(&node))
     }
 
-    pub fn parameters(&self) -> Vec<Parameter> {
-        node_parameters(&self.0)
-    }
+    pub fn parameters(&self) -> Vec<Parameter> { node_parameters(&self.0) }
 
-    pub fn modifiers(&self) -> Vec<String> {
-        node_modifiers(&self.0)
-    }
+    pub fn modifiers(&self) -> Vec<String> { node_modifiers(&self.0) }
 }
 
 pub(crate) fn node_parameters(node: &SyntaxNode) -> Vec<Parameter> {
@@ -122,13 +114,13 @@ pub(crate) fn node_parameters(node: &SyntaxNode) -> Vec<Parameter> {
             let ty = node
                 .children()
                 .find(|child| child.kind() == SyntaxKind::TypeRef)
-                .map(type_text)?;
+                .map(|node| type_text(&node))?;
             if ty.is_empty() {
                 return None;
             }
             let name = node
                 .children_with_tokens()
-                .filter_map(|element| element.into_token())
+                .filter_map(rowan::NodeOrToken::into_token)
                 .find(|token| token.kind() == SyntaxKind::Ident)?
                 .text()
                 .to_string();
@@ -136,9 +128,9 @@ pub(crate) fn node_parameters(node: &SyntaxNode) -> Vec<Parameter> {
                 .children_with_tokens()
                 .skip_while(|element| element.kind() != SyntaxKind::Equals)
                 .skip(1)
-                .flat_map(|element| element.into_node())
+                .filter_map(rowan::NodeOrToken::into_node)
                 .flat_map(|expression| expression.descendants_with_tokens())
-                .filter_map(|element| element.into_token())
+                .filter_map(rowan::NodeOrToken::into_token)
                 .filter(|token| !token.kind().is_trivia())
                 .map(|token| token.text().to_string())
                 .collect::<String>();
@@ -156,15 +148,15 @@ pub(crate) fn node_modifiers(node: &SyntaxNode) -> Vec<String> {
         .skip_while(|element| element.kind() != SyntaxKind::ParameterList)
         .skip(1)
         .take_while(|element| element.kind() != SyntaxKind::Block)
-        .filter_map(|element| element.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .filter(|token| token.kind() == SyntaxKind::Ident)
         .map(|token| token.text().to_ascii_lowercase())
         .collect()
 }
 
-pub(crate) fn type_text(node: SyntaxNode) -> String {
+pub(crate) fn type_text(node: &SyntaxNode) -> String {
     node.children_with_tokens()
-        .filter_map(|element| element.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .filter(|token| !token.kind().is_trivia())
         .map(|token| token.text().to_string())
         .collect()

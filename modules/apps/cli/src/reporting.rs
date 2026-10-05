@@ -1,5 +1,6 @@
 //! Text and JSON reports for command results and diagnostics.
-use super::CliError;
+use std::io::Write;
+
 use folio_build::{ProjectAnalysisView, execute, output};
 use folio_diagnostics::{Diagnostic, Severity};
 use folio_project_model::{
@@ -7,7 +8,8 @@ use folio_project_model::{
 };
 use folio_source::SourceSpan;
 use serde::Serialize;
-use std::io::Write;
+
+use super::CliError;
 
 pub(super) fn print_build(
     output: &mut impl Write,

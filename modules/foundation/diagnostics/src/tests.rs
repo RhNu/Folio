@@ -1,5 +1,6 @@
-use super::{Diagnostic, Severity};
 use folio_source::{FileId, SourceSpan, TextRange};
+
+use super::{Diagnostic, Severity};
 
 #[test]
 fn keeps_file_identity_with_the_primary_range() {

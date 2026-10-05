@@ -1,6 +1,11 @@
-use super::*;
+use super::{
+    BinaryWriter, PEX_MAGIC, PexDebugInfo, PexFile, PexFunction, PexInstruction, PexObject,
+    PexProperty, PexState, PexValue, PexVariable, PexWriteError, string_id_eq, validate_for_write,
+};
 
 impl PexFile {
+    /// # Errors
+    /// Returns an error when the model violates PEX layout, reference, or size constraints.
     pub fn write_to_vec(&self) -> Result<Vec<u8>, PexWriteError> {
         let _span = tracing::debug_span!(
             "write_pex",
@@ -108,7 +113,10 @@ pub(crate) fn write_object(
         return Err(PexWriteError::ObjectTooLarge { len: body.len() });
     }
 
-    writer.write_u32(body.len() as u32);
+    writer.write_u32(
+        u32::try_from(body.len())
+            .map_err(|_cause| PexWriteError::ObjectTooLarge { len: body.len() })?,
+    );
     writer.bytes.extend(body);
     Ok(())
 }
@@ -364,7 +372,12 @@ pub(crate) fn write_instruction(
     if instruction.opcode.has_variadic_arguments() {
         write_value(
             writer,
-            PexValue::Integer(instruction.variadic_arguments.len() as i32),
+            PexValue::Integer(i32::try_from(instruction.variadic_arguments.len()).map_err(
+                |_cause| PexWriteError::CountTooLarge {
+                    what: "variadic argument count",
+                    len: instruction.variadic_arguments.len(),
+                },
+            )?),
             string_table_len,
         )?;
         for argument in &instruction.variadic_arguments {
@@ -383,27 +396,27 @@ pub(crate) fn write_value(
     match value {
         PexValue::None => {
             writer.write_u8(0);
-        }
+        },
         PexValue::Identifier(id) => {
             writer.write_u8(1);
             writer.write_string_id(id, string_table_len)?;
-        }
+        },
         PexValue::String(id) => {
             writer.write_u8(2);
             writer.write_string_id(id, string_table_len)?;
-        }
+        },
         PexValue::Integer(value) => {
             writer.write_u8(3);
             writer.write_i32(value);
-        }
+        },
         PexValue::Float(value) => {
             writer.write_u8(4);
             writer.write_f32(value);
-        }
+        },
         PexValue::Bool(value) => {
             writer.write_u8(5);
             writer.write_u8(u8::from(value));
-        }
+        },
     }
 
     Ok(())

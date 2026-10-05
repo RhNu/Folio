@@ -146,14 +146,14 @@ pub struct Property {
     pub source: SourceSpan,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Local {
     pub name: String,
     pub ty: String,
 }
 
 /// Parent-owned storage retained for provenance, never emitted locally.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalSlot {
     pub owner: String,
     pub name: String,

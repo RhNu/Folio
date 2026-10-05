@@ -1,5 +1,6 @@
-use crate::SyntaxKind;
 use folio_source::TextRange;
+
+use crate::SyntaxKind;
 
 /// One token with its original UTF-8 byte range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,9 +10,7 @@ pub struct LexToken {
 }
 
 impl LexToken {
-    pub fn text<'a>(&self, source: &'a str) -> &'a str {
-        &source[self.range.start..self.range.end]
-    }
+    pub fn text<'a>(&self, source: &'a str) -> &'a str { &source[self.range.start..self.range.end] }
 }
 
 /// Lexes every byte, including malformed strings and otherwise unknown characters.
@@ -21,7 +20,9 @@ pub fn lex(source: &str) -> Vec<LexToken> {
     let mut continued_newline = None;
     while offset < source.len() {
         let remaining = &source[offset..];
-        let first = remaining.chars().next().expect("nonempty remainder");
+        let Some(first) = remaining.chars().next() else {
+            break;
+        };
         let (kind, len) = match first {
             '\r' | '\n' => {
                 let kind = if continued_newline == Some(offset) {
@@ -31,7 +32,7 @@ pub fn lex(source: &str) -> Vec<LexToken> {
                     SyntaxKind::Newline
                 };
                 (kind, if remaining.starts_with("\r\n") { 2 } else { 1 })
-            }
+            },
             ' ' | '\t' => (
                 SyntaxKind::Whitespace,
                 remaining
@@ -60,56 +61,16 @@ pub fn lex(source: &str) -> Vec<LexToken> {
                 } else {
                     (SyntaxKind::Unknown, 1)
                 }
-            }
-            '"' => {
-                let mut escaped = false;
-                let mut end = None;
-                for (index, ch) in remaining.char_indices().skip(1) {
-                    if ch == '\r' || ch == '\n' {
-                        break;
-                    }
-                    if ch == '"' && !escaped {
-                        end = Some(index + ch.len_utf8());
-                        break;
-                    }
-                    escaped = ch == '\\' && !escaped;
-                }
-                match end {
-                    Some(end) => (SyntaxKind::String, end),
-                    None => (
-                        SyntaxKind::UnclosedString,
-                        remaining.find(['\r', '\n']).unwrap_or(remaining.len()),
-                    ),
-                }
-            }
-            '0'..='9' => {
-                let mut len = if remaining.starts_with("0x") || remaining.starts_with("0X") {
-                    let digits = remaining.as_bytes()[2..]
-                        .iter()
-                        .take_while(|byte| byte.is_ascii_hexdigit())
-                        .count();
-                    if digits > 0 { 2 + digits } else { 1 }
-                } else {
-                    remaining.bytes().take_while(u8::is_ascii_digit).count()
-                };
-                if remaining.as_bytes().get(len) == Some(&b'.') {
-                    let fractional = remaining.as_bytes()[len + 1..]
-                        .iter()
-                        .take_while(|byte| byte.is_ascii_digit())
-                        .count();
-                    if fractional > 0 {
-                        len += 1 + fractional;
-                    }
-                }
-                (SyntaxKind::Number, len)
-            }
+            },
+            '"' => string_token(remaining),
+            '0'..='9' => number_token(remaining),
             'a'..='z' | 'A'..='Z' | '_' => {
                 let len = remaining
                     .bytes()
                     .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
                     .count();
                 (SyntaxKind::Ident, len)
-            }
+            },
             '(' => (SyntaxKind::LParen, 1),
             ')' => (SyntaxKind::RParen, 1),
             '[' => (SyntaxKind::LBracket, 1),
@@ -146,6 +107,52 @@ pub fn lex(source: &str) -> Vec<LexToken> {
         offset = end;
     }
     tokens
+}
+
+/// Scan a string without swallowing a physical statement boundary.
+fn string_token(remaining: &str) -> (SyntaxKind, usize) {
+    let mut escaped = false;
+    let mut end = None;
+    for (index, ch) in remaining.char_indices().skip(1) {
+        if ch == '\r' || ch == '\n' {
+            break;
+        }
+        if ch == '"' && !escaped {
+            end = Some(index + ch.len_utf8());
+            break;
+        }
+        escaped = ch == '\\' && !escaped;
+    }
+    match end {
+        Some(end) => (SyntaxKind::String, end),
+        None => (
+            SyntaxKind::UnclosedString,
+            remaining.find(['\r', '\n']).unwrap_or(remaining.len()),
+        ),
+    }
+}
+
+/// Keep hexadecimal and fractional tokens in their original source spelling.
+fn number_token(remaining: &str) -> (SyntaxKind, usize) {
+    let mut len = if remaining.starts_with("0x") || remaining.starts_with("0X") {
+        let digits = remaining.as_bytes()[2..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_hexdigit())
+            .count();
+        if digits > 0 { 2 + digits } else { 1 }
+    } else {
+        remaining.bytes().take_while(u8::is_ascii_digit).count()
+    };
+    if remaining.as_bytes().get(len) == Some(&b'.') {
+        let fractional = remaining.as_bytes()[len + 1..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if fractional > 0 {
+            len += 1 + fractional;
+        }
+    }
+    (SyntaxKind::Number, len)
 }
 
 fn continuation_newline(text: &str) -> Option<usize> {

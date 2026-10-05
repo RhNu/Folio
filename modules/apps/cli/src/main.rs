@@ -1,8 +1,9 @@
 //! Folio process entry point, command arguments, and error classification.
+use std::{path::PathBuf, process::ExitCode};
+
 use clap::{Parser, Subcommand, ValueEnum};
 use folio_build::{ProjectionError, execute::BuildError, output::OutputError};
 use folio_project_resolve::{graph::ResolveErrorKind, io::LoadError, manifest::ManifestErrorKind};
-use std::{path::PathBuf, process::ExitCode};
 
 mod commands;
 mod reporting;
@@ -200,14 +201,13 @@ impl CliError {
                 | LoadError::RepoMissing { .. }
                 | LoadError::RepoAmbiguous { .. }
                 | LoadError::InputChanged(_),
-            ) => ExitCode::from(2),
-            Self::Analysis(_) => ExitCode::from(2),
-            Self::Build(BuildError::Diagnostics(_) | BuildError::Plan(_))
+            )
+            | Self::Analysis(_)
+            | Self::Build(BuildError::Diagnostics(_) | BuildError::Plan(_))
             | Self::ProjectCreation(_)
             | Self::Format(_)
-            | Self::Lint(_) => ExitCode::from(2),
-            Self::Pex(_) => ExitCode::from(2),
-            Self::Lsp(_) => ExitCode::FAILURE,
+            | Self::Lint(_)
+            | Self::Pex(_) => ExitCode::from(2),
             _ => ExitCode::FAILURE,
         }
     }
@@ -219,21 +219,21 @@ impl std::fmt::Display for CliError {
             Self::InvalidLogFilter(reason) => write!(formatter, "invalid log filter: {reason}"),
             Self::LoggingSetup(reason) => {
                 write!(formatter, "could not initialize logging: {reason}")
-            }
+            },
             Self::Help(reason) => write!(formatter, "could not print help: {reason}"),
             Self::CurrentDirectory(reason) => {
                 write!(formatter, "could not read working directory: {reason}")
-            }
+            },
             Self::Project(reason) => write!(formatter, "{reason}"),
             Self::Analysis(reason) => write!(formatter, "{reason}"),
             Self::Build(reason) => write!(formatter, "{reason}"),
             Self::ManagedOutput(reason) => write!(formatter, "{reason}"),
-            Self::ProjectCreation(reason) => write!(formatter, "{reason}"),
-            Self::Declarations(reason) => write!(formatter, "{reason}"),
-            Self::Format(reason) => write!(formatter, "{reason}"),
-            Self::Lint(reason) => write!(formatter, "{reason}"),
-            Self::Pex(reason) => write!(formatter, "{reason}"),
-            Self::Lsp(reason) => write!(formatter, "{reason}"),
+            Self::ProjectCreation(reason)
+            | Self::Declarations(reason)
+            | Self::Format(reason)
+            | Self::Lint(reason)
+            | Self::Pex(reason)
+            | Self::Lsp(reason) => write!(formatter, "{reason}"),
             Self::Json(reason) => write!(formatter, "could not encode JSON output: {reason}"),
             Self::Output(reason) => write!(formatter, "could not write output: {reason}"),
         }
@@ -274,7 +274,7 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("error[{}]: {error}", error.code());
             error.exit_code()
-        }
+        },
     }
 }
 

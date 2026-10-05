@@ -1,9 +1,12 @@
 //! Project rename is accepted only after rechecking the complete edited semantic input.
-use crate::IdeSnapshot;
-use crate::navigation::{self, SymbolOccurrence, name, same};
 use folio_analysis::AnalysisHost;
 use folio_hir::{MemberKind, Symbol};
 use folio_source::{FileId, Revision, SourceSpan};
+
+use crate::{
+    IdeSnapshot,
+    navigation::{self, SymbolOccurrence, name, same},
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RenameError {
@@ -21,11 +24,11 @@ impl std::fmt::Display for RenameError {
             Self::NoSymbol => "No resolved symbol at this position",
             Self::UnsupportedSymbol => {
                 "Only verifiable project members, local variables, and parameters can be renamed"
-            }
+            },
             Self::IncompleteAnalysis => "Fix project analysis errors before renaming",
             Self::InvalidName => {
                 "The new name must be a Papyrus identifier and cannot be a keyword"
-            }
+            },
             Self::Collision => "The new name conflicts with a visible declaration",
             Self::UnverifiableEdit => "The edited project does not preserve semantic bindings",
         })
@@ -46,6 +49,10 @@ pub struct RenameEdit {
     pub replacement: String,
 }
 
+/// Select a project symbol whose definition and rename safety can be verified.
+///
+/// # Errors
+/// Returns an error when analysis is incomplete or the selected symbol cannot be safely renamed.
 pub fn prepare_rename(
     view: &IdeSnapshot,
     file: FileId,
@@ -74,7 +81,7 @@ pub fn prepare_rename(
         .hir(definition.file)
         .ok_or(RenameError::UnsupportedSymbol)?;
     match &target.symbol {
-        Symbol::Local { .. } => {}
+        Symbol::Local { .. } => {},
         Symbol::Parameter { owner, .. } => {
             let member = crate::symbols::find_member(&script, owner)
                 .ok_or(RenameError::UnsupportedSymbol)?;
@@ -85,7 +92,7 @@ pub fn prepare_rename(
             ) {
                 return Err(RenameError::UnsupportedSymbol);
             }
-        }
+        },
         Symbol::Member {
             script: owner,
             name,
@@ -126,7 +133,7 @@ pub fn prepare_rename(
             {
                 return Err(RenameError::UnsupportedSymbol);
             }
-        }
+        },
         _ => return Err(RenameError::UnsupportedSymbol),
     }
     tracing::debug!(?file,byte,symbol=?target.symbol,"rename target validated");
@@ -148,6 +155,10 @@ fn valid_name(value: &str) -> bool {
         && !folio_profiles::is_skyrim_keyword(value)
 }
 
+/// Rename the selected symbol only when complete reanalysis preserves every binding.
+///
+/// # Errors
+/// Returns an error for an invalid name, collisions, incomplete analysis, or edits whose bindings cannot be verified.
 pub fn rename(
     view: &IdeSnapshot,
     file: FileId,
@@ -167,15 +178,17 @@ pub fn rename(
     // occurrence checks below reject overlapping declarations and captured uses.
     if let Symbol::Member { script: owner, .. } = &target.symbol {
         for file in view.analysis.file_ids() {
-            let script = view.analysis.hir(file).unwrap();
+            let script = view
+                .analysis
+                .hir(file)
+                .ok_or(RenameError::IncompleteAnalysis)?;
             let Some(script_name) = &script.name else {
                 continue;
             };
-            if script_name.text.eq_ignore_ascii_case(owner)
+            if (script_name.text.eq_ignore_ascii_case(owner)
                 || navigation::derives(view, &script_name.text, owner)
-                || navigation::derives(view, owner, &script_name.text)
-            {
-                if script
+                || navigation::derives(view, owner, &script_name.text))
+                && script
                     .members
                     .iter()
                     .chain(&script.external_members)
@@ -183,9 +196,8 @@ pub fn rename(
                         !same(&item.symbol, &target.symbol)
                             && name(&item.symbol).eq_ignore_ascii_case(new_name)
                     })
-                {
-                    return Err(RenameError::Collision);
-                }
+            {
+                return Err(RenameError::Collision);
             }
         }
     }
@@ -200,43 +212,7 @@ pub fn rename(
         return Err(RenameError::UnverifiableEdit);
     }
     edits.sort_by_key(|edit| (edit.span.file, edit.span.range.start));
-    let mut host = AnalysisHost::new();
-    host.set_external_declarations(view.analysis.external_declarations().to_vec());
-    host.set_user_flags(view.analysis.user_flags().to_vec());
-    host.set_fill_missing_arguments(view.analysis.fill_missing_arguments());
-    for file in view.analysis.file_ids() {
-        let mut text = view.analysis.text(file).unwrap().to_owned();
-        for edit in edits.iter().rev().filter(|edit| edit.span.file == file) {
-            text.replace_range(edit.span.range.start..edit.span.range.end, new_name);
-        }
-        host.upsert(
-            file,
-            Revision(1),
-            text.into(),
-            view.analysis.dialect(file).unwrap(),
-        )
-        .map_err(|_| RenameError::UnverifiableEdit)?;
-    }
-    let analysis = host.view();
-    if analysis
-        .project_diagnostics()
-        .iter()
-        .any(|diagnostic| diagnostic.severity == folio_diagnostics::Severity::Error)
-        || analysis.file_ids().any(|file| {
-            analysis.diagnostics(file).is_none_or(|items| {
-                items
-                    .iter()
-                    .any(|diagnostic| diagnostic.severity == folio_diagnostics::Severity::Error)
-            })
-        })
-    {
-        return Err(RenameError::Collision);
-    }
-    let edited = IdeSnapshot::from(folio_build::ProjectAnalysisView {
-        analysis,
-        sources: view.sources.clone(),
-        issues: Vec::new(),
-    });
+    let edited = edited_project(view, &edits, new_name)?;
     // Every original occurrence must retain its selected declaration, including unrelated names.
     for file in view.analysis.file_ids() {
         for original in navigation::occurrences(view, file) {
@@ -276,15 +252,70 @@ pub fn rename(
     Ok(edits)
 }
 
+/// Reanalyze complete edited inputs before checking occurrence identities.
+fn edited_project(
+    view: &IdeSnapshot,
+    edits: &[RenameEdit],
+    new_name: &str,
+) -> Result<IdeSnapshot, RenameError> {
+    let mut host = AnalysisHost::new();
+    host.set_external_declarations(view.analysis.external_declarations().to_vec());
+    host.set_user_flags(view.analysis.user_flags().to_vec());
+    host.set_fill_missing_arguments(view.analysis.fill_missing_arguments());
+    for file in view.analysis.file_ids() {
+        let mut text = view
+            .analysis
+            .text(file)
+            .ok_or(RenameError::IncompleteAnalysis)?
+            .to_owned();
+        for edit in edits.iter().rev().filter(|edit| edit.span.file == file) {
+            text.replace_range(edit.span.range.start..edit.span.range.end, new_name);
+        }
+        host.upsert(
+            file,
+            Revision(1),
+            text.into(),
+            view.analysis
+                .dialect(file)
+                .ok_or(RenameError::IncompleteAnalysis)?,
+        )
+        .map_err(|cause| {
+            tracing::debug!(?cause, "rename input rejected");
+            RenameError::UnverifiableEdit
+        })?;
+    }
+    let analysis = host.view();
+    if analysis
+        .project_diagnostics()
+        .iter()
+        .any(|diagnostic| diagnostic.severity == folio_diagnostics::Severity::Error)
+        || analysis.file_ids().any(|file| {
+            analysis.diagnostics(file).is_none_or(|items| {
+                items
+                    .iter()
+                    .any(|diagnostic| diagnostic.severity == folio_diagnostics::Severity::Error)
+            })
+        })
+    {
+        return Err(RenameError::Collision);
+    }
+    Ok(IdeSnapshot::from(folio_build::ProjectAnalysisView {
+        analysis,
+        sources: view.sources.clone(),
+        issues: Vec::new(),
+    }))
+}
+
 fn map_offset(file: FileId, byte: usize, edits: &[RenameEdit]) -> usize {
-    let delta: isize = edits
+    let mut mapped = byte;
+    for edit in edits
         .iter()
         .filter(|edit| edit.span.file == file && edit.span.range.end <= byte)
-        .map(|edit| {
-            edit.replacement.len() as isize - (edit.span.range.end - edit.span.range.start) as isize
-        })
-        .sum();
-    byte.checked_add_signed(delta).unwrap()
+    {
+        let original = edit.span.range.end - edit.span.range.start;
+        mapped = mapped - original + edit.replacement.len();
+    }
+    mapped
 }
 
 fn renamed_symbol(symbol: &Symbol, target: &Symbol, new_name: &str) -> Symbol {
@@ -325,7 +356,7 @@ fn renamed_symbol(symbol: &Symbol, target: &Symbol, new_name: &str) -> Symbol {
                     property,
                     name: name.clone(),
                 }
-            }
+            },
             Symbol::Local {
                 owner,
                 name,

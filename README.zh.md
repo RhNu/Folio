@@ -91,7 +91,14 @@ Rust crate 位于 `modules/<domain>/<crate>`，VS Code 客户端位于 `editors/
 
 [AGENTS.md](AGENTS.md) 记录项目约束。公开配置或行为变化时，同步更新两个语言版本的 README 和所属专题。未完成工作与验证缺口集中在[路线图](docs/planning/roadmap.md)。
 
-运行 `cargo xtask check-lines` 可统计整个 workspace 的 Rust 代码行数。它排除注释、空白行和生成目录；单文件超过 650 行时警告，超过 1,200 行时失败。`--all` 列出全部文件，`--manifest-path <Cargo.toml>` 指定 workspace。计数和退出状态规则见[仓库维护](docs/architecture/tooling.md#repository-maintenance)。
+使用 [Rusteward](https://github.com/RhNu/Rusteward) 格式化 Rust 代码并执行质量检查。通过 `cargo install --git https://github.com/RhNu/Rusteward.git --locked rusteward` 安装，然后运行：
+
+```powershell
+cargo dev format --locked
+cargo dev check --locked
+```
+
+格式化、Clippy、模块布局和外部单元测试模块检查采用 Rusteward 默认规则。`rusteward.toml` 保留项目现有的有效代码行数阈值：单文件超过 650 行时警告，超过 1,200 行时报错；行数警告不使检查失败。命令、配置和 CI 说明见[仓库维护](docs/architecture/tooling.md#repository-maintenance)。
 
 ## 许可与来源
 

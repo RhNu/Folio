@@ -1,8 +1,10 @@
 //! Source-wide rules that do not affect the recoverable CST shape.
 
-use crate::{SyntaxError, SyntaxErrorKind, SyntaxKind, SyntaxNode};
-use folio_source::TextRange;
 use std::collections::HashSet;
+
+use folio_source::TextRange;
+
+use crate::{SyntaxError, SyntaxErrorKind, SyntaxKind, SyntaxNode};
 
 pub(crate) fn validate(root: &SyntaxNode, source: &str, errors: &mut Vec<SyntaxError>) {
     let headers = root
@@ -37,7 +39,7 @@ pub(crate) fn validate(root: &SyntaxNode, source: &str, errors: &mut Vec<SyntaxE
         .collect();
     for token in root
         .descendants_with_tokens()
-        .filter_map(|element| element.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .filter(|token| {
             matches!(
                 token.kind(),

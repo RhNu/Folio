@@ -1,6 +1,7 @@
-use super::*;
 use folio_hir::{Binding, Body, NameRef, StateFact};
 use folio_source::{FileId, TextRange};
+
+use super::*;
 
 mod integers;
 

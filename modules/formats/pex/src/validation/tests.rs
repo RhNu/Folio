@@ -1,4 +1,5 @@
 use super::*;
+use crate::{PexOpcode, PexReadError};
 
 /// Hand-assembled PEX: one Test.Run function, with a Return None instruction.
 /// Debug records are independent of the production writer.
@@ -22,7 +23,11 @@ fn carrier(lines: &[u16], function: u16) -> Vec<u8> {
         .collect::<Vec<_>>();
     bytes.extend_from_slice(&function.to_be_bytes());
     bytes.push(0); // Normal function, not a property accessor.
-    bytes.extend_from_slice(&(lines.len() as u16).to_be_bytes());
+    bytes.extend_from_slice(
+        &u16::try_from(lines.len())
+            .expect("fixture line map fits u16")
+            .to_be_bytes(),
+    );
     for line in lines {
         bytes.extend_from_slice(&line.to_be_bytes());
     }

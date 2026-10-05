@@ -1,10 +1,12 @@
 //! Source and portable declarations share one presentation and virtual source format.
-use crate::IdeSnapshot;
-use crate::{Hover, navigation::same, symbols};
+use std::fmt::Write;
+
 use folio_format_declarations::{Member, MemberData, PropertyAccess};
 use folio_hir::Symbol;
 use folio_papyrus::SyntaxKind;
 use folio_source::TextRange;
+
+use crate::{Hover, IdeSnapshot, navigation::same, symbols};
 
 pub fn hover_symbol(view: &IdeSnapshot, symbol: &Symbol) -> Option<Hover> {
     if let Symbol::Intrinsic { name } = symbol {
@@ -68,9 +70,8 @@ pub(crate) fn intrinsic_hover(name: &str, receiver: Option<&folio_hir::Type>) ->
 pub(crate) fn intrinsic_call_member(
     callee: &folio_hir::ExpressionFact,
 ) -> Option<folio_hir::MemberFact> {
-    let name = match &callee.binding.as_ref()?.symbol {
-        Symbol::Intrinsic { name } => name,
-        _ => return None,
+    let Symbol::Intrinsic { name } = &callee.binding.as_ref()?.symbol else {
+        return None;
     };
     let receiver = match &callee.kind {
         folio_hir::ExpressionKind::Member { owner, .. } => Some(&owner.ty),
@@ -115,57 +116,7 @@ pub(crate) fn hover_at_definition(
     let owner = symbols::owner_script(symbol);
     let at = definition.or_else(|| view.definitions(symbol)?.first().copied());
     if let Some(at) = at {
-        if view.is_cancelled() {
-            return None;
-        }
-        let file = at.file;
-        let script = view.analysis.hir(file)?;
-        let found = script
-            .declarations
-            .iter()
-            .find(|item| same(&item.symbol, symbol) && at == item.span);
-        let parse = view.analysis.parse(file)?;
-        let node = parse
-            .syntax()
-            .descendants()
-            .filter(|node| {
-                matches!(
-                    node.kind(),
-                    SyntaxKind::ScriptDecl
-                        | SyntaxKind::FunctionDecl
-                        | SyntaxKind::EventDecl
-                        | SyntaxKind::PropertyDecl
-                        | SyntaxKind::VariableDecl
-                        | SyntaxKind::Parameter
-                )
-            })
-            .filter(|node| {
-                usize::from(node.text_range().start()) <= at.range.start
-                    && at.range.end <= usize::from(node.text_range().end())
-            })
-            .min_by_key(|node| u32::from(node.text_range().len()))?;
-        let declaration = folio_papyrus::declaration_header(&node);
-        let documentation = folio_papyrus::declaration_documentation(&node);
-        let details = match symbol {
-            Symbol::Local { .. } => vec!["Local variable".into()],
-            Symbol::Parameter { .. } => vec!["Parameter".into()],
-            _ => Vec::new(),
-        };
-        let content = if let Some(item) = found {
-            symbols::describe_symbol(&script, symbol, &item.ty)
-        } else {
-            declaration.clone()
-        };
-        return Some(Hover {
-            content,
-            symbol: Some(symbol.clone()),
-            declaration,
-            documentation,
-            language: None,
-            details,
-            span: Some(at),
-            owner_script: owner,
-        });
+        return source_hover(view, symbol, at, owner);
     }
     let owner_name = owner.as_deref()?;
     let external = view.analysis.external_script(owner_name)?;
@@ -177,7 +128,7 @@ pub(crate) fn hover_at_definition(
                 .iter()
                 .find(|member| member.name.eq_ignore_ascii_case(name))?;
             (member_declaration(member), member.documentation.clone())
-        }
+        },
         Symbol::StateMember { state, name, .. } => {
             let state = external
                 .states
@@ -188,7 +139,7 @@ pub(crate) fn hover_at_definition(
                 .iter()
                 .find(|member| member.name.eq_ignore_ascii_case(name))?;
             (member_declaration(member), member.documentation.clone())
-        }
+        },
         _ => return None,
     };
     let mut details = Vec::new();
@@ -226,6 +177,66 @@ pub(crate) fn hover_at_definition(
     })
 }
 
+/// Present a source declaration using its precise bound definition.
+fn source_hover(
+    view: &IdeSnapshot,
+    symbol: &Symbol,
+    at: folio_source::SourceSpan,
+    owner: Option<String>,
+) -> Option<Hover> {
+    if view.is_cancelled() {
+        return None;
+    }
+    let file = at.file;
+    let script = view.analysis.hir(file)?;
+    let found = script
+        .declarations
+        .iter()
+        .find(|item| same(&item.symbol, symbol) && at == item.span);
+    let parse = view.analysis.parse(file)?;
+    let node = parse
+        .syntax()
+        .descendants()
+        .filter(|node| {
+            matches!(
+                node.kind(),
+                SyntaxKind::ScriptDecl
+                    | SyntaxKind::FunctionDecl
+                    | SyntaxKind::EventDecl
+                    | SyntaxKind::PropertyDecl
+                    | SyntaxKind::VariableDecl
+                    | SyntaxKind::Parameter
+            )
+        })
+        .filter(|node| {
+            usize::from(node.text_range().start()) <= at.range.start
+                && at.range.end <= usize::from(node.text_range().end())
+        })
+        .min_by_key(|node| u32::from(node.text_range().len()))?;
+    let declaration = folio_papyrus::declaration_header(&node);
+    let documentation = folio_papyrus::declaration_documentation(&node);
+    let details = match symbol {
+        Symbol::Local { .. } => vec!["Local variable".into()],
+        Symbol::Parameter { .. } => vec!["Parameter".into()],
+        _ => Vec::new(),
+    };
+    let content = if let Some(item) = found {
+        symbols::describe_symbol(&script, symbol, &item.ty)
+    } else {
+        declaration.clone()
+    };
+    Some(Hover {
+        content,
+        symbol: Some(symbol.clone()),
+        declaration,
+        documentation,
+        language: None,
+        details,
+        span: Some(at),
+        owner_script: owner,
+    })
+}
+
 pub(crate) fn external_member<'a>(view: &'a IdeSnapshot, symbol: &Symbol) -> Option<&'a Member> {
     let owner = symbols::owner_script(symbol)?;
     let script = view.analysis.external_script(&owner)?;
@@ -245,10 +256,15 @@ pub(crate) fn external_member<'a>(view: &'a IdeSnapshot, symbol: &Symbol) -> Opt
     }
 }
 
+/// Formatting into a String is infallible; keep that invariant at one boundary.
+fn append_format(text: &mut String, args: std::fmt::Arguments<'_>) {
+    text.write_fmt(args).expect("writing to String cannot fail");
+}
+
 fn script_header(script: &folio_format_declarations::Script) -> String {
     let mut header = format!("Scriptname {}", script.name);
     if let Some(parent) = &script.parent {
-        header.push_str(&format!(" Extends {parent}"));
+        append_format(&mut header, format_args!(" Extends {parent}"));
     }
     if script.is_native {
         header.push_str(" Native");
@@ -319,7 +335,7 @@ fn member_header(member: &Member) -> String {
                     .as_ref()
                     .map_or(String::new(), |value| format!(" = {value}"))
             )
-        }
+        },
     };
     if member.is_global() {
         header.push_str(" Global");
@@ -349,10 +365,16 @@ fn member_declaration(member: &Member) -> String {
     } = &member.data
     {
         if *readable {
-            declaration.push_str(&format!("\n    {ty} Function Get()\n    EndFunction"));
+            append_format(
+                &mut declaration,
+                format_args!("\n    {ty} Function Get()\n    EndFunction"),
+            );
         }
         if *writable {
-            declaration.push_str(&format!("\n    Function Set({ty} value)\n    EndFunction"));
+            append_format(
+                &mut declaration,
+                format_args!("\n    Function Set({ty} value)\n    EndFunction"),
+            );
         }
         declaration.push_str("\nEndProperty");
     }
@@ -368,73 +390,6 @@ pub struct DeclarationDocument {
 /// Render only recovered API facts; the virtual document contains no invented bodies.
 pub fn declaration_document(view: &IdeSnapshot, script_name: &str) -> Option<DeclarationDocument> {
     let script = view.analysis.external_script(script_name)?;
-    fn doc(text: &mut String, documentation: &Option<String>) {
-        if let Some(doc) = documentation {
-            text.push_str("{\n");
-            text.push_str(doc);
-            text.push_str("\n}\n");
-        }
-    }
-    fn member(
-        text: &mut String,
-        item: &Member,
-        symbol: Symbol,
-        declarations: &mut Vec<(Symbol, TextRange)>,
-    ) {
-        let header = member_header(item);
-        let prefix = match &item.data {
-            MemberData::Variable { ty, .. } => ty.len() + 1,
-            MemberData::Property { ty, .. } => ty.len() + 10,
-            _ => header.find(&format!(" {}(", item.name)).unwrap() + 1,
-        };
-        if matches!(item.data, MemberData::UnknownCallable { .. }) {
-            text.push_str("; ");
-        }
-        let start = text.len() + prefix;
-        declarations.push((
-            symbol,
-            TextRange {
-                start,
-                end: start + item.name.len(),
-            },
-        ));
-        text.push_str(&header);
-        text.push('\n');
-        if matches!(item.data, MemberData::UnknownCallable { .. }) {
-            text.push_str("; Callable kind is unknown in this PEX API.\n");
-        }
-        for parameter in item.parameters().iter().filter(|parameter| {
-            matches!(
-                parameter.default,
-                folio_format_declarations::ParameterDefault::Unknown
-            )
-        }) {
-            text.push_str(&format!(
-                "; Default for {} is unknown in this PEX API.\n",
-                parameter.name
-            ));
-        }
-        doc(text, &item.documentation);
-        match &item.data {
-            MemberData::Function { native: false, .. } => text.push_str("EndFunction\n"),
-            MemberData::Event { native: false, .. } => text.push_str("EndEvent\n"),
-            MemberData::Property {
-                ty,
-                access: PropertyAccess::Manual { readable, writable },
-                ..
-            } => {
-                if *readable {
-                    text.push_str(&format!("    {ty} Function Get()\n    EndFunction\n"));
-                }
-                if *writable {
-                    text.push_str(&format!("    Function Set({ty} value)\n    EndFunction\n"));
-                }
-                text.push_str("EndProperty\n");
-            }
-            _ => {}
-        }
-        text.push('\n');
-    }
     let mut declarations = vec![(
         Symbol::Script(script.name.clone()),
         TextRange {
@@ -444,13 +399,13 @@ pub fn declaration_document(view: &IdeSnapshot, script_name: &str) -> Option<Dec
     )];
     let mut text = script_header(script);
     text.push('\n');
-    doc(&mut text, &script.documentation);
+    append_documentation(&mut text, script.documentation.as_deref());
     text.push('\n');
     for import in &script.imports {
-        text.push_str(&format!("Import {import}\n"));
+        append_format(&mut text, format_args!("Import {import}\n"));
     }
     for item in &script.members {
-        member(
+        append_member(
             &mut text,
             item,
             Symbol::Member {
@@ -461,14 +416,17 @@ pub fn declaration_document(view: &IdeSnapshot, script_name: &str) -> Option<Dec
         );
     }
     for state in &script.states {
-        text.push_str(&format!(
-            "{}State {}\n",
-            if state.auto { "Auto " } else { "" },
-            state.name
-        ));
-        doc(&mut text, &state.documentation);
+        append_format(
+            &mut text,
+            format_args!(
+                "{}State {}\n",
+                if state.auto { "Auto " } else { "" },
+                state.name
+            ),
+        );
+        append_documentation(&mut text, state.documentation.as_deref());
         for item in &state.members {
-            member(
+            append_member(
                 &mut text,
                 item,
                 Symbol::StateMember {
@@ -482,6 +440,89 @@ pub fn declaration_document(view: &IdeSnapshot, script_name: &str) -> Option<Dec
         text.push_str("EndState\n\n");
     }
     Some(DeclarationDocument { text, declarations })
+}
+
+fn append_documentation(text: &mut String, documentation: Option<&str>) {
+    if let Some(doc) = documentation {
+        text.push_str("{\n");
+        text.push_str(doc);
+        text.push_str("\n}\n");
+    }
+}
+
+fn append_member(
+    text: &mut String,
+    item: &Member,
+    symbol: Symbol,
+    declarations: &mut Vec<(Symbol, TextRange)>,
+) {
+    let header = member_header(item);
+    let prefix = match &item.data {
+        MemberData::Variable { ty, .. } => ty.len() + 1,
+        MemberData::Property { ty, .. } => ty.len() + 10,
+        _ => {
+            header
+                .find(&format!(" {}(", item.name))
+                .expect("callable header contains its name")
+                + 1
+        },
+    };
+    if matches!(item.data, MemberData::UnknownCallable { .. }) {
+        text.push_str("; ");
+    }
+    let start = text.len() + prefix;
+    declarations.push((
+        symbol,
+        TextRange {
+            start,
+            end: start + item.name.len(),
+        },
+    ));
+    text.push_str(&header);
+    text.push('\n');
+    if matches!(item.data, MemberData::UnknownCallable { .. }) {
+        text.push_str("; Callable kind is unknown in this PEX API.\n");
+    }
+    for parameter in item.parameters().iter().filter(|parameter| {
+        matches!(
+            parameter.default,
+            folio_format_declarations::ParameterDefault::Unknown
+        )
+    }) {
+        append_format(
+            text,
+            format_args!(
+                "; Default for {} is unknown in this PEX API.\n",
+                parameter.name
+            ),
+        );
+    }
+    append_documentation(text, item.documentation.as_deref());
+    match &item.data {
+        MemberData::Function { native: false, .. } => text.push_str("EndFunction\n"),
+        MemberData::Event { native: false, .. } => text.push_str("EndEvent\n"),
+        MemberData::Property {
+            ty,
+            access: PropertyAccess::Manual { readable, writable },
+            ..
+        } => {
+            if *readable {
+                append_format(
+                    text,
+                    format_args!("    {ty} Function Get()\n    EndFunction\n"),
+                );
+            }
+            if *writable {
+                append_format(
+                    text,
+                    format_args!("    Function Set({ty} value)\n    EndFunction\n"),
+                );
+            }
+            text.push_str("EndProperty\n");
+        },
+        _ => {},
+    }
+    text.push('\n');
 }
 
 #[cfg(test)]

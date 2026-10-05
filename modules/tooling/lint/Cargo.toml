@@ -12,6 +12,3 @@ tracing.workspace = true
 
 [dev-dependencies]
 folio-source = { path = "../../foundation/source" }
-
-[lints]
-workspace = true

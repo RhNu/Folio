@@ -19,6 +19,9 @@ pub(crate) fn invalid(field: impl Into<String>, reason: &'static str) -> DecodeE
 }
 
 /// Validate carrier invariants; type resolution belongs to the analysis layer.
+///
+/// # Errors
+/// Returns an error for unsupported schemas or profiles, invalid fields, duplicate identities, or capacity violations.
 pub fn validate(bundle: &DeclarationBundle) -> Result<(), DecodeError> {
     if bundle.format != FORMAT {
         return Err(invalid("format", "expected folio-declarations"));
@@ -29,36 +32,14 @@ pub fn validate(bundle: &DeclarationBundle) -> Result<(), DecodeError> {
     if bundle.profile != PROFILE {
         return Err(invalid("profile", "unsupported language/ABI profile"));
     }
-    text("origin.source", &bundle.origin.source)?;
-    if bundle.origin.source.contains('\\')
-        || bundle.origin.source.starts_with('/')
-        || bundle.origin.source.contains(':')
-        || bundle
-            .origin
-            .source
-            .split('/')
-            .any(|part| part == "." || part == ".." || part.is_empty())
-    {
-        return Err(invalid(
-            "origin.source",
-            "must be a portable provenance label",
-        ));
-    }
-    if let Some(digest) = &bundle.origin.input_digest
-        && (digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    {
-        return Err(invalid(
-            "origin.input_digest",
-            "expected a BLAKE3 hexadecimal digest",
-        ));
-    }
+    validate_origin(&bundle.origin)?;
     container("scripts", bundle.scripts.len())?;
     let mut names = BTreeSet::new();
     let mut values = 0usize;
     for (index, script) in bundle.scripts.iter().enumerate() {
         let field = format!("scripts[{index}]");
         text(&format!("{field}.name"), &script.name)?;
-        documentation(&field, &script.documentation, bundle.schema)?;
+        documentation(&field, script.documentation.as_deref(), bundle.schema)?;
         if !names.insert(script.name.to_ascii_lowercase()) {
             return Err(invalid(field, "duplicate script identity"));
         }
@@ -103,7 +84,7 @@ pub fn validate(bundle: &DeclarationBundle) -> Result<(), DecodeError> {
         for (index, state) in script.states.iter().enumerate() {
             let field = format!("{field}.states[{index}]");
             text(&format!("{field}.name"), &state.name)?;
-            documentation(&field, &state.documentation, bundle.schema)?;
+            documentation(&field, state.documentation.as_deref(), bundle.schema)?;
             if !states.insert(state.name.to_ascii_lowercase()) {
                 return Err(invalid(field, "duplicate state identity"));
             }
@@ -126,6 +107,33 @@ pub fn validate(bundle: &DeclarationBundle) -> Result<(), DecodeError> {
     Ok(())
 }
 
+/// Check portable generation provenance separately from declaration structure.
+fn validate_origin(origin: &crate::Origin) -> Result<(), DecodeError> {
+    text("origin.source", &origin.source)?;
+    if origin.source.contains('\\')
+        || origin.source.starts_with('/')
+        || origin.source.contains(':')
+        || origin
+            .source
+            .split('/')
+            .any(|part| part == "." || part == ".." || part.is_empty())
+    {
+        return Err(invalid(
+            "origin.source",
+            "must be a portable provenance label",
+        ));
+    }
+    if let Some(digest) = &origin.input_digest
+        && (digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(invalid(
+            "origin.input_digest",
+            "expected a BLAKE3 hexadecimal digest",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_members(
     field: &str,
     members: &[Member],
@@ -138,7 +146,7 @@ fn validate_members(
     for (index, member) in members.iter().enumerate() {
         let field = format!("{field}[{index}]");
         text(&format!("{field}.name"), &member.name)?;
-        documentation(&field, &member.documentation, schema)?;
+        documentation(&field, member.documentation.as_deref(), schema)?;
         // All callables share a namespace; properties and variables remain separate.
         let namespace = match member.data {
             MemberData::Property { .. } => 1,
@@ -199,7 +207,7 @@ fn validate_members(
     Ok(())
 }
 
-fn documentation(field: &str, value: &Option<String>, schema: u32) -> Result<(), DecodeError> {
+fn documentation(field: &str, value: Option<&str>, schema: u32) -> Result<(), DecodeError> {
     if let Some(value) = value {
         let field = format!("{field}.documentation");
         if schema == 1 {

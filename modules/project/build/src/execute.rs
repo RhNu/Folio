@@ -37,10 +37,10 @@ impl std::fmt::Display for BuildError {
             Self::Plan(cause) => write!(f, "build plan: {cause}"),
             Self::Diagnostics(items) => {
                 write!(f, "build rejected with {} diagnostic(s)", items.len())
-            }
+            },
             Self::MissingSemantic(script) => {
                 write!(f, "no semantic model for selected script {script}")
-            }
+            },
             Self::InvalidSelection(reason) => write!(f, "incomplete build selection: {reason}"),
             Self::InputsChanged(reason) => write!(f, "build inputs changed: {reason}"),
             Self::Output(cause) => write!(f, "{cause}"),
@@ -52,9 +52,7 @@ impl std::fmt::Display for BuildError {
 impl std::error::Error for BuildError {}
 
 impl From<OutputError> for BuildError {
-    fn from(value: OutputError) -> Self {
-        Self::Output(value)
-    }
+    fn from(value: OutputError) -> Self { Self::Output(value) }
 }
 
 /// Target plan retains validated MIR for emission and records decisions in the key.
@@ -66,6 +64,9 @@ pub struct TargetPlan {
 }
 
 /// Analyze all selected providers, then perform target legality checks before I/O.
+///
+/// # Errors
+/// Returns an error for invalid project selection, semantic diagnostics, unsupported target features, or missing semantic models.
 pub fn target_plan(
     project: &LoadedProject,
     metadata: &Metadata,
@@ -134,7 +135,7 @@ fn target_plan_with_cancel(
                         ));
                     }
                     scripts.insert(script.script.clone(), mir);
-                }
+                },
                 Err(mut issues) => lowering_errors.append(&mut issues),
             }
         }
@@ -152,6 +153,9 @@ fn target_plan_with_cancel(
 }
 
 /// Check analysis and target feasibility without encoding or writing artifacts.
+///
+/// # Errors
+/// Returns an error when analysis or target planning rejects the project.
 pub fn check_target(
     project: &LoadedProject,
     metadata: &Metadata,
@@ -187,6 +191,12 @@ fn snapshot_still_current(
 }
 
 /// A command may publish only when every planned unit and artifact has a staged owner.
+///
+/// # Errors
+/// Returns an error for cancellation or staged units and artifacts that differ from the plan.
+///
+/// # Panics
+/// Panics if a planned package source identity cannot be serialized as JSON.
 pub fn prepare_success(
     plan: &ProjectPlan,
     units: Vec<UnitRecord>,
@@ -261,6 +271,12 @@ pub fn prepare_success(
 }
 
 /// Execute each target task in stable order and publish only the complete command.
+///
+/// # Errors
+/// Returns an error for cancellation, invalid inputs, compilation diagnostics, changed snapshots, or output publication failures.
+///
+/// # Panics
+/// Panics if a build unit lacks its root package version or a package source identity cannot be serialized.
 #[tracing::instrument(name = "project.build", skip_all, fields(package = %metadata.root.name, target = %metadata.target, revision = view.analysis.generation()))]
 pub fn build_project(
     project: &LoadedProject,
@@ -335,25 +351,77 @@ pub fn build_project(
             unchanged: true,
         });
     }
+    let context = BuildContext {
+        project,
+        metadata,
+        view,
+        target: &target,
+        command_key: &command_key,
+        cache_root: &cache_root,
+        cancelled,
+    };
     let mut units = Vec::new();
     let mut cache_decisions = Vec::new();
     for unit in &target.project.units {
-        if cancelled.load(Ordering::Relaxed) {
+        let (record, decision) = context.stage_unit(unit, &build_root)?;
+        units.push(record);
+        cache_decisions.push((unit.id.clone(), decision));
+    }
+    let success = prepare_success(&target.project, units, cancelled.load(Ordering::Relaxed))?;
+    if !snapshot_still_current(
+        project_root,
+        project,
+        metadata,
+        compiler_identity,
+        &target.decisions,
+        &command_key,
+    )? {
+        return Err(BuildError::InputsChanged(
+            "workspace or dependency snapshot changed before publication".into(),
+        ));
+    }
+    output::publish_project(project_root, &build_root, prior.result.as_ref(), &success)?;
+    Ok(BuildOutcome {
+        success,
+        cache_decisions,
+        unchanged: false,
+    })
+}
+
+/// Shared immutable inputs used while generating and staging root build units.
+struct BuildContext<'a> {
+    project: &'a LoadedProject,
+    metadata: &'a Metadata,
+    view: &'a ProjectAnalysisView,
+    target: &'a TargetPlan,
+    command_key: &'a str,
+    cache_root: &'a Path,
+    cancelled: &'a AtomicBool,
+}
+
+impl BuildContext<'_> {
+    /// Reuse a verified cache or emit artifacts, then stage one complete unit.
+    fn stage_unit(
+        &self,
+        unit: &plan::BuildUnit,
+        build_root: &Path,
+    ) -> Result<(UnitRecord, CacheDecision), BuildError> {
+        if self.cancelled.load(Ordering::Relaxed) {
             return Err(BuildError::Cancelled);
         }
-        let fingerprint = unit_fingerprint(&command_key, unit);
+        let fingerprint = unit_fingerprint(self.command_key, unit);
         let expected = unit
             .scripts
             .iter()
             .map(|script| script.artifact_path.clone())
             .collect::<Vec<_>>();
         let (mut cache_decision, mut cached) =
-            match output::read_cache(&cache_root, &fingerprint, &expected) {
+            match output::read_cache(self.cache_root, &fingerprint, &expected) {
                 Ok(value) => value,
                 Err(cause) => {
                     warn!(package = %unit.package.name, %cause, "cache read failed; rebuilding");
                     (CacheDecision::Invalid("cache read failure"), Vec::new())
-                }
+                },
             };
         if matches!(cache_decision, CacheDecision::Hit)
             && !cached
@@ -372,56 +440,20 @@ pub fn build_project(
         }
         debug!(package = %unit.package.name, target = %unit.target, fingerprint, decision = ?cache_decision, "cache decision");
         if matches!(cache_decision, CacheDecision::Invalid(_))
-            && let Err(cause) = output::discard_cache(&cache_root, &fingerprint)
+            && let Err(cause) = output::discard_cache(self.cache_root, &fingerprint)
         {
             warn!(package = %unit.package.name, %cause, "cache discard failed; continuing without cache");
         }
         let generated = if matches!(cache_decision, CacheDecision::Hit) {
             cached
         } else {
-            let mut generated = Vec::new();
-            for script in &unit.scripts {
-                if cancelled.load(Ordering::Relaxed) {
-                    return Err(BuildError::Cancelled);
-                }
-                let mir = target
-                    .scripts
-                    .get(&script.script)
-                    .ok_or_else(|| BuildError::MissingSemantic(script.script.clone()))?;
-                let input =
-                    plan::source_input(project, &script.package.source, &script.source_path)
-                        .ok_or_else(|| BuildError::MissingSemantic(script.script.clone()))?;
-                let file = view
-                    .file_for(&input.package_key, &input.canonical_path)
-                    .ok_or_else(|| BuildError::MissingSemantic(script.script.clone()))?;
-                let options = folio_backend_pex::EmissionOptions {
-                    source_file_name: script.source_path.clone(),
-                    user_name: String::new(),
-                    computer_name: String::new(),
-                    compilation_time: 0,
-                    debug_info: metadata.debug_info,
-                    source_text: BTreeMap::from([(file, input.text.to_string())]),
-                    user_flags: target.user_flags.clone(),
-                };
-                let bytes =
-                    folio_backend_pex::emit(mir, &options).map_err(BuildError::Diagnostics)?;
-                let artifact = ArtifactRecord {
-                    kind: "pex".into(),
-                    path: script.artifact_path.clone(),
-                    digest: blake3::hash(&bytes).to_hex().to_string(),
-                    format: "pex-3.2-skyrim-se".into(),
-                    script: script.script.clone(),
-                    source_package: script.package.name.clone(),
-                    source_path: script.source_path.clone(),
-                };
-                generated.push((artifact, bytes));
-            }
-            if let Err(cause) = output::write_cache(&cache_root, &fingerprint, &generated) {
+            let generated = self.generate_artifacts(unit)?;
+            if let Err(cause) = output::write_cache(self.cache_root, &fingerprint, &generated) {
                 warn!(package = %unit.package.name, %cause, "discardable cache write failed");
             }
             generated
         };
-        let (generation, dir) = output::create_generation(&build_root, &unit.id)?;
+        let (generation, dir) = output::create_generation(build_root, &unit.id)?;
         let mut artifacts = Vec::new();
         for (artifact, bytes) in generated {
             let digest = output::write_artifact(&dir, &artifact.path, &bytes)?;
@@ -446,34 +478,60 @@ pub fn build_project(
                 .expect("source identity serializes"),
             target: unit.target.clone(),
             profile: unit.profile.clone(),
-            fingerprint: fingerprint.clone(),
+            fingerprint,
             generation,
             artifacts,
         };
         output::write_generation_manifest(&dir, &record)?;
         info!(package = %unit.package.name, target = %unit.target, artifacts = record.artifacts.len(), generation = %record.generation, "staged build unit");
-        units.push(record);
-        cache_decisions.push((unit.id.clone(), cache_decision));
+        Ok((record, cache_decision))
     }
-    let success = prepare_success(&target.project, units, cancelled.load(Ordering::Relaxed))?;
-    if !snapshot_still_current(
-        project_root,
-        project,
-        metadata,
-        compiler_identity,
-        &target.decisions,
-        &command_key,
-    )? {
-        return Err(BuildError::InputsChanged(
-            "workspace or dependency snapshot changed before publication".into(),
-        ));
+
+    /// Encode root scripts from their already validated MIR with deterministic metadata.
+    fn generate_artifacts(
+        &self,
+        unit: &plan::BuildUnit,
+    ) -> Result<Vec<output::CachedArtifact>, BuildError> {
+        let mut generated = Vec::new();
+        for script in &unit.scripts {
+            if self.cancelled.load(Ordering::Relaxed) {
+                return Err(BuildError::Cancelled);
+            }
+            let mir = self
+                .target
+                .scripts
+                .get(&script.script)
+                .ok_or_else(|| BuildError::MissingSemantic(script.script.clone()))?;
+            let input =
+                plan::source_input(self.project, &script.package.source, &script.source_path)
+                    .ok_or_else(|| BuildError::MissingSemantic(script.script.clone()))?;
+            let file = self
+                .view
+                .file_for(&input.package_key, &input.canonical_path)
+                .ok_or_else(|| BuildError::MissingSemantic(script.script.clone()))?;
+            let options = folio_backend_pex::EmissionOptions {
+                source_file_name: script.source_path.clone(),
+                user_name: String::new(),
+                computer_name: String::new(),
+                compilation_time: 0,
+                debug_info: self.metadata.debug_info,
+                source_text: BTreeMap::from([(file, input.text.to_string())]),
+                user_flags: self.target.user_flags.clone(),
+            };
+            let bytes = folio_backend_pex::emit(mir, &options).map_err(BuildError::Diagnostics)?;
+            let artifact = ArtifactRecord {
+                kind: "pex".into(),
+                path: script.artifact_path.clone(),
+                digest: blake3::hash(&bytes).to_hex().to_string(),
+                format: "pex-3.2-skyrim-se".into(),
+                script: script.script.clone(),
+                source_package: script.package.name.clone(),
+                source_path: script.source_path.clone(),
+            };
+            generated.push((artifact, bytes));
+        }
+        Ok(generated)
     }
-    output::publish_project(project_root, &build_root, prior.result.as_ref(), &success)?;
-    Ok(BuildOutcome {
-        success,
-        cache_decisions,
-        unchanged: false,
-    })
 }
 
 #[cfg(test)]

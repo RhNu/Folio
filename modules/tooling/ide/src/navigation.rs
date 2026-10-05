@@ -1,9 +1,11 @@
 //! Semantic occurrences and hierarchy facts for every editor navigation request.
-use crate::IdeSnapshot;
+use std::collections::HashMap;
+
 use folio_hir::{ExpressionKind, Symbol};
 use folio_papyrus::SyntaxKind;
 use folio_source::{FileId, SourceSpan};
-use std::collections::HashMap;
+
+use crate::IdeSnapshot;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SymbolOccurrence {
@@ -28,53 +30,83 @@ pub(crate) fn name(symbol: &Symbol) -> &str {
 /// Papyrus semantic identity ignores identifier casing; locals also need their definition span.
 pub(crate) fn same(left: &Symbol, right: &Symbol) -> bool {
     match (left, right) {
-        (Symbol::Script(a), Symbol::Script(b))
-        | (Symbol::ParentReceiver { script: a }, Symbol::ParentReceiver { script: b })
-        | (Symbol::Intrinsic { name: a }, Symbol::Intrinsic { name: b }) => {
-            a.eq_ignore_ascii_case(b)
-        }
-        (Symbol::Member { script: a, name: x }, Symbol::Member { script: b, name: y }) => {
-            a.eq_ignore_ascii_case(b) && x.eq_ignore_ascii_case(y)
-        }
+        (Symbol::Script(left_owner), Symbol::Script(right_owner))
+        | (
+            Symbol::ParentReceiver { script: left_owner },
+            Symbol::ParentReceiver {
+                script: right_owner,
+            },
+        )
+        | (Symbol::Intrinsic { name: left_owner }, Symbol::Intrinsic { name: right_owner }) => {
+            left_owner.eq_ignore_ascii_case(right_owner)
+        },
+        (
+            Symbol::Member {
+                script: left_owner,
+                name: left_name,
+            },
+            Symbol::Member {
+                script: right_owner,
+                name: right_name,
+            },
+        ) => {
+            left_owner.eq_ignore_ascii_case(right_owner)
+                && left_name.eq_ignore_ascii_case(right_name)
+        },
         (
             Symbol::StateMember {
-                script: a,
-                state: s,
-                name: x,
+                script: left_owner,
+                state: left_scope,
+                name: left_name,
             },
             Symbol::StateMember {
-                script: b,
-                state: t,
-                name: y,
+                script: right_owner,
+                state: right_scope,
+                name: right_name,
             },
-        ) => a.eq_ignore_ascii_case(b) && s.eq_ignore_ascii_case(t) && x.eq_ignore_ascii_case(y),
+        )
+        | (
+            Symbol::PropertyAccessor {
+                script: left_owner,
+                property: left_scope,
+                name: left_name,
+            },
+            Symbol::PropertyAccessor {
+                script: right_owner,
+                property: right_scope,
+                name: right_name,
+            },
+        ) => {
+            left_owner.eq_ignore_ascii_case(right_owner)
+                && left_scope.eq_ignore_ascii_case(right_scope)
+                && left_name.eq_ignore_ascii_case(right_name)
+        },
         (
-            Symbol::PropertyAccessor {
-                script: a,
-                property: s,
-                name: x,
+            Symbol::Parameter {
+                owner: left_owner,
+                name: left_name,
             },
-            Symbol::PropertyAccessor {
-                script: b,
-                property: t,
-                name: y,
+            Symbol::Parameter {
+                owner: right_owner,
+                name: right_name,
             },
-        ) => a.eq_ignore_ascii_case(b) && s.eq_ignore_ascii_case(t) && x.eq_ignore_ascii_case(y),
-        (Symbol::Parameter { owner: a, name: x }, Symbol::Parameter { owner: b, name: y }) => {
-            same(a, b) && x.eq_ignore_ascii_case(y)
-        }
+        ) => same(left_owner, right_owner) && left_name.eq_ignore_ascii_case(right_name),
         (
             Symbol::Local {
-                owner: a,
-                name: x,
-                identity: i,
+                owner: left_owner,
+                name: left_name,
+                identity: left_identity,
             },
             Symbol::Local {
-                owner: b,
-                name: y,
-                identity: j,
+                owner: right_owner,
+                name: right_name,
+                identity: right_identity,
             },
-        ) => same(a, b) && x.eq_ignore_ascii_case(y) && i == j,
+        ) => {
+            same(left_owner, right_owner)
+                && left_name.eq_ignore_ascii_case(right_name)
+                && left_identity == right_identity
+        },
         _ => false,
     }
 }
@@ -117,94 +149,7 @@ pub(crate) fn collect_occurrences(
         }
     }
     if let Some(parse) = view.analysis.parse(file) {
-        let mut parameter_definitions = HashMap::new();
-        for node in parse
-            .syntax()
-            .descendants()
-            .filter(|node| node.kind() == SyntaxKind::NamedArgument)
-        {
-            if view.is_cancelled() {
-                return None;
-            }
-            let Some(token) = node
-                .descendants_with_tokens()
-                .filter_map(|item| item.into_token())
-                .find(|token| token.kind() == SyntaxKind::Ident)
-            else {
-                continue;
-            };
-            let start = usize::from(node.text_range().start());
-            let end = usize::from(node.text_range().end());
-            let call = script
-                .expressions
-                .iter()
-                .filter(|fact| {
-                    matches!(fact.kind, ExpressionKind::Call { .. })
-                        && fact.span.range.start <= start
-                        && end <= fact.span.range.end
-                })
-                .min_by_key(|fact| fact.span.range.end - fact.span.range.start);
-            let Some(call) = call else {
-                continue;
-            };
-            let ExpressionKind::Call { callee, .. } = &call.kind else {
-                continue;
-            };
-            let Some(binding) = &callee.binding else {
-                continue;
-            };
-            let Some(member) = super::symbols::find_member(&script, &binding.symbol) else {
-                continue;
-            };
-            let Some(parameter) = member
-                .parameters
-                .iter()
-                .find(|parameter| parameter.name.eq_ignore_ascii_case(token.text()))
-            else {
-                continue;
-            };
-            let symbol = Symbol::Parameter {
-                owner: Box::new(member.symbol.clone()),
-                name: parameter.name.clone(),
-            };
-            let definition = *parameter_definitions
-                .entry(crate::snapshot::SymbolKey::new(&symbol))
-                .or_insert_with(|| {
-                    view.definitions(&symbol)
-                        .and_then(|spans| spans.first().copied())
-                });
-            result.push(SymbolOccurrence {
-                symbol,
-                span: SourceSpan {
-                    file,
-                    range: super::symbols::token_range(&token),
-                },
-                definition,
-            });
-        }
-        for token in parse
-            .syntax()
-            .descendants_with_tokens()
-            .filter_map(|item| item.into_token())
-            .filter(|token| token.kind() == SyntaxKind::Ident)
-        {
-            if view.is_cancelled() {
-                return None;
-            }
-            if let Some((name, span)) =
-                super::symbols::script_reference_token(&script, file, &token)
-            {
-                let definition = view.script_definition(&name);
-                let known = definition.is_some() || view.analysis.external_script(&name).is_some();
-                if known {
-                    result.push(SymbolOccurrence {
-                        symbol: Symbol::Script(name),
-                        span,
-                        definition,
-                    });
-                }
-            }
-        }
+        collect_syntax_occurrences(view, file, &script, &parse, &mut result)?;
     }
     result.sort_by_key(|item| (item.span.range.start, item.span.range.end));
     result.dedup_by(|a, b| a.span == b.span && same(&a.symbol, &b.symbol));
@@ -214,6 +159,103 @@ pub(crate) fn collect_occurrences(
         "editor file occurrences indexed"
     );
     Some(result)
+}
+
+/// Add named argument and script-reference tokens to semantic occurrences.
+fn collect_syntax_occurrences(
+    view: &IdeSnapshot,
+    file: FileId,
+    script: &folio_hir::Script,
+    parse: &folio_papyrus::Parse,
+    result: &mut Vec<SymbolOccurrence>,
+) -> Option<()> {
+    let mut parameter_definitions = HashMap::new();
+    for node in parse
+        .syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::NamedArgument)
+    {
+        if view.is_cancelled() {
+            return None;
+        }
+        let Some(token) = node
+            .descendants_with_tokens()
+            .filter_map(folio_papyrus::SyntaxElement::into_token)
+            .find(|token| token.kind() == SyntaxKind::Ident)
+        else {
+            continue;
+        };
+        let start = usize::from(node.text_range().start());
+        let end = usize::from(node.text_range().end());
+        let call = script
+            .expressions
+            .iter()
+            .filter(|fact| {
+                matches!(fact.kind, ExpressionKind::Call { .. })
+                    && fact.span.range.start <= start
+                    && end <= fact.span.range.end
+            })
+            .min_by_key(|fact| fact.span.range.end - fact.span.range.start);
+        let Some(call) = call else {
+            continue;
+        };
+        let ExpressionKind::Call { callee, .. } = &call.kind else {
+            continue;
+        };
+        let Some(binding) = &callee.binding else {
+            continue;
+        };
+        let Some(member) = super::symbols::find_member(script, &binding.symbol) else {
+            continue;
+        };
+        let Some(parameter) = member
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name.eq_ignore_ascii_case(token.text()))
+        else {
+            continue;
+        };
+        let symbol = Symbol::Parameter {
+            owner: Box::new(member.symbol.clone()),
+            name: parameter.name.clone(),
+        };
+        let definition = *parameter_definitions
+            .entry(crate::snapshot::SymbolKey::new(&symbol))
+            .or_insert_with(|| {
+                view.definitions(&symbol)
+                    .and_then(|spans| spans.first().copied())
+            });
+        result.push(SymbolOccurrence {
+            symbol,
+            span: SourceSpan {
+                file,
+                range: super::symbols::token_range(&token),
+            },
+            definition,
+        });
+    }
+    for token in parse
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(folio_papyrus::SyntaxElement::into_token)
+        .filter(|token| token.kind() == SyntaxKind::Ident)
+    {
+        if view.is_cancelled() {
+            return None;
+        }
+        if let Some((name, span)) = super::symbols::script_reference_token(script, file, &token) {
+            let definition = view.script_definition(&name);
+            let known = definition.is_some() || view.analysis.external_script(&name).is_some();
+            if known {
+                result.push(SymbolOccurrence {
+                    symbol: Symbol::Script(name),
+                    span,
+                    definition,
+                });
+            }
+        }
+    }
+    Some(())
 }
 
 pub(crate) fn occurrences(view: &IdeSnapshot, file: FileId) -> &[SymbolOccurrence] {
@@ -353,7 +395,7 @@ pub fn workspace_symbols(view: &IdeSnapshot, query: &str) -> Vec<WorkspaceSymbol
     fn flatten(
         file: FileId,
         items: Vec<super::DocumentSymbol>,
-        container: Option<String>,
+        container: Option<&str>,
         query: &str,
         result: &mut Vec<WorkspaceSymbol>,
     ) {
@@ -370,10 +412,10 @@ pub fn workspace_symbols(view: &IdeSnapshot, query: &str) -> Vec<WorkspaceSymbol
                         file,
                         range: item.selection_range,
                     },
-                    container: container.clone(),
+                    container: container.map(str::to_owned),
                 });
             }
-            flatten(file, item.children, Some(item.name), query, result);
+            flatten(file, item.children, Some(&item.name), query, result);
         }
     }
     let mut result = Vec::new();

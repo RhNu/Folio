@@ -1,3 +1,5 @@
+use folio_source::TextRange;
+
 use super::*;
 
 fn candidates() -> Arc<Vec<folio_ide::CompletionItem>> {

@@ -8,6 +8,3 @@ publish.workspace = true
 [dependencies]
 folio-profiles = { path = "../../foundation/profiles" }
 serde = { workspace = true, features = ["derive"] }
-
-[lints]
-workspace = true

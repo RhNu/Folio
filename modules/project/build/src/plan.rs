@@ -55,16 +55,16 @@ impl std::fmt::Display for PlanError {
             Self::UnsupportedArtifact(kind) => write!(f, "unsupported artifact kind {kind}"),
             Self::TooManyUserFlags { count, maximum } => {
                 write!(f, "{count} user flags exceed target limit of {maximum}")
-            }
+            },
             Self::InvalidUserFlags(reason) => write!(f, "invalid user flags: {reason}"),
             Self::MissingPackage(package) => write!(f, "missing loaded package {package}"),
             Self::MissingSource { package, path } => {
                 write!(f, "selected source {path} is missing from {package}")
-            }
+            },
             Self::DuplicateArtifact(path) => write!(f, "duplicate artifact path {path}"),
             Self::InvalidArtifact(path) => {
                 write!(f, "artifact name cannot be represented safely: {path}")
-            }
+            },
         }
     }
 }
@@ -72,6 +72,12 @@ impl std::fmt::Display for PlanError {
 impl std::error::Error for PlanError {}
 
 /// Plan only resolver-selected scripts owned by the current workspace.
+///
+/// # Errors
+/// Returns an error for unsupported target or output settings, invalid selection, or unsafe artifact paths.
+///
+/// # Panics
+/// Panics if the build identity cannot be serialized.
 pub fn project_plan(
     project: &LoadedProject,
     metadata: &Metadata,

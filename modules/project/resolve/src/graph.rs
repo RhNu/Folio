@@ -65,6 +65,12 @@ impl std::fmt::Display for ResolveError {
 impl std::error::Error for ResolveError {}
 
 /// Resolve each dependency occurrence in manifest order, followed by root sources.
+///
+/// # Errors
+/// Returns an error for invalid root or dependency identities, profile mismatches, missing dependencies, or script conflicts.
+///
+/// # Panics
+/// Panics if the internally collected provider set for a script is empty.
 #[instrument(name = "dependency.resolve", skip_all, fields(package_id = %root.manifest.name, phase = "resolve"))]
 pub fn resolve(
     root: &LoadedRoot,
@@ -87,6 +93,75 @@ pub fn resolve(
         version: Some(manifest.version.clone()),
         source: SourceId::Project,
     };
+    let DependencyResolution {
+        mut providers,
+        mut packages,
+        edges,
+        requirements,
+    } = resolve_dependencies(root, dependencies, &root_id)?;
+    for source in &root.source_files {
+        providers
+            .entry(source.script_candidate.to_ascii_lowercase())
+            .or_default()
+            .push(ScriptProvider {
+                script: source.script_candidate.clone(),
+                package: root_id.clone(),
+                definition: None,
+                declaration: None,
+                source_path: Some(source.display_path.clone()),
+            });
+    }
+    let selections = select_providers(providers)?;
+    let mut source_files = root
+        .source_files
+        .iter()
+        .map(|source| source.path.clone())
+        .collect::<Vec<_>>();
+    source_files.sort();
+    packages.push(ResolvedPackage {
+        id: root_id.clone(),
+        source_root: Some(manifest.source_path.value.clone()),
+        source_files,
+        language: Some(manifest.language.clone()),
+        dialect: Some(manifest.dialect.clone()),
+    });
+    let metadata = Metadata {
+        schema: METADATA_SCHEMA,
+        root: root_id,
+        target: manifest.target.clone(),
+        profile: manifest.profile.clone(),
+        fill_missing_arguments: manifest.fill_missing_arguments,
+        debug_info: manifest.debug_info,
+        source: manifest.source_path.value.clone(),
+        output: manifest.output_path.value.clone(),
+        user_flags: manifest.user_flags.clone(),
+        packages,
+        dependencies: edges,
+        scripts: selections,
+        external_requirements: requirements,
+    };
+    info!(
+        script_count = metadata.scripts.len(),
+        "project resolution complete"
+    );
+    Ok(metadata)
+}
+
+/// Dependency metadata accumulated before root providers receive final precedence.
+struct DependencyResolution {
+    providers: BTreeMap<String, Vec<ScriptProvider>>,
+    packages: Vec<ResolvedPackage>,
+    edges: Vec<DependencyEdge>,
+    requirements: Vec<ExternalRequirement>,
+}
+
+/// Validate ordered dependency occurrences and gather their API providers.
+fn resolve_dependencies(
+    root: &LoadedRoot,
+    dependencies: &[LoadedDependency],
+    root_id: &PackageId,
+) -> Result<DependencyResolution, ResolveError> {
+    let manifest = &root.manifest;
     let mut source_keys = BTreeSet::from([root.source_key.as_str()]);
     let mut aliases = BTreeSet::new();
     let mut providers = BTreeMap::<String, Vec<ScriptProvider>>::new();
@@ -128,7 +203,7 @@ pub fn resolve(
             return Err(error(
                 ResolveErrorKind::ProfileMismatch {
                     dependency: dependency.name.clone(),
-                    expected: expected_profile.clone(),
+                    expected: expected_profile,
                     actual: dependency.profile.clone(),
                 },
                 Some(dependency.declaration.clone()),
@@ -172,18 +247,18 @@ pub fn resolve(
                 });
         }
     }
-    for source in &root.source_files {
-        providers
-            .entry(source.script_candidate.to_ascii_lowercase())
-            .or_default()
-            .push(ScriptProvider {
-                script: source.script_candidate.clone(),
-                package: root_id.clone(),
-                definition: None,
-                declaration: None,
-                source_path: Some(source.display_path.clone()),
-            });
-    }
+    Ok(DependencyResolution {
+        providers,
+        packages: resolved_packages,
+        edges,
+        requirements,
+    })
+}
+
+/// Select whole scripts only after checking for repeated provider identities.
+fn select_providers(
+    providers: BTreeMap<String, Vec<ScriptProvider>>,
+) -> Result<Vec<ScriptSelection>, ResolveError> {
     let mut selections = Vec::new();
     for (script, choices) in providers {
         let mut identities = BTreeSet::new();
@@ -209,39 +284,7 @@ pub fn resolve(
             reason,
         });
     }
-    let mut source_files = root
-        .source_files
-        .iter()
-        .map(|source| source.path.clone())
-        .collect::<Vec<_>>();
-    source_files.sort();
-    resolved_packages.push(ResolvedPackage {
-        id: root_id.clone(),
-        source_root: Some(manifest.source_path.value.clone()),
-        source_files,
-        language: Some(manifest.language.clone()),
-        dialect: Some(manifest.dialect.clone()),
-    });
-    let metadata = Metadata {
-        schema: METADATA_SCHEMA,
-        root: root_id,
-        target: manifest.target.clone(),
-        profile: manifest.profile.clone(),
-        fill_missing_arguments: manifest.fill_missing_arguments,
-        debug_info: manifest.debug_info,
-        source: manifest.source_path.value.clone(),
-        output: manifest.output_path.value.clone(),
-        user_flags: manifest.user_flags.clone(),
-        packages: resolved_packages,
-        dependencies: edges,
-        scripts: selections,
-        external_requirements: requirements,
-    };
-    info!(
-        script_count = metadata.scripts.len(),
-        "project resolution complete"
-    );
-    Ok(metadata)
+    Ok(selections)
 }
 
 fn error(kind: ResolveErrorKind, location: Option<SourceSpan>) -> ResolveError {

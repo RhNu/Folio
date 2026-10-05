@@ -1,6 +1,8 @@
-use super::*;
 use folio_project_model::{LoadedDependency, LoadedRoot};
 use folio_project_resolve::io::{FolioHome, WatchPlan};
+
+use super::*;
+use crate::server::presentation;
 
 fn project() -> LoadedProject {
     let manifest=folio_project_resolve::manifest::parse("folio.toml",
@@ -76,7 +78,7 @@ fn dependency_buffers_update_docs_and_navigation_without_compiling_bodies() {
     let text = Arc::<str>::from(
         "; unsaved\nScriptName External\nString Function Run() Native\n{New café documentation.}\n",
     );
-    let buffers = BTreeMap::from([(path.clone(), text.clone())]);
+    let buffers = BTreeMap::from([(path.clone(), Arc::clone(&text))]);
     assert!(apply_dependency_overlays(&mut loaded, &buffers).unwrap());
     assert_eq!(loaded.dependencies[0].source_id, original_id);
     assert_eq!(loaded.dependencies[0].scripts[0].location.line, Some(2));

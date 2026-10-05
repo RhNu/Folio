@@ -1,7 +1,10 @@
 //! Name and member lookup with the existing binding precedence.
-use super::*;
+use super::{
+    Binding, ExpressionFact, ExpressionKind, MemberKind, NameRef, Scope, Symbol, Type, key,
+    lookup_member, lookup_state_member, state_runtime_intrinsic_type,
+};
 
-impl<'a> Scope<'a> {
+impl Scope<'_> {
     pub(super) fn resolve_name(&mut self, name: &NameRef) -> (Type, Option<Binding>) {
         if let Some(local) = self.locals.get(&key(&name.text)) {
             return (
@@ -103,14 +106,18 @@ impl<'a> Scope<'a> {
                 }),
             );
         }
-        let mut imported = self
+        self.resolve_imported_name(name)
+    }
+
+    /// Imported globals participate only after local, instance, and script lookup.
+    fn resolve_imported_name(&mut self, name: &NameRef) -> (Type, Option<Binding>) {
+        let imported = self
             .imports
             .iter()
             .filter_map(|script| lookup_member(self.world, script, &name.text))
             .filter(|(_, member)| member.global)
             .collect::<Vec<_>>();
-        if imported.len() == 1 {
-            let (owner, member) = imported.pop().unwrap();
+        if let [(owner, member)] = imported.as_slice() {
             return (
                 member.ty.clone(),
                 Some(Binding {
@@ -168,29 +175,8 @@ impl<'a> Scope<'a> {
             }
             return (Type::Error, None);
         };
-        if let Some(ty) = state_runtime_intrinsic_type(&name.text) {
-            let static_script = matches!(
-                owner.binding.as_ref().map(|binding| &binding.symbol),
-                Some(Symbol::Script(_))
-            ) && !matches!(&owner.kind, ExpressionKind::Reference(reference) if reference.text.eq_ignore_ascii_case("self") || reference.text.eq_ignore_ascii_case("parent"));
-            if static_script {
-                self.issue(
-                    "semantic.instance-member",
-                    "state runtime methods require an instance",
-                    name.span,
-                );
-                return (Type::Error, None);
-            }
-            return (
-                ty,
-                Some(Binding {
-                    name: name.clone(),
-                    symbol: Symbol::Intrinsic {
-                        name: name.text.clone(),
-                    },
-                    definition: None,
-                }),
-            );
+        if let Some(resolved) = self.resolve_state_intrinsic(owner, name) {
+            return resolved;
         }
         let Some((script, member)) = lookup_member(self.world, script_name, &name.text) else {
             if self.world.scripts.contains_key(&key(script_name)) {
@@ -258,5 +244,36 @@ impl<'a> Scope<'a> {
                 definition: member.definition,
             }),
         )
+    }
+
+    /// Compiler-defined state methods require an instance receiver.
+    fn resolve_state_intrinsic(
+        &mut self,
+        owner: &ExpressionFact,
+        name: &NameRef,
+    ) -> Option<(Type, Option<Binding>)> {
+        let ty = state_runtime_intrinsic_type(&name.text)?;
+        let static_script = matches!(
+            owner.binding.as_ref().map(|binding| &binding.symbol),
+            Some(Symbol::Script(_))
+        ) && !matches!(&owner.kind, ExpressionKind::Reference(reference) if reference.text.eq_ignore_ascii_case("self") || reference.text.eq_ignore_ascii_case("parent"));
+        if static_script {
+            self.issue(
+                "semantic.instance-member",
+                "state runtime methods require an instance",
+                name.span,
+            );
+            return Some((Type::Error, None));
+        }
+        Some((
+            ty,
+            Some(Binding {
+                name: name.clone(),
+                symbol: Symbol::Intrinsic {
+                    name: name.text.clone(),
+                },
+                definition: None,
+            }),
+        ))
     }
 }

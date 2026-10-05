@@ -1,0 +1,8 @@
+version = 1
+
+# Preserve Folio's existing effective-code-line thresholds and severities.
+[rules.lines]
+warn = 650
+error = 1200
+warn-level = "warning"
+error-level = "error"

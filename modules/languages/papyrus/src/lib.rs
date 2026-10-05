@@ -8,18 +8,16 @@ mod parser;
 mod source_structure;
 mod validation;
 
-use folio_source::TextRange;
-use rowan::{GreenNode, Language};
-
 pub use ast::{FunctionAst, ScriptAst};
 pub use documentation::{declaration_documentation, declaration_header};
+use folio_source::TextRange;
 pub use lexer::{LexToken, lex};
-pub use literals::normalize_constant_literal_text;
 pub use literals::{
     constant_literal_matches_type, constant_literal_text, decode_integer_literal,
-    decode_string_literal,
+    decode_string_literal, normalize_constant_literal_text,
 };
 pub use parser::parse;
+use rowan::{GreenNode, Language};
 pub use validation::{DeclarationIssue, is_constant_literal, validate_declarations};
 
 /// The language policy is explicit even while the first parser shares Skyrim syntax.
@@ -189,13 +187,13 @@ impl Language for PapyrusLanguage {
             .expect("unknown Papyrus syntax kind")
     }
 
-    fn kind_to_raw(kind: SyntaxKind) -> rowan::SyntaxKind {
-        rowan::SyntaxKind(kind as u16)
-    }
+    fn kind_to_raw(kind: SyntaxKind) -> rowan::SyntaxKind { rowan::SyntaxKind(kind as u16) }
 }
 
 pub type SyntaxNode = rowan::SyntaxNode<PapyrusLanguage>;
 pub type SyntaxToken = rowan::SyntaxToken<PapyrusLanguage>;
+/// A lossless CST child, either a node or a token.
+pub type SyntaxElement = rowan::SyntaxElement<PapyrusLanguage>;
 
 /// A recoverable parser failure, located in UTF-8 byte offsets.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,9 +231,7 @@ pub struct Parse {
 }
 
 impl Parse {
-    pub fn syntax(&self) -> SyntaxNode {
-        SyntaxNode::new_root(self.green.clone())
-    }
+    pub fn syntax(&self) -> SyntaxNode { SyntaxNode::new_root(self.green.clone()) }
 }
 
 /// A declaration's semantic identity excludes source offsets and function bodies.
@@ -340,7 +336,7 @@ pub fn declarations(parse: &Parse) -> Vec<LocatedDeclaration> {
                                 .collect(),
                         })
                 })
-            }
+            },
             SyntaxKind::EventDecl => {
                 direct_words(&node)
                     .get(1)
@@ -350,7 +346,7 @@ pub fn declarations(parse: &Parse) -> Vec<LocatedDeclaration> {
                         parameters: ast::node_parameters(&node),
                         modifiers: ast::node_modifiers(&node),
                     })
-            }
+            },
             _ => None,
         };
         if let Some(declaration) = declaration {
@@ -377,7 +373,7 @@ fn is_declaration_scope(node: &SyntaxNode) -> bool {
                     SyntaxKind::StateDecl | SyntaxKind::PropertyDecl
                 )
             })
-        }
+        },
         _ => false,
     }
 }
@@ -385,7 +381,7 @@ fn is_declaration_scope(node: &SyntaxNode) -> bool {
 fn direct_words(node: &SyntaxNode) -> Vec<String> {
     node.children_with_tokens()
         .take_while(|element| element.kind() != SyntaxKind::Block)
-        .filter_map(|element| element.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .filter(|token| token.kind() == SyntaxKind::Ident)
         .map(|token| token.text().to_string())
         .collect()
@@ -395,7 +391,7 @@ fn typed_member(node: &SyntaxNode) -> Option<(String, String, Vec<String>)> {
     let ty = node
         .children()
         .find(|child| child.kind() == SyntaxKind::TypeRef)
-        .map(ast::type_text)?;
+        .map(|node| ast::type_text(&node))?;
     let words = direct_words(node);
     let property = node.kind() == SyntaxKind::PropertyDecl;
     let name_index = usize::from(property);

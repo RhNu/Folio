@@ -1,5 +1,8 @@
 //! Call argument evaluation and proven redundant capture removal.
-use super::*;
+use super::{
+    BTreeSet, ExpressionFact, ExpressionKind, FunctionLowerer, Op, Symbol, Type, Value, literal,
+    member_name,
+};
 
 /// A captured argument operand and the instruction that stored its original value.
 struct CallCapture {
@@ -8,7 +11,8 @@ struct CallCapture {
     copied: Value,
     ordinal: Option<usize>,
 }
-impl<'a> FunctionLowerer<'a> {
+
+impl FunctionLowerer<'_> {
     /// A copied operand can be read directly when later argument evaluation cannot change it.
     fn call_source_is_stable(&self, capture: &CallCapture) -> bool {
         let Value::Identifier(source) = &capture.original else {
@@ -55,32 +59,14 @@ impl<'a> FunctionLowerer<'a> {
             })
     }
 
-    pub(super) fn call(
+    /// Evaluate a receiver before arguments and preserve its original storage value.
+    fn call_receiver(
         &mut self,
-        expr: &ExpressionFact,
         callee: &ExpressionFact,
-        arguments: &[ExpressionFact],
-        ordinals: &[usize],
-        defaults: &[Option<(Type, String)>],
         is_global: bool,
-    ) -> Option<Value> {
-        let Some(binding) = &callee.binding else {
-            self.issue("lowering.unbound-call", "call target is unbound", expr.span);
-            return None;
-        };
-        let Some(name) = (match &binding.symbol {
-            Symbol::Intrinsic { name } => Some(name.clone()),
-            other => member_name(other).map(str::to_owned),
-        }) else {
-            self.issue(
-                "lowering.invalid-call",
-                "call target is not callable",
-                expr.span,
-            );
-            return None;
-        };
-        let mut captures = Vec::new();
-        let mut receiver = if let ExpressionKind::Member { owner, .. } = &callee.kind {
+        captures: &mut Vec<CallCapture>,
+    ) -> Result<Option<Value>, ()> {
+        let receiver = if let ExpressionKind::Member { owner, .. } = &callee.kind {
             if is_global
                 || owner
                     .binding
@@ -89,7 +75,7 @@ impl<'a> FunctionLowerer<'a> {
             {
                 None
             } else {
-                let value = self.expr(owner)?;
+                let value = self.expr(owner).ok_or(())?;
                 if matches!(value, Value::Identifier(_)) {
                     let instruction = self.function.instructions.len();
                     let copied = self.capture(value.clone(), &owner.ty, owner.span);
@@ -109,6 +95,52 @@ impl<'a> FunctionLowerer<'a> {
         } else {
             None
         };
+        Ok(receiver)
+    }
+
+    /// Remove only captures whose source cannot be changed by later operands.
+    fn simplify_call_captures(
+        &mut self,
+        captures: &[CallCapture],
+        ordered: &mut [Option<Value>],
+        receiver: &mut Option<Value>,
+    ) {
+        let mut removable = Vec::new();
+        let mut redundant_slots = BTreeSet::new();
+        for capture in captures {
+            if self.call_source_is_stable(capture) {
+                if let Some(ordinal) = capture.ordinal {
+                    ordered[ordinal] = Some(capture.original.clone());
+                } else {
+                    *receiver = Some(capture.original.clone());
+                }
+                removable.push(capture.instruction);
+                if let Value::Identifier(name) = &capture.copied {
+                    redundant_slots.insert(name.clone());
+                }
+            }
+        }
+        for index in removable.iter().rev() {
+            self.function.instructions.remove(*index);
+        }
+        self.function
+            .locals
+            .retain(|local| !redundant_slots.contains(&local.name));
+        tracing::trace!(
+            removed_captures = removable.len(),
+            "simplified call operands"
+        );
+    }
+
+    /// Evaluate arguments in source order, then fill their bound parameter positions.
+    fn call_arguments(
+        &mut self,
+        expr: &ExpressionFact,
+        arguments: &[ExpressionFact],
+        ordinals: &[usize],
+        defaults: &[Option<(Type, String)>],
+        captures: &mut Vec<CallCapture>,
+    ) -> Option<Vec<Option<Value>>> {
         if arguments.len() != ordinals.len() {
             self.issue(
                 "lowering.call-arity",
@@ -170,31 +202,38 @@ impl<'a> FunctionLowerer<'a> {
                 *value = Some(default);
             }
         }
-        let mut removable = Vec::new();
-        let mut redundant_slots = BTreeSet::new();
-        for capture in &captures {
-            if self.call_source_is_stable(capture) {
-                if let Some(ordinal) = capture.ordinal {
-                    ordered[ordinal] = Some(capture.original.clone());
-                } else {
-                    receiver = Some(capture.original.clone());
-                }
-                removable.push(capture.instruction);
-                if let Value::Identifier(name) = &capture.copied {
-                    redundant_slots.insert(name.clone());
-                }
-            }
-        }
-        for index in removable.iter().rev() {
-            self.function.instructions.remove(*index);
-        }
-        self.function
-            .locals
-            .retain(|local| !redundant_slots.contains(&local.name));
-        tracing::trace!(
-            removed_captures = removable.len(),
-            "simplified call operands"
-        );
+        Some(ordered)
+    }
+
+    pub(super) fn call(
+        &mut self,
+        expr: &ExpressionFact,
+        callee: &ExpressionFact,
+        arguments: &[ExpressionFact],
+        ordinals: &[usize],
+        defaults: &[Option<(Type, String)>],
+        is_global: bool,
+    ) -> Option<Value> {
+        let Some(binding) = &callee.binding else {
+            self.issue("lowering.unbound-call", "call target is unbound", expr.span);
+            return None;
+        };
+        let Some(name) = (match &binding.symbol {
+            Symbol::Intrinsic { name } => Some(name.clone()),
+            other => member_name(other).map(str::to_owned),
+        }) else {
+            self.issue(
+                "lowering.invalid-call",
+                "call target is not callable",
+                expr.span,
+            );
+            return None;
+        };
+        let mut captures = Vec::new();
+        let mut receiver = self.call_receiver(callee, is_global, &mut captures).ok()?;
+        let mut ordered =
+            self.call_arguments(expr, arguments, ordinals, defaults, &mut captures)?;
+        self.simplify_call_captures(&captures, &mut ordered, &mut receiver);
         let args: Vec<Value> = ordered.into_iter().flatten().collect();
         let dest = self.temp(&expr.ty);
         let op = if matches!(&binding.symbol, Symbol::Intrinsic { name } if name.eq_ignore_ascii_case("Find") || name.eq_ignore_ascii_case("RFind"))
@@ -226,7 +265,7 @@ impl<'a> FunctionLowerer<'a> {
             let script = match &binding.symbol {
                 Symbol::Member { script, .. } | Symbol::StateMember { script, .. } => {
                     script.clone()
-                }
+                },
                 _ => return None,
             };
             Op::CallStatic {

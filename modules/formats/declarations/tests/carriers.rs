@@ -1,4 +1,5 @@
 //! Public declaration carriers, validation, and semantic identity contracts.
+#[path = "common/support.rs"]
 mod common;
 use common::sample;
 use folio_format_declarations::*;

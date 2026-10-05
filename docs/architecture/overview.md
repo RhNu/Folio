@@ -30,7 +30,6 @@ All paths below are relative to `modules`.
 | `tooling/format`, `tooling/lint`, `tooling/ide` | Formatting, suggestions, and editor queries |
 | `project/build` | Input projection, build planning, caching, execution, and output publication |
 | `apps/cli`, `apps/lsp` | Commands, presentation, protocol, and process boundaries |
-| `apps/xtask` | Repository maintenance outside the Papyrus build workflow |
 
 Crates use `modules/<domain>/<short-name>` paths and `folio-<responsibility>` package names. Domain directories are not nested workspaces. Add a crate only for a distinct responsibility with a defined API and dependency boundary.
 

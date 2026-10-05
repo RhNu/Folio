@@ -1,5 +1,8 @@
 //! Statement control flow and single-evaluation assignment places.
-use super::*;
+use super::{
+    Decision, ExpressionFact, ExpressionKind, FunctionLowerer, MemberKind, Op, Outcome, SourceSpan,
+    Statement, Symbol, Type, Value, binary_op, find_member,
+};
 
 /// A writable location whose receiver and index have already been evaluated.
 enum Place {
@@ -7,7 +10,8 @@ enum Place {
     Property { name: String, receiver: Value },
     Array { array: Value, index: Value },
 }
-impl<'a> FunctionLowerer<'a> {
+
+impl FunctionLowerer<'_> {
     pub(super) fn statement(&mut self, statement: &Statement) {
         match statement {
             Statement::Return { span, value } => {
@@ -16,7 +20,7 @@ impl<'a> FunctionLowerer<'a> {
                     .and_then(|value| self.expr(value))
                     .unwrap_or(Value::None);
                 self.emit(Op::Return(value), *span);
-            }
+            },
             Statement::Variable { declaration, value } => {
                 if let Some(slot) =
                     self.slot(&declaration.symbol, &declaration.ty, declaration.span)
@@ -24,7 +28,7 @@ impl<'a> FunctionLowerer<'a> {
                 {
                     self.emit(Op::Assign(Value::Identifier(slot), value), declaration.span);
                 }
-            }
+            },
             Statement::Assignment {
                 span,
                 target,
@@ -33,7 +37,7 @@ impl<'a> FunctionLowerer<'a> {
             } => self.assignment(*span, target, value, operator),
             Statement::Expression(value) => {
                 let _ = self.expr(value);
-            }
+            },
             Statement::If {
                 span,
                 condition,
@@ -67,7 +71,7 @@ impl<'a> FunctionLowerer<'a> {
                     self.statement(stmt);
                 }
                 self.emit(Op::Label(end), *span);
-            }
+            },
             Statement::While {
                 span,
                 condition,
@@ -91,7 +95,7 @@ impl<'a> FunctionLowerer<'a> {
                 }
                 self.emit(Op::Jump(start), *span);
                 self.emit(Op::Label(end), *span);
-            }
+            },
             Statement::Error(span) => self.issue(
                 "lowering.invalid-statement",
                 "cannot emit an erroneous statement",
@@ -107,95 +111,7 @@ impl<'a> FunctionLowerer<'a> {
         value: &ExpressionFact,
         operator: &str,
     ) {
-        // Destination components are evaluated before the right side, once each.
-        let place = match &target.kind {
-            ExpressionKind::Reference(_) => {
-                let Some(binding) = &target.binding else {
-                    self.issue(
-                        "lowering.unbound-target",
-                        "assignment target is unbound",
-                        span,
-                    );
-                    return;
-                };
-                match &binding.symbol {
-                    Symbol::Local { .. } | Symbol::Parameter { .. } => self
-                        .slot(&binding.symbol, &target.ty, span)
-                        .map(|name| Place::Slot(Value::Identifier(name))),
-                    Symbol::Member { name, .. } => {
-                        match find_member(self.source, &binding.symbol).map(|member| &member.kind) {
-                            Some(MemberKind::Property {
-                                read_only: true, ..
-                            }) => {
-                                self.issue(
-                                    "lowering.read-only-property",
-                                    "read-only property cannot be assigned",
-                                    span,
-                                );
-                                None
-                            }
-                            Some(MemberKind::Property {
-                                auto: true,
-                                read_only: false,
-                            }) if self
-                                .source
-                                .members
-                                .iter()
-                                .any(|item| item.symbol == binding.symbol) =>
-                            {
-                                Some(Place::Slot(Value::Identifier(format!("::{name}_var"))))
-                            }
-                            Some(MemberKind::Property { .. }) => Some(Place::Property {
-                                name: name.clone(),
-                                receiver: Value::Identifier("self".into()),
-                            }),
-                            _ => Some(Place::Slot(Value::Identifier(name.clone()))),
-                        }
-                    }
-                    _ => None,
-                }
-            }
-            ExpressionKind::Member { owner, name } => {
-                let own_receiver = matches!(&owner.kind, ExpressionKind::Reference(reference) if reference.text.eq_ignore_ascii_case("self") || reference.text.eq_ignore_ascii_case("parent"));
-                if let Some(member) = target
-                    .binding
-                    .as_ref()
-                    .and_then(|binding| find_member(self.source, &binding.symbol))
-                    && matches!(member.kind, MemberKind::Variable)
-                {
-                    if !own_receiver {
-                        self.issue(
-                            "target.foreign-variable",
-                            "script variable cannot be assigned through another instance",
-                            target.span,
-                        );
-                        return;
-                    }
-                    Some(Place::Slot(Value::Identifier(name.text.clone())))
-                } else {
-                    let value = self.expr(owner);
-                    value.map(|value| Place::Property {
-                        name: name.text.clone(),
-                        receiver: self.capture(value, &owner.ty, owner.span),
-                    })
-                }
-            }
-            ExpressionKind::Index { owner, index } => {
-                let Some(array) = self.expr(owner) else {
-                    return;
-                };
-                let array = self.capture(array, &owner.ty, owner.span);
-                let Some(index_value) = self.expr(index) else {
-                    return;
-                };
-                let index_value = self.capture(index_value, &Type::Int, index.span);
-                Some(Place::Array {
-                    array,
-                    index: index_value,
-                })
-            }
-            _ => None,
-        };
+        let place = self.assignment_place(target, span);
         let Some(place) = place else {
             self.issue(
                 "lowering.invalid-target",
@@ -204,11 +120,11 @@ impl<'a> FunctionLowerer<'a> {
             );
             return;
         };
-        let prior = if operator != "=" {
-            let read = self.read_place(&place, &target.ty, span);
-            read.map(|read| self.capture(read, &target.ty, span))
-        } else {
+        let prior = if operator == "=" {
             None
+        } else {
+            let read = self.read_place(&place, &target.ty, span);
+            Some(self.capture(read, &target.ty, span))
         };
         let Some(mut result) = self.expr(value) else {
             return;
@@ -269,9 +185,99 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    fn read_place(&mut self, place: &Place, ty: &Type, span: SourceSpan) -> Option<Value> {
+    /// Evaluate a writable receiver and index once, before the assignment value.
+    fn assignment_place(&mut self, target: &ExpressionFact, span: SourceSpan) -> Option<Place> {
+        // Destination components are evaluated before the right side, once each.
+
+        match &target.kind {
+            ExpressionKind::Reference(_) => {
+                let Some(binding) = &target.binding else {
+                    self.issue(
+                        "lowering.unbound-target",
+                        "assignment target is unbound",
+                        span,
+                    );
+                    return None;
+                };
+                match &binding.symbol {
+                    Symbol::Local { .. } | Symbol::Parameter { .. } => self
+                        .slot(&binding.symbol, &target.ty, span)
+                        .map(|name| Place::Slot(Value::Identifier(name))),
+                    Symbol::Member { name, .. } => {
+                        match find_member(self.source, &binding.symbol).map(|member| &member.kind) {
+                            Some(MemberKind::Property {
+                                read_only: true, ..
+                            }) => {
+                                self.issue(
+                                    "lowering.read-only-property",
+                                    "read-only property cannot be assigned",
+                                    span,
+                                );
+                                None
+                            },
+                            Some(MemberKind::Property {
+                                auto: true,
+                                read_only: false,
+                            }) if self
+                                .source
+                                .members
+                                .iter()
+                                .any(|item| item.symbol == binding.symbol) =>
+                            {
+                                Some(Place::Slot(Value::Identifier(format!("::{name}_var"))))
+                            },
+                            Some(MemberKind::Property { .. }) => Some(Place::Property {
+                                name: name.clone(),
+                                receiver: Value::Identifier("self".into()),
+                            }),
+                            _ => Some(Place::Slot(Value::Identifier(name.clone()))),
+                        }
+                    },
+                    _ => None,
+                }
+            },
+            ExpressionKind::Member { owner, name } => {
+                let own_receiver = matches!(&owner.kind, ExpressionKind::Reference(reference) if reference.text.eq_ignore_ascii_case("self") || reference.text.eq_ignore_ascii_case("parent"));
+                if let Some(member) = target
+                    .binding
+                    .as_ref()
+                    .and_then(|binding| find_member(self.source, &binding.symbol))
+                    && matches!(member.kind, MemberKind::Variable)
+                {
+                    if !own_receiver {
+                        self.issue(
+                            "target.foreign-variable",
+                            "script variable cannot be assigned through another instance",
+                            target.span,
+                        );
+                        return None;
+                    }
+                    Some(Place::Slot(Value::Identifier(name.text.clone())))
+                } else {
+                    let value = self.expr(owner);
+                    value.map(|value| Place::Property {
+                        name: name.text.clone(),
+                        receiver: self.capture(value, &owner.ty, owner.span),
+                    })
+                }
+            },
+            ExpressionKind::Index { owner, index } => {
+                let array = self.expr(owner)?;
+                let array = self.capture(array, &owner.ty, owner.span);
+                let index_value = self.expr(index)?;
+                let index_value = self.capture(index_value, &Type::Int, index.span);
+                Some(Place::Array {
+                    array,
+                    index: index_value,
+                })
+            },
+            _ => None,
+        }
+    }
+
+    fn read_place(&mut self, place: &Place, ty: &Type, span: SourceSpan) -> Value {
         match place {
-            Place::Slot(value) => Some(value.clone()),
+            Place::Slot(value) => value.clone(),
             Place::Property { name, receiver } => {
                 let dest = self.temp(ty);
                 self.emit(
@@ -282,8 +288,8 @@ impl<'a> FunctionLowerer<'a> {
                     },
                     span,
                 );
-                Some(dest)
-            }
+                dest
+            },
             Place::Array { array, index } => {
                 let dest = self.temp(ty);
                 self.emit(
@@ -294,8 +300,8 @@ impl<'a> FunctionLowerer<'a> {
                     },
                     span,
                 );
-                Some(dest)
-            }
+                dest
+            },
         }
     }
 }

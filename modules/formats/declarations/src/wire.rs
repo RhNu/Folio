@@ -3,12 +3,16 @@
 mod guards;
 mod legacy;
 pub(crate) use guards::guard_json;
-
-use crate::{codec::binary, *};
 use serde::{Deserialize, Serialize};
+
+use crate::{
+    DeclarationBundle, DecodeError, FORMAT, Member, MemberData, MemberKind, Origin, Parameter,
+    ParameterDefault, PropertyAccess, SCHEMA_VERSION, Script, SourceLocation, State, codec::binary,
+};
 
 #[derive(Serialize, Deserialize)]
 struct Bundle(u32, String, String, Option<String>, Vec<WireScript>);
+
 #[derive(Serialize, Deserialize)]
 struct WireScript(
     String,
@@ -21,10 +25,13 @@ struct WireScript(
     Option<WireSource>,
     Option<String>,
 );
+
 #[derive(Serialize, Deserialize)]
 struct WireState(String, bool, Vec<WireMember>, Option<String>);
+
 #[derive(Serialize, Deserialize)]
 struct WireSource(String, u32, u32);
+
 #[derive(Serialize, Deserialize)]
 struct WireMember(
     String,
@@ -37,6 +44,7 @@ struct WireMember(
     Vec<WireParameter>,
     Option<String>,
 );
+
 #[derive(Serialize, Deserialize)]
 struct WireParameter(String, String, u8, Option<String>);
 
@@ -231,7 +239,7 @@ fn member_from_wire(wire: WireMember) -> Result<Member, DecodeError> {
                         return Err(binary("event contains return type or global attribute"));
                     }
                     MemberData::Event { native, parameters }
-                }
+                },
                 _ => MemberData::UnknownCallable {
                     return_type: ty,
                     global,
@@ -239,7 +247,7 @@ fn member_from_wire(wire: WireMember) -> Result<Member, DecodeError> {
                     parameters,
                 },
             }
-        }
+        },
         3 | 4 => {
             if attributes != 0 || !parameters.is_empty() {
                 return Err(binary("storage member contains callable facts"));
@@ -269,7 +277,7 @@ fn member_from_wire(wire: WireMember) -> Result<Member, DecodeError> {
                     initial_literal,
                 }
             }
-        }
+        },
         _ => return Err(binary("unknown member kind tag")),
     };
     Ok(Member {

@@ -1,11 +1,11 @@
 //! Public parsing, binding, and type-analysis contracts over in-memory inputs.
+use std::sync::Arc;
+
 use folio_analysis::AnalysisHost;
 use folio_diagnostics::Severity;
-use folio_format_declarations::decode;
 use folio_hir::{ExpressionKind, MemberKind as HirMemberKind, Statement, Symbol, Type};
 use folio_papyrus::PapyrusDialect;
 use folio_source::{FileId, Revision};
-use std::sync::Arc;
 
 fn source(host: &mut AnalysisHost, id: u32, text: &str) {
     host.upsert(
@@ -14,113 +14,11 @@ fn source(host: &mut AnalysisHost, id: u32, text: &str) {
         Arc::from(text),
         PapyrusDialect::Skyrim,
     )
-    .unwrap();
+    .expect("synthetic test input is valid");
 }
 
-fn declarations() -> folio_format_declarations::DeclarationBundle {
-    decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Quest","members":[{"name":"Start","kind":"function","return_type":"Bool"}]},{"name":"Actor","members":[{"name":"GetLevel","kind":"function","return_type":"Int"}]},{"name":"Debug","members":[{"name":"Notification","kind":"function","parameters":[{"name":"message","ty":"String"}],"global":true}]}]}"#).unwrap()
-}
-
-#[test]
-fn external_property_and_function_can_share_a_name() {
-    let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[{"name":"Check","kind":"property","ty":"Bool","access":{"kind":"auto"}},{"name":"Check","kind":"function","return_type":"Bool"}]}]}"#).unwrap();
-    let mut host = AnalysisHost::new();
-    host.set_external_declarations(vec![bundle]);
-    source(
-        &mut host,
-        98,
-        "ScriptName User Extends Base\nFunction Probe()\nBool value = Check\nCheck()\nEndFunction\n",
-    );
-    let diagnostics = host.view().diagnostics(FileId(98)).unwrap();
-    assert!(
-        diagnostics.iter().all(
-            |item| item.code != "semantic.not-callable" && item.code != "semantic.unknown-name"
-        )
-    );
-}
-
-#[test]
-fn rejects_assignment_to_external_read_only_property() {
-    let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[{"name":"Value","kind":"property","ty":"Int","access":{"kind":"auto-read-only"}}]}]}"#).unwrap();
-    let mut host = AnalysisHost::new();
-    host.set_external_declarations(vec![bundle]);
-    source(
-        &mut host,
-        99,
-        "ScriptName User Extends Base\nFunction Change()\nValue = 3\nEndFunction\n",
-    );
-    let diagnostics = host.view().diagnostics(FileId(99)).unwrap();
-    assert!(
-        diagnostics
-            .iter()
-            .any(|item| item.code == "semantic.read-only-property")
-    );
-}
-
-#[test]
-fn binds_inheritance_external_calls_and_local_definition() {
-    let mut host = AnalysisHost::new();
-    host.set_external_declarations(vec![declarations()]);
-    let text = "Scriptname Arena extends Quest\nActor Property PlayerRef Auto\nInt Function Reward(Int bonus)\nInt level = PlayerRef.GetLevel()\nStart()\nDebug.Notification(\"ready\")\nReturn level + bonus\nEndFunction\n";
-    source(&mut host, 1, text);
-    let view = host.view();
-    assert!(
-        view.diagnostics(FileId(1)).unwrap().is_empty(),
-        "{:?}",
-        view.diagnostics(FileId(1))
-    );
-    let level_use = text.rfind("level +").unwrap();
-    let level_definition = text.find("level =").unwrap();
-    assert_eq!(view.type_at(FileId(1), level_use), Some(Type::Int));
-    assert_eq!(
-        view.definition(FileId(1), level_use).unwrap().range.start,
-        level_definition
-    );
-    let script = view.hir(FileId(1)).unwrap();
-    assert_eq!(script.calls.len(), 3);
-}
-
-#[test]
-fn unknown_callables_allow_explicit_calls_but_reject_unknown_defaults_and_overrides() {
-    let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[{"name":"GetValue","kind":"unknown-callable","parameters":[{"name":"count","ty":"Int","default":{"kind":"unknown"}}],"return_type":"Int"}]}]}"#).unwrap();
-    let mut host = AnalysisHost::new();
-    host.set_external_declarations(vec![bundle]);
-    host.set_fill_missing_arguments(true);
-    source(
-        &mut host,
-        80,
-        "ScriptName Child Extends Base\nFunction Probe()\nInt value = GetValue(1)\nEndFunction\n",
-    );
-    source(
-        &mut host,
-        81,
-        "ScriptName Missing Extends Base\nFunction Probe()\nInt value = GetValue()\nEndFunction\n",
-    );
-    source(
-        &mut host,
-        82,
-        "ScriptName Override Extends Base\nInt Function GetValue(Int count)\nReturn count\nEndFunction\n",
-    );
-    let view = host.view();
-    assert!(
-        view.diagnostics(FileId(80))
-            .unwrap()
-            .iter()
-            .all(|item| item.severity != Severity::Error)
-    );
-    assert!(
-        view.diagnostics(FileId(81))
-            .unwrap()
-            .iter()
-            .any(|item| item.code == "semantic.default-unavailable")
-    );
-    assert!(
-        view.diagnostics(FileId(82))
-            .unwrap()
-            .iter()
-            .any(|item| item.code == "semantic.override-ambiguous")
-    );
-}
+#[path = "semantics/external.rs"]
+mod external;
 
 #[test]
 fn reports_local_errors_without_losing_sibling_facts() {
@@ -128,7 +26,9 @@ fn reports_local_errors_without_losing_sibling_facts() {
     let text = "Scriptname Sample\nInt Function Broken()\nReturn Missing + 1\nEndFunction\nInt Function Good()\nReturn 2\nEndFunction\n";
     source(&mut host, 2, text);
     let view = host.view();
-    let diagnostics = view.diagnostics(FileId(2)).unwrap();
+    let diagnostics = view
+        .diagnostics(FileId(2))
+        .expect("synthetic test input is valid");
     assert_eq!(
         diagnostics
             .iter()
@@ -137,61 +37,19 @@ fn reports_local_errors_without_losing_sibling_facts() {
         1
     );
     assert_eq!(
-        view.type_at(FileId(2), text.find('2').unwrap()),
+        view.type_at(
+            FileId(2),
+            text.find('2').expect("synthetic test input is valid")
+        ),
         Some(Type::Int)
     );
-    assert_eq!(view.hir(FileId(2)).unwrap().bodies.len(), 2);
-}
-
-#[test]
-fn persisted_parameter_defaults_are_checked_individually() {
-    use folio_format_declarations::{DeclarationFormat, encode};
-    let declaration = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[{"name":"Target","kind":"function","parameters":[{"name":"required","ty":"Int"},{"name":"known","ty":"Int","default":{"kind":"literal","value":"7"}},{"name":"unknown","ty":"Int","default":{"kind":"unknown"}}]}]}]}"#).unwrap();
-    for format in [DeclarationFormat::Json, DeclarationFormat::Binary] {
-        let mut host = AnalysisHost::new();
-        host.set_external_declarations(vec![
-            decode(&encode(&declaration, format).unwrap()).unwrap(),
-        ]);
-        host.set_fill_missing_arguments(true);
-        source(
-            &mut host,
-            90,
-            "ScriptName Known Extends Base\nFunction Probe()\nTarget(unknown = 2)\nEndFunction\n",
-        );
-        source(
-            &mut host,
-            91,
-            "ScriptName Unknown Extends Base\nFunction Probe()\nTarget(required = 1)\nEndFunction\n",
-        );
-        let view = host.view();
-        let known = view.diagnostics(FileId(90)).unwrap();
-        assert_eq!(known.len(), 1, "{known:?}");
-        assert_eq!(known[0].code, "semantic.argument-defaulted");
-        let unknown = view.diagnostics(FileId(91)).unwrap();
-        assert_eq!(unknown.len(), 1, "{unknown:?}");
-        assert_eq!(unknown[0].code, "semantic.default-unavailable");
-        let script = view.hir(FileId(90)).unwrap();
-        let Statement::Expression(call) = &script.bodies[0].statements[0] else {
-            panic!("expected call");
-        };
-        let ExpressionKind::Call {
-            argument_ordinals,
-            parameter_defaults,
-            ..
-        } = &call.kind
-        else {
-            panic!("expected call");
-        };
-        assert_eq!(argument_ordinals, &[2]);
-        assert_eq!(
-            parameter_defaults,
-            &[
-                Some((Type::Int, "0".into())),
-                Some((Type::Int, "7".into())),
-                None
-            ]
-        );
-    }
+    assert_eq!(
+        view.hir(FileId(2))
+            .expect("synthetic test input is valid")
+            .bodies
+            .len(),
+        2
+    );
 }
 
 #[test]
@@ -203,8 +61,12 @@ fn string_addition_accepts_numeric_operands_and_records_conversions() {
         "ScriptName Probe\nString Function Mix(Int count, Float ratio)\nReturn \"n=\" + count + ratio\nEndFunction\nString Function Reverse()\nReturn 1.5 + \"x\"\nEndFunction\nString Function Compound()\nString value = \"x\"\nvalue += 2\nReturn value\nEndFunction\n",
     );
     let view = host.view();
-    assert!(view.diagnostics(FileId(20)).unwrap().is_empty());
-    let script = view.hir(FileId(20)).unwrap();
+    assert!(
+        view.diagnostics(FileId(20))
+            .expect("synthetic test input is valid")
+            .is_empty()
+    );
+    let script = view.hir(FileId(20)).expect("synthetic test input is valid");
     let Statement::Return {
         value: Some(value), ..
     } = &script.bodies[0].statements[0]
@@ -238,7 +100,7 @@ fn string_addition_accepts_numeric_operands_and_records_conversions() {
     assert!(
         host.view()
             .diagnostics(FileId(22))
-            .unwrap()
+            .expect("synthetic test input is valid")
             .iter()
             .any(|item| item.code == "semantic.operator-type")
     );
@@ -256,7 +118,7 @@ fn required_call_padding_is_opt_in_and_preserves_named_binding() {
     assert_eq!(
         strict
             .diagnostics(FileId(21))
-            .unwrap()
+            .expect("synthetic test input is valid")
             .iter()
             .filter(|item| item.code == "semantic.argument-count")
             .count(),
@@ -264,12 +126,16 @@ fn required_call_padding_is_opt_in_and_preserves_named_binding() {
     );
     host.set_fill_missing_arguments(true);
     let compatible = host.view();
-    let issues = compatible.diagnostics(FileId(21)).unwrap();
+    let issues = compatible
+        .diagnostics(FileId(21))
+        .expect("synthetic test input is valid");
     assert_eq!(issues.len(), 5, "{issues:?}");
     assert!(issues.iter().all(|item| {
         item.code == "semantic.argument-defaulted" && item.severity == Severity::Warning
     }));
-    let script = compatible.hir(FileId(21)).unwrap();
+    let script = compatible
+        .hir(FileId(21))
+        .expect("synthetic test input is valid");
     let Statement::Expression(call) = &script.bodies[1].statements[0] else {
         panic!("expected call");
     };
@@ -296,7 +162,7 @@ fn required_call_padding_is_opt_in_and_preserves_named_binding() {
     assert_eq!(
         strict
             .diagnostics(FileId(21))
-            .unwrap()
+            .expect("synthetic test input is valid")
             .iter()
             .filter(|item| item.code == "semantic.argument-count")
             .count(),
@@ -314,7 +180,9 @@ fn catches_inheritance_cycle_and_unknown_custom_flag() {
     );
     source(&mut host, 4, "Scriptname B extends A\n");
     let view = host.view();
-    let diagnostics = view.diagnostics(FileId(3)).unwrap();
+    let diagnostics = view
+        .diagnostics(FileId(3))
+        .expect("synthetic test input is valid");
     assert!(
         diagnostics
             .iter()
@@ -330,13 +198,13 @@ fn catches_inheritance_cycle_and_unknown_custom_flag() {
     assert!(
         !updated
             .diagnostics(FileId(3))
-            .unwrap()
+            .expect("synthetic test input is valid")
             .iter()
             .any(|item| item.code == "semantic.unknown-flag")
     );
     assert!(
         view.diagnostics(FileId(3))
-            .unwrap()
+            .expect("synthetic test input is valid")
             .iter()
             .any(|item| item.code == "semantic.unknown-flag")
     );
@@ -349,18 +217,20 @@ fn preserves_compiler_intrinsics_and_elseif_structure() {
     source(&mut host, 9, text);
     let view = host.view();
     assert!(
-        view.diagnostics(FileId(9)).unwrap().is_empty(),
+        view.diagnostics(FileId(9))
+            .expect("synthetic test input is valid")
+            .is_empty(),
         "{:?}",
         view.diagnostics(FileId(9))
     );
-    let script = view.hir(FileId(9)).unwrap();
+    let script = view.hir(FileId(9)).expect("synthetic test input is valid");
     assert!(script.calls.iter().any(|call| matches!(&call.target, Some(Symbol::Intrinsic { name }) if name.eq_ignore_ascii_case("Find"))));
     assert!(script.calls.iter().any(|call| matches!(&call.target, Some(Symbol::Intrinsic { name }) if name.eq_ignore_ascii_case("GotoState"))));
     let go = script
         .bodies
         .iter()
         .find(|body| matches!(&body.symbol, Symbol::Member { name, .. } if name == "Go"))
-        .unwrap();
+        .expect("synthetic test input is valid");
     assert!(
         go.statements.iter().any(
             |statement| matches!(statement, Statement::If { else_if, .. } if else_if.len() == 1)
@@ -375,11 +245,13 @@ fn coerces_skyrim_truthy_values_at_boolean_uses() {
     source(&mut host, 14, text);
     let view = host.view();
     assert!(
-        view.diagnostics(FileId(14)).unwrap().is_empty(),
+        view.diagnostics(FileId(14))
+            .expect("synthetic test input is valid")
+            .is_empty(),
         "{:?}",
         view.diagnostics(FileId(14))
     );
-    let script = view.hir(FileId(14)).unwrap();
+    let script = view.hir(FileId(14)).expect("synthetic test input is valid");
     let body = &script.bodies[0];
     let Statement::If {
         condition, else_if, ..
@@ -437,52 +309,16 @@ fn bool_coercion_does_not_allow_primitive_none_comparisons() {
         15,
         "Scriptname Truth\nFunction Probe(Int count, Bool flag, String label)\nIf count == None\nEndIf\nIf flag == None\nEndIf\nIf label == None\nEndIf\nEndFunction\n",
     );
-    let diagnostics = host.view().diagnostics(FileId(15)).unwrap();
+    let diagnostics = host
+        .view()
+        .diagnostics(FileId(15))
+        .expect("synthetic test input is valid");
     assert_eq!(
         diagnostics
             .iter()
             .filter(|item| item.code == "semantic.operator-type")
             .count(),
         3
-    );
-}
-
-#[test]
-fn compiler_state_intrinsics_take_precedence_over_conflicting_declarations_signatures() {
-    let mut host = AnalysisHost::new();
-    let conflicting_declarations = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[{"name":"GetState","kind":"function","parameters":[{"name":"wrong","ty":"Int"}],"return_type":"Int"},{"name":"GotoState","kind":"function","return_type":"Int"}]}]}"#).unwrap();
-    host.set_external_declarations(vec![conflicting_declarations]);
-    source(
-        &mut host,
-        12,
-        "Scriptname StateConsumer extends Base\nBase Property Other Auto\nString Function Probe()\nString own = GetState()\nString qualified = Self.GetState()\nString remote = Other.GetState()\nGotoState(\"Ready\")\nOther.GotoState(\"Idle\")\nReturn remote\nEndFunction\n",
-    );
-    let view = host.view();
-    assert!(
-        view.diagnostics(FileId(12)).unwrap().is_empty(),
-        "{:?}",
-        view.diagnostics(FileId(12))
-    );
-    let script = view.hir(FileId(12)).unwrap();
-    assert_eq!(script.calls.len(), 5);
-    assert!(script.calls.iter().all(|call| {
-            matches!(&call.target, Some(Symbol::Intrinsic { name }) if name.eq_ignore_ascii_case("GetState") || name.eq_ignore_ascii_case("GotoState"))
-        }));
-    assert_eq!(
-        script
-            .calls
-            .iter()
-            .filter(|call| call.result == Type::String)
-            .count(),
-        3
-    );
-    assert_eq!(
-        script
-            .calls
-            .iter()
-            .filter(|call| call.result == Type::Void)
-            .count(),
-        2
     );
 }
 
@@ -500,8 +336,12 @@ fn preserves_cross_script_member_kind_for_codegen() {
         "Scriptname Consumer\nProvider Property Ref Auto\nInt Function Use()\nReturn Ref.Value\nEndFunction\n",
     );
     let view = host.view();
-    assert!(view.diagnostics(FileId(11)).unwrap().is_empty());
-    let script = view.hir(FileId(11)).unwrap();
+    assert!(
+        view.diagnostics(FileId(11))
+            .expect("synthetic test input is valid")
+            .is_empty()
+    );
+    let script = view.hir(FileId(11)).expect("synthetic test input is valid");
     assert!(script.referenced_members.iter().any(|member| {
             matches!(&member.symbol, Symbol::Member { script, name } if script == "Provider" && name == "Value")
                 && matches!(member.kind, HirMemberKind::Function { .. })
@@ -518,11 +358,13 @@ fn callable_local_identities_distinguish_accessors_and_states() {
     );
     let view = host.view();
     assert!(
-        view.diagnostics(FileId(13)).unwrap().is_empty(),
+        view.diagnostics(FileId(13))
+            .expect("synthetic test input is valid")
+            .is_empty(),
         "{:?}",
         view.diagnostics(FileId(13))
     );
-    let script = view.hir(FileId(13)).unwrap();
+    let script = view.hir(FileId(13)).expect("synthetic test input is valid");
     let setters = script
         .bodies
         .iter()
@@ -553,9 +395,11 @@ fn analyzes_state_accessors_named_arguments_arrays_and_casts() {
     let text = "Scriptname Features\nInt Property Score\nInt Function Get()\nReturn 1\nEndFunction\nFunction Set(Int value)\nEndFunction\nEndProperty\nInt Function Sum(Int left, Int right = 2)\nReturn left + right\nEndFunction\nState Armed\nFunction Signal()\nInt[] values = new Int[2]\nInt amount = 1\namount += values[0]\nScore = Sum(right = 3, left = amount)\nScore = 2.5 as Int\nEndFunction\nFunction Dispatch()\nSignal()\nEndFunction\nEndState\n";
     source(&mut host, 8, text);
     let view = host.view();
-    let diagnostics = view.diagnostics(FileId(8)).unwrap();
+    let diagnostics = view
+        .diagnostics(FileId(8))
+        .expect("synthetic test input is valid");
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
-    let script = view.hir(FileId(8)).unwrap();
+    let script = view.hir(FileId(8)).expect("synthetic test input is valid");
     assert_eq!(script.bodies.len(), 5);
     assert!(script.calls.iter().any(|call| call.arguments == [1, 0]));
     assert!(
@@ -564,42 +408,6 @@ fn analyzes_state_accessors_named_arguments_arrays_and_casts() {
             .iter()
             .any(|fact| matches!(fact.kind, ExpressionKind::Cast { .. }) && fact.ty == Type::Int)
     );
-}
-
-#[test]
-fn external_replacement_preserves_old_view_and_exposes_declaration_errors() {
-    let mut host = AnalysisHost::new();
-    source(
-        &mut host,
-        9,
-        "Scriptname Client\nInt Function Value()\nReturn Api.Fetch()\nEndFunction\n",
-    );
-    let missing = host.view();
-    assert!(
-        missing
-            .diagnostics(FileId(9))
-            .unwrap()
-            .iter()
-            .any(|item| item.code == "semantic.unknown-name")
-    );
-    let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Api","parent":"Absent","members":[{"name":"Fetch","kind":"function","return_type":"Int","global":true}]}]}"#).unwrap();
-    host.set_external_declarations(vec![bundle]);
-    let current = host.view();
-    assert!(current.diagnostics(FileId(9)).unwrap().is_empty());
-    assert!(
-        current
-            .project_diagnostics()
-            .iter()
-            .any(|item| item.code == "semantic.unknown-parent")
-    );
-    assert!(
-        missing
-            .diagnostics(FileId(9))
-            .unwrap()
-            .iter()
-            .any(|item| item.code == "semantic.unknown-name")
-    );
-    assert!(current.generation() > missing.generation());
 }
 
 #[test]
@@ -618,13 +426,13 @@ fn duplicate_script_does_not_replace_first_provider() {
     let view = host.view();
     assert!(
         view.diagnostics(FileId(11))
-            .unwrap()
+            .expect("synthetic test input is valid")
             .iter()
             .any(|item| item.code == "semantic.duplicate-script")
     );
     assert!(
         view.hir(FileId(10))
-            .unwrap()
+            .expect("synthetic test input is valid")
             .declarations
             .iter()
             .any(|item| matches!(&item.symbol, Symbol::Member { name, .. } if name == "First"))
@@ -632,22 +440,9 @@ fn duplicate_script_does_not_replace_first_provider() {
     assert!(
         !view
             .hir(FileId(10))
-            .unwrap()
+            .expect("synthetic test input is valid")
             .declarations
             .iter()
             .any(|item| matches!(&item.symbol, Symbol::Member { name, .. } if name == "Second"))
-    );
-}
-
-#[test]
-fn invalid_external_types_are_reported_without_a_source_span() {
-    let mut host = AnalysisHost::new();
-    let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Api","members":[{"name":"Fetch","kind":"function","return_type":"MissingType"}]}]}"#).unwrap();
-    host.set_external_declarations(vec![bundle]);
-    let diagnostics = host.view().project_diagnostics();
-    assert!(
-        diagnostics
-            .iter()
-            .any(|item| item.code == "semantic.unknown-type" && item.primary.is_none())
     );
 }

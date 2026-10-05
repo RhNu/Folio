@@ -11,6 +11,3 @@ folio-format-declarations = { path = "../../formats/declarations" }
 folio-format-pex = { path = "../../formats/pex" }
 folio-papyrus = { path = "../../languages/papyrus" }
 tracing.workspace = true
-
-[lints]
-workspace = true

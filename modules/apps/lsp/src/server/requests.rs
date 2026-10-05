@@ -1,15 +1,16 @@
 //! Formatting and symbol requests with the existing cancellation and scheduling.
-use super::*;
-use crate::protocol::range_json;
 use folio_format::format_source;
 use folio_ide::{Position, PositionIndex};
 use folio_papyrus::PapyrusDialect;
 use folio_project_model::{DependencyKind, SourceId};
 use folio_source::TextRange;
 
+use super::{LspError, Metadata, Ordering, PositionEncoding, Server, Value, json, uri_to_path};
+use crate::protocol::range_json;
+
 impl Server {
     /// Returns edits only for the current buffer generation and negotiated encoding.
-    pub(super) fn format_document(&self, id: Value, params: &Value) -> Result<(), LspError> {
+    pub(super) fn format_document(&self, id: &Value, params: &Value) -> Result<(), LspError> {
         let Some(uri) = params["textDocument"]["uri"].as_str() else {
             return self.error(id, -32602, "missing document URI");
         };
@@ -20,10 +21,10 @@ impl Server {
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("psc"))
         {
-            return self.reply(id, json!([]));
+            return self.reply(id, &json!([]));
         }
         let Some(source) = self.documents.text(&path) else {
-            return self.reply(id, json!([]));
+            return self.reply(id, &json!([]));
         };
         let generation = self.generation.load(Ordering::SeqCst);
         let version = self.documents.version(&path);
@@ -32,7 +33,7 @@ impl Server {
             Err(error) => {
                 tracing::debug!(?error, uri, "document formatting rejected");
                 return self.error(id, -32001, "document cannot be safely formatted");
-            }
+            },
         };
         if generation != self.generation.load(Ordering::SeqCst)
             || version != self.documents.version(&path)
@@ -40,7 +41,7 @@ impl Server {
             return self.error(id, -32800, "request cancelled");
         }
         if formatted == source {
-            return self.reply(id, json!([]));
+            return self.reply(id, &json!([]));
         }
         let range = folio_ide::range(
             source,
@@ -52,7 +53,10 @@ impl Server {
         )
         .ok_or_else(|| LspError::Protocol("invalid formatting range".into()))?;
         tracing::debug!(uri, version, "document formatting edits computed");
-        self.reply(id, json!([{"range":range_json(range),"newText":formatted}]))
+        self.reply(
+            id,
+            &json!([{"range":range_json(range),"newText":formatted}]),
+        )
     }
 }
 

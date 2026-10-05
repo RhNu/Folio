@@ -1,4 +1,6 @@
 //! Synthetic HIR inputs and an independent minimal MIR evaluator.
+use std::collections::BTreeMap;
+
 use folio_hir::{
     Binding, Body, ExpressionFact, ExpressionKind, MemberFact, MemberKind, NameRef, ParameterFact,
     Statement, Symbol, Type,
@@ -7,7 +9,6 @@ use folio_lowering::lower_script;
 use folio_mir::{BinaryOp, Op, Script, UnaryOp, Value};
 use folio_profiles::TargetProfile;
 use folio_source::{FileId, SourceSpan, TextRange};
-use std::collections::BTreeMap;
 
 pub(super) fn at() -> SourceSpan {
     SourceSpan {
@@ -137,7 +138,7 @@ pub(super) fn returns(value: ExpressionFact) -> folio_hir::Script {
 }
 
 pub(super) fn lower(source: &folio_hir::Script) -> Script {
-    lower_script(source, TargetProfile::skyrim_se(), &[]).unwrap()
+    lower_script(source, TargetProfile::skyrim_se(), &[]).expect("synthetic test input is valid")
 }
 
 pub(super) fn with_field(source: &mut folio_hir::Script) {
@@ -180,6 +181,32 @@ impl Machine {
         self.slots.insert(name.clone(), value);
     }
 
+    /// Evaluate the small synthetic native API used by ordering tests.
+    fn call(&mut self, name: &str, args: &[Value]) -> Value {
+        match name {
+            "Tick" => {
+                self.ticks += 1;
+                Value::Int(self.ticks)
+            },
+            "Mark" => {
+                self.ticks += 1;
+                Value::Bool(true)
+            },
+            "SetX" => {
+                self.slots.insert("x".into(), Value::Int(9));
+                Value::Int(5)
+            },
+            "Combine" => {
+                let (Value::Int(a), Value::Int(b)) = (self.value(&args[0]), self.value(&args[1]))
+                else {
+                    panic!("non-int arguments");
+                };
+                Value::Int(a * 10 + b)
+            },
+            _ => panic!("unexpected test call {name}"),
+        }
+    }
+
     pub(super) fn run(script: &Script) -> (Value, Self) {
         let mut machine = Self {
             slots: script
@@ -193,7 +220,7 @@ impl Machine {
             .functions
             .iter()
             .find(|function| function.name == "Use")
-            .unwrap();
+            .expect("synthetic test input is valid");
         let labels = function
             .instructions
             .iter()
@@ -212,7 +239,7 @@ impl Machine {
             pc += 1;
             match op {
                 Op::Assign(destination, value) => machine.put(destination, machine.value(value)),
-                Op::Label(_) => {}
+                Op::Label(_) => {},
                 Op::Jump(label) => pc = labels[label],
                 Op::JumpIf {
                     when_true,
@@ -225,7 +252,7 @@ impl Machine {
                     if value == *when_true {
                         pc = labels[target];
                     }
-                }
+                },
                 Op::Binary {
                     operator: BinaryOp::AddInt,
                     dest,
@@ -238,7 +265,7 @@ impl Machine {
                         panic!("non-int add");
                     };
                     machine.put(dest, Value::Int(left + right));
-                }
+                },
                 Op::Binary {
                     operator: BinaryOp::Eq,
                     dest,
@@ -249,7 +276,7 @@ impl Machine {
                         dest,
                         Value::Bool(machine.value(left) == machine.value(right)),
                     );
-                }
+                },
                 Op::Unary {
                     operator: UnaryOp::Not,
                     dest,
@@ -259,35 +286,13 @@ impl Machine {
                         panic!("non-bool not");
                     };
                     machine.put(dest, Value::Bool(!value));
-                }
+                },
                 Op::CallMethod {
                     name, dest, args, ..
                 } => {
-                    let value = match name.as_str() {
-                        "Tick" => {
-                            machine.ticks += 1;
-                            Value::Int(machine.ticks)
-                        }
-                        "Mark" => {
-                            machine.ticks += 1;
-                            Value::Bool(true)
-                        }
-                        "SetX" => {
-                            machine.slots.insert("x".into(), Value::Int(9));
-                            Value::Int(5)
-                        }
-                        "Combine" => {
-                            let (Value::Int(a), Value::Int(b)) =
-                                (machine.value(&args[0]), machine.value(&args[1]))
-                            else {
-                                panic!("non-int arguments");
-                            };
-                            Value::Int(a * 10 + b)
-                        }
-                        _ => panic!("unexpected test call {name}"),
-                    };
+                    let value = machine.call(name, args);
                     machine.put(dest, value);
-                }
+                },
                 Op::Return(value) => return (machine.value(value), machine),
                 other => panic!("unsupported test operation {other:?}"),
             }

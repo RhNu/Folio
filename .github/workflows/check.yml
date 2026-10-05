@@ -1,0 +1,24 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the repository Rust toolchain and components
+        run: rustup show active-toolchain
+      - uses: RhNu/Rusteward@main
+      - name: Check Rust formatting and quality
+        run: cargo dev check --locked

@@ -23,7 +23,7 @@ pub(crate) fn declaration_documentation_token(node: &SyntaxNode) -> Option<Synta
     let header_end = node
         .children_with_tokens()
         .take_while(|item| item.kind() != SyntaxKind::Block)
-        .filter_map(|item| item.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .find(|token| token.kind() == SyntaxKind::Newline)?
         .text_range()
         .end();
@@ -83,29 +83,25 @@ pub fn declaration_header(node: &SyntaxNode) -> String {
             rowan::NodeOrToken::Token(token) => vec![token],
             rowan::NodeOrToken::Node(child) => child
                 .descendants_with_tokens()
-                .filter_map(|item| item.into_token())
+                .filter_map(rowan::NodeOrToken::into_token)
                 .collect(),
         };
         for token in tokens {
             match token.kind() {
                 SyntaxKind::Newline if !nested => {
                     return property_header(node, header.trim().to_owned());
-                }
-                SyntaxKind::Newline => {
-                    if !header.ends_with(' ') {
-                        header.push(' ');
-                    }
-                }
+                },
                 // Comments separate lexical words even without surrounding spaces.
-                SyntaxKind::Whitespace
+                SyntaxKind::Newline
+                | SyntaxKind::Whitespace
                 | SyntaxKind::Continuation
                 | SyntaxKind::Comment
                 | SyntaxKind::UnclosedComment => {
                     if !header.ends_with(' ') {
                         header.push(' ');
                     }
-                }
-                SyntaxKind::Missing => {}
+                },
+                SyntaxKind::Missing => {},
                 _ => header.push_str(token.text()),
             }
         }
@@ -114,26 +110,25 @@ pub fn declaration_header(node: &SyntaxNode) -> String {
 }
 
 fn property_header(node: &SyntaxNode, mut header: String) -> String {
-    if node.kind() == SyntaxKind::PropertyDecl {
-        if let Some(block) = node
+    if node.kind() == SyntaxKind::PropertyDecl
+        && let Some(block) = node
             .children()
             .find(|child| child.kind() == SyntaxKind::Block)
+    {
+        for accessor in block
+            .children()
+            .filter(|child| child.kind() == SyntaxKind::FunctionDecl)
         {
-            for accessor in block
+            header.push_str("\n    ");
+            header.push_str(&declaration_header(&accessor));
+            if accessor
                 .children()
-                .filter(|child| child.kind() == SyntaxKind::FunctionDecl)
+                .any(|child| child.kind() == SyntaxKind::Block)
             {
-                header.push_str("\n    ");
-                header.push_str(&declaration_header(&accessor));
-                if accessor
-                    .children()
-                    .any(|child| child.kind() == SyntaxKind::Block)
-                {
-                    header.push_str("\n    EndFunction");
-                }
+                header.push_str("\n    EndFunction");
             }
-            header.push_str("\nEndProperty");
         }
+        header.push_str("\nEndProperty");
     }
     header
 }

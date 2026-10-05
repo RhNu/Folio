@@ -12,6 +12,3 @@ folio-profiles = { path = "../../foundation/profiles" }
 folio-diagnostics = { path = "../../foundation/diagnostics" }
 folio-source = { path = "../../foundation/source" }
 tracing.workspace = true
-
-[lints]
-workspace = true

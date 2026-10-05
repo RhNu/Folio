@@ -37,7 +37,7 @@ impl std::fmt::Display for ValidationErrorKind {
             Self::MissingLabel(label) => write!(f, "undefined MIR label {label}"),
             Self::ReachableFallthrough => {
                 write!(f, "MIR control flow reaches the end without return")
-            }
+            },
             Self::NativeBody => write!(f, "native MIR function contains executable operations"),
             Self::InvalidProperty => write!(f, "invalid MIR property accessor or backing storage"),
             Self::InvalidState(state) => write!(f, "undefined MIR state {state}"),
@@ -69,6 +69,9 @@ fn unique(
 
 /// Validate all functions, including property accessors and unreachable operands.
 /// Definite assignment is not required: Papyrus storage has typed default values.
+///
+/// # Errors
+/// Returns every invalid storage, property, state, or control-flow fact.
 pub fn validate(script: &Script) -> Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
     let mut fields = BTreeSet::new();
@@ -131,33 +134,45 @@ pub fn validate(script: &Script) -> Result<(), Vec<ValidationError>> {
         }
         validate_function(function, &fields, &mut errors);
     }
+    validate_properties(script, &fields, &mut errors);
+    tracing::debug!(phase = "mir.validate", script = %script.name,
+        target = script.target.id, functions = script.functions.len(),
+        errors = errors.len(), "validated MIR storage and control flow");
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// Validate property backing storage and accessor signatures.
+fn validate_properties(
+    script: &Script,
+    fields: &BTreeSet<String>,
+    errors: &mut Vec<ValidationError>,
+) {
     let mut properties = BTreeSet::new();
     for property in &script.properties {
-        unique(
-            &mut properties,
-            &property.name,
-            property.source,
-            &mut errors,
-        );
+        unique(&mut properties, &property.name, property.source, errors);
         let invalid = match &property.auto_var {
             Some(name) => {
                 !fields.contains(&name.to_ascii_lowercase())
                     || property.read_only
                     || property.getter.is_some()
                     || property.setter.is_some()
-            }
+            },
             None => property.getter.is_none() && property.setter.is_none(),
         };
         if invalid {
             error(
-                &mut errors,
+                errors,
                 property.source,
                 ValidationErrorKind::InvalidProperty,
             );
         }
         if property.read_only && property.setter.is_some() {
             error(
-                &mut errors,
+                errors,
                 property.source,
                 ValidationErrorKind::InvalidProperty,
             );
@@ -167,13 +182,9 @@ pub fn validate(script: &Script) -> Result<(), Vec<ValidationError>> {
                 || !getter.return_type.eq_ignore_ascii_case(&property.ty)
                 || getter.is_global
             {
-                error(
-                    &mut errors,
-                    getter.source,
-                    ValidationErrorKind::InvalidProperty,
-                );
+                error(errors, getter.source, ValidationErrorKind::InvalidProperty);
             }
-            validate_function(getter, &fields, &mut errors);
+            validate_function(getter, fields, errors);
         }
         if let Some(setter) = &property.setter {
             if setter.parameters.len() != 1
@@ -181,22 +192,10 @@ pub fn validate(script: &Script) -> Result<(), Vec<ValidationError>> {
                 || !setter.return_type.eq_ignore_ascii_case("none")
                 || setter.is_global
             {
-                error(
-                    &mut errors,
-                    setter.source,
-                    ValidationErrorKind::InvalidProperty,
-                );
+                error(errors, setter.source, ValidationErrorKind::InvalidProperty);
             }
-            validate_function(setter, &fields, &mut errors);
+            validate_function(setter, fields, errors);
         }
-    }
-    tracing::debug!(phase = "mir.validate", script = %script.name,
-        target = script.target.id, functions = script.functions.len(),
-        errors = errors.len(), "validated MIR storage and control flow");
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
     }
 }
 
@@ -246,14 +245,8 @@ fn validate_function(
         }
         let (destination, inputs) = operands(&instruction.op);
         if let Some(destination) = destination {
-            if !matches!(destination, Value::Identifier(name) if !name.eq_ignore_ascii_case("self"))
+            if matches!(destination, Value::Identifier(name) if !name.eq_ignore_ascii_case("self"))
             {
-                error(
-                    errors,
-                    instruction.source,
-                    ValidationErrorKind::InvalidDestination,
-                );
-            } else {
                 check_slot(
                     destination,
                     instruction.source,
@@ -261,6 +254,12 @@ fn validate_function(
                     &slots,
                     fields,
                     errors,
+                );
+            } else {
+                error(
+                    errors,
+                    instruction.source,
+                    ValidationErrorKind::InvalidDestination,
                 );
             }
         }
@@ -320,18 +319,18 @@ fn reaches_end_with_labels(
             return true;
         };
         match instruction.op {
-            Op::Return(_) => {}
+            Op::Return(_) => {},
             Op::Jump(label) => {
                 if let Some(&target) = labels.get(&label) {
                     pending.push(target);
                 }
-            }
+            },
             Op::JumpIf { target, .. } => {
                 if let Some(&target) = labels.get(&target) {
                     pending.push(target);
                 }
                 pending.push(index + 1);
-            }
+            },
             _ => pending.push(index + 1),
         }
     }
@@ -371,7 +370,7 @@ fn operands(op: &Op) -> (Option<&Value>, Vec<&Value>) {
     match op {
         Op::Assign(dest, value) | Op::Cast(dest, value) | Op::Unary { dest, value, .. } => {
             (Some(dest), vec![value])
-        }
+        },
         Op::Binary {
             dest, left, right, ..
         } => (Some(dest), vec![left, right]),
@@ -383,7 +382,7 @@ fn operands(op: &Op) -> (Option<&Value>, Vec<&Value>) {
         } => (Some(dest), std::iter::once(receiver).chain(args).collect()),
         Op::CallParent { dest, args, .. } | Op::CallStatic { dest, args, .. } => {
             (Some(dest), args.iter().collect())
-        }
+        },
         Op::PropertyGet { dest, receiver, .. } => (Some(dest), vec![receiver]),
         Op::PropertySet {
             receiver, value, ..

@@ -1,5 +1,8 @@
 //! Completion, signatures, lenses, hints, and verified workspace edits.
-use super::*;
+use super::{
+    Arc, BTreeMap, FileId, Instant, PositionIndex, QueryContext, QueryResult, Symbol, TextRange,
+    Value, empty_answer, json, path_to_uri, presentation, range_json, requests,
+};
 
 impl QueryContext {
     pub(super) fn features(&self, method: &str, params: &Value) -> QueryResult {
@@ -32,55 +35,7 @@ impl QueryContext {
         };
         let text = view.analysis.text(file).expect("project source");
         let result = match method {
-            "textDocument/completion" => {
-                let Some((_, byte)) = self.at(params) else {
-                    return Ok(json!([]));
-                };
-                let started = Instant::now();
-                let candidates = Arc::new(
-                    folio_ide::completion(view, file, byte, &|| view.is_cancelled())
-                        .map_err(|_| (-32800, "completion cancelled".into()))?,
-                );
-                let candidates_us = started.elapsed().as_micros();
-                let response_started = Instant::now();
-                let positions = PositionIndex::new(text);
-                let completion_id = self
-                    .completions
-                    .insert(self.generation, Arc::clone(&candidates));
-                let mut items = Vec::with_capacity(candidates.len());
-                let mut cached_range: Option<(TextRange, Option<folio_ide::Range>)> = None;
-                for (index, item) in candidates.iter().enumerate() {
-                    if index % 128 == 0 && view.is_cancelled() {
-                        return Err((-32800, "completion cancelled".into()));
-                    }
-                    // Most candidates share one edit range; avoid rescanning its UTF-16 line.
-                    if cached_range
-                        .as_ref()
-                        .is_none_or(|(range, _)| *range != item.replacement)
-                    {
-                        cached_range = Some((
-                            item.replacement,
-                            positions.range(item.replacement, self.encoding),
-                        ));
-                    }
-                    let Some(range) = cached_range.as_ref().and_then(|(_, range)| *range) else {
-                        continue;
-                    };
-                    items.push(json!({"label":item.label,"detail":item.detail,"kind":item.kind,
-                        "textEdit":{"range":range_json(range),"newText":item.insert_text},
-                        "data":{"generation":self.generation,"completion":completion_id,"index":index}}));
-                }
-                tracing::debug!(
-                    ?file,
-                    count = items.len(),
-                    candidates_us,
-                    response_us = response_started.elapsed().as_micros(),
-                    "collected completion candidates"
-                );
-                let mut result = json!({"isIncomplete":false});
-                result["items"] = Value::Array(items);
-                result
-            }
+            "textDocument/completion" => return self.completion(params, file, text),
             "textDocument/signatureHelp" => {
                 let Some((_, byte)) = self.at(params) else {
                     return Ok(Value::Null);
@@ -94,13 +49,13 @@ impl QueryContext {
                     .map(|label| json!({"label":label}))
                     .collect::<Vec<_>>();
                 let mut signature = json!({"label":info.label,"parameters":parameters});
-                if self.settings.documentation
+                if self.settings.hover.documentation
                     && let Some(documentation) = info.documentation
                 {
                     signature["documentation"] = json!({"kind":"plaintext","value":documentation});
                 }
                 json!({"signatures":[signature],"activeSignature":0,"activeParameter":info.active_parameter})
-            }
+            },
             "textDocument/documentSymbol" => {
                 let positions = PositionIndex::new(text);
                 json!(
@@ -113,37 +68,12 @@ impl QueryContext {
                         ))
                         .collect::<Vec<_>>()
                 )
-            }
+            },
             "textDocument/semanticTokens/full" => {
                 json!({"data":requests::encode_semantic_tokens(text,&folio_ide::semantic_tokens(view,file),self.encoding)})
-            }
+            },
             "textDocument/codeLens" => self.lenses(file, uri),
-            "textDocument/inlayHint" => {
-                if !self.settings.parameter_names {
-                    return Ok(json!([]));
-                }
-                let Some(range) = crate::protocol::parse_range(&params["range"]) else {
-                    return Err((-32602, "invalid inlay hint range".into()));
-                };
-                let Some(start) = folio_ide::offset(text, range.start, self.encoding) else {
-                    return Err((-32602, "invalid range start".into()));
-                };
-                let Some(end) = folio_ide::offset(text, range.end, self.encoding) else {
-                    return Err((-32602, "invalid range end".into()));
-                };
-                if start > end {
-                    return Err((-32602, "reversed inlay hint range".into()));
-                }
-                json!(folio_ide::inlay_hints(view,file,TextRange{start,end}).iter().filter_map(|hint| {
-                    let position = folio_ide::position(text,hint.byte,self.encoding)?;
-                    let mut label = json!({"value":hint.label});
-                    if let Some(symbol) = &hint.parameter && let Some(location) = self.declaration_location(symbol) {
-                        label["location"] = location;
-                    }
-                    Some(json!({"position":{"line":position.line,"character":position.character},
-                        "label":[label],"kind":2,"paddingRight":true}))
-                }).collect::<Vec<_>>())
-            }
+            "textDocument/inlayHint" => return self.inlay_hints(params, file, text),
             "textDocument/prepareRename" => {
                 let Some((_, byte)) = self.at(params) else {
                     return Err((-32602, "no editable symbol at position".into()));
@@ -152,40 +82,137 @@ impl QueryContext {
                     .map_err(|error| (-32602, error.to_string()))?;
                 json!({"range":range_json(folio_ide::range(text,target.span.range,self.encoding).ok_or((-32602,"invalid rename range".into()))?),
                     "placeholder":target.placeholder})
-            }
-            "textDocument/rename" => {
-                let Some((_, byte)) = self.at(params) else {
-                    return Err((-32602, "no editable symbol at position".into()));
-                };
-                let name = params["newName"]
-                    .as_str()
-                    .ok_or((-32602, "missing new name".into()))?;
-                let edits = folio_ide::rename(view, file, byte, name)
-                    .map_err(|error| (-32602, error.to_string()))?;
-                let mut grouped = BTreeMap::<FileId, Vec<Value>>::new();
-                for edit in edits {
-                    let Some(location) =
-                        presentation::source_location(view, edit.span, self.encoding)
-                    else {
-                        return Err((
-                            -32602,
-                            "rename target is not an editable project source".into(),
-                        ));
-                    };
-                    grouped
-                        .entry(edit.span.file)
-                        .or_default()
-                        .push(json!({"range":location["range"],"newText":edit.replacement}));
-                }
-                let documents = grouped.into_iter().map(|(file,edits)|json!({
-                    "textDocument":{"uri":path_to_uri(&view.sources[&file].canonical_path),"version":self.versions[&file]},
-                    "edits":edits
-                })).collect::<Vec<_>>();
-                json!({"documentChanges":documents})
-            }
+            },
+            "textDocument/rename" => return self.rename(params, file),
             _ => Value::Null,
         };
         Ok(result)
+    }
+
+    /// Translate the completion query using the captured project view.
+    fn completion(&self, params: &Value, file: FileId, text: &str) -> QueryResult {
+        let view = self.view.as_ref().expect("query view");
+        let Some((_, byte)) = self.at(params) else {
+            return Ok(json!([]));
+        };
+        let started = Instant::now();
+        let candidates = Arc::new(
+            folio_ide::completion(view, file, byte, &|| view.is_cancelled()).map_err(
+                |cancelled| {
+                    tracing::debug!(?cancelled, "completion query cancelled");
+                    (-32800, "completion cancelled".into())
+                },
+            )?,
+        );
+        let candidates_us = started.elapsed().as_micros();
+        let response_started = Instant::now();
+        let positions = PositionIndex::new(text);
+        let completion_id = self
+            .completions
+            .insert(self.generation, Arc::clone(&candidates));
+        let mut items = Vec::with_capacity(candidates.len());
+        let mut cached_range: Option<(TextRange, Option<folio_ide::Range>)> = None;
+        for (index, item) in candidates.iter().enumerate() {
+            if index % 128 == 0 && view.is_cancelled() {
+                return Err((-32800, "completion cancelled".into()));
+            }
+            // Most candidates share one edit range; avoid rescanning its UTF-16 line.
+            if cached_range
+                .as_ref()
+                .is_none_or(|(range, _)| *range != item.replacement)
+            {
+                cached_range = Some((
+                    item.replacement,
+                    positions.range(item.replacement, self.encoding),
+                ));
+            }
+            let Some(range) = cached_range.as_ref().and_then(|(_, range)| *range) else {
+                continue;
+            };
+            items.push(json!({"label":item.label,"detail":item.detail,"kind":item.kind,
+                        "textEdit":{"range":range_json(range),"newText":item.insert_text},
+                        "data":{"generation":self.generation,"completion":completion_id,"index":index}}));
+        }
+        tracing::debug!(
+            ?file,
+            count = items.len(),
+            candidates_us,
+            response_us = response_started.elapsed().as_micros(),
+            "collected completion candidates"
+        );
+        let mut result = json!({"isIncomplete":false});
+        result["items"] = Value::Array(items);
+        Ok(result)
+    }
+
+    /// Translate the inlay hints query using the captured project view.
+    fn inlay_hints(&self, params: &Value, file: FileId, text: &str) -> QueryResult {
+        let view = self.view.as_ref().expect("query view");
+        if !self.settings.parameter_names {
+            return Ok(json!([]));
+        }
+        let Some(range) = crate::protocol::parse_range(&params["range"]) else {
+            return Err((-32602, "invalid inlay hint range".into()));
+        };
+        let Some(start) = folio_ide::offset(text, range.start, self.encoding) else {
+            return Err((-32602, "invalid range start".into()));
+        };
+        let Some(end) = folio_ide::offset(text, range.end, self.encoding) else {
+            return Err((-32602, "invalid range end".into()));
+        };
+        if start > end {
+            return Err((-32602, "reversed inlay hint range".into()));
+        }
+        Ok(json!(
+            folio_ide::inlay_hints(view, file, TextRange { start, end })
+                .iter()
+                .filter_map(|hint| {
+                    let position = folio_ide::position(text, hint.byte, self.encoding)?;
+                    let mut label = json!({"value":hint.label});
+                    if let Some(symbol) = &hint.parameter
+                        && let Some(location) = self.declaration_location(symbol)
+                    {
+                        label["location"] = location;
+                    }
+                    Some(
+                        json!({"position":{"line":position.line,"character":position.character},
+                        "label":[label],"kind":2,"paddingRight":true}),
+                    )
+                })
+                .collect::<Vec<_>>()
+        ))
+    }
+
+    /// Translate the rename query using the captured project view.
+    fn rename(&self, params: &Value, file: FileId) -> QueryResult {
+        let view = self.view.as_ref().expect("query view");
+        let Some((_, byte)) = self.at(params) else {
+            return Err((-32602, "no editable symbol at position".into()));
+        };
+        let name = params["newName"]
+            .as_str()
+            .ok_or((-32602, "missing new name".into()))?;
+        let edits = folio_ide::rename(view, file, byte, name)
+            .map_err(|error| (-32602, error.to_string()))?;
+        let mut grouped = BTreeMap::<FileId, Vec<Value>>::new();
+        for edit in edits {
+            let Some(location) = presentation::source_location(view, edit.span, self.encoding)
+            else {
+                return Err((
+                    -32602,
+                    "rename target is not an editable project source".into(),
+                ));
+            };
+            grouped
+                .entry(edit.span.file)
+                .or_default()
+                .push(json!({"range":location["range"],"newText":edit.replacement}));
+        }
+        let documents = grouped.into_iter().map(|(file,edits)|json!({
+                    "textDocument":{"uri":path_to_uri(&view.sources[&file].canonical_path),"version":self.versions[&file]},
+                    "edits":edits
+                })).collect::<Vec<_>>();
+        Ok(json!({"documentChanges":documents}))
     }
 
     fn resolve_completion(&self, params: &Value) -> QueryResult {
@@ -196,7 +223,10 @@ impl QueryContext {
         let item = data["completion"]
             .as_u64()
             .zip(data["index"].as_u64())
-            .and_then(|(id, index)| self.completions.get(id, self.generation, index as usize))
+            .and_then(|(id, index)| {
+                self.completions
+                    .get(id, self.generation, usize::try_from(index).ok()?)
+            })
             .filter(|item| params["label"].as_str() == Some(item.label.as_str()))
             .ok_or((-32801, "completion candidate expired".into()))?;
         let mut result = params.clone();
@@ -212,7 +242,7 @@ impl QueryContext {
             });
             result["documentation"] = json!({"kind":if self.markdown{"markdown"}else{"plaintext"},
                 "value":presentation::hover_text(&hover,origin.as_deref(),&self.settings,self.markdown,&[])});
-        } else if self.settings.documentation
+        } else if self.settings.hover.documentation
             && let Some(documentation) = &item.documentation
         {
             result["documentation"] = json!({"kind":"plaintext","value":documentation});
@@ -221,7 +251,7 @@ impl QueryContext {
     }
 
     fn lenses(&self, file: FileId, uri: &str) -> Value {
-        if !self.settings.lenses || !self.commands {
+        if !self.settings.lenses.enabled || !self.commands {
             return json!([]);
         }
         let view = self.view.as_ref().expect("query view");
@@ -260,13 +290,14 @@ impl QueryContext {
                         )
                 });
             for (enabled, kind) in [
-                (self.settings.references, "references"),
+                (self.settings.lenses.kinds.references, "references"),
                 (
-                    self.settings.implementations && hierarchy_target,
+                    self.settings.lenses.kinds.implementations && hierarchy_target,
                     "implementations",
                 ),
                 (
-                    self.settings.source && matches!(occurrence.symbol, Symbol::Script(_)),
+                    self.settings.lenses.kinds.source
+                        && matches!(occurrence.symbol, Symbol::Script(_)),
                     "source",
                 ),
             ] {
@@ -277,7 +308,7 @@ impl QueryContext {
                 }
             }
             if matches!(occurrence.symbol, Symbol::Script(_))
-                && self.settings.implementations
+                && self.settings.lenses.kinds.implementations
                 && script.parent.is_some()
             {
                 lenses.push(json!({"range":range_json(range),"data":{"uri":uri,
@@ -313,7 +344,7 @@ impl QueryContext {
                     .declaration_location(&Symbol::Script(parent.text.clone()))
                     .ok_or((-32602, "parent declaration unavailable".into()))?;
                 json!({"title":format!("extends {}",parent.text),"command":"folio.openLocation","arguments":[location["uri"],location["range"]]})
-            }
+            },
             Some("source") => {
                 let owner = folio_ide::symbol_script(&symbol)
                     .ok_or((-32602, "invalid source lens".into()))?;
@@ -326,7 +357,7 @@ impl QueryContext {
                     .declaration_location(&symbol)
                     .ok_or((-32602, "source unavailable".into()))?;
                 json!({"title":title,"command":"folio.openLocation","arguments":[location["uri"],location["range"]]})
-            }
+            },
             Some(kind @ ("references" | "implementations")) => {
                 let locations = if kind == "references" {
                     self.locations(&folio_ide::references_of(view, &symbol, false))
@@ -342,7 +373,7 @@ impl QueryContext {
                 };
                 json!({"title":title,"command":if kind=="references"{"folio.showReferences"}else{"folio.showImplementations"},
                     "arguments":[data["uri"],data["position"],locations]})
-            }
+            },
             _ => return Err((-32602, "invalid CodeLens kind".into())),
         };
         lens["command"] = command;

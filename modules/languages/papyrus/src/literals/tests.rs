@@ -82,7 +82,7 @@ fn decodes_decimal_and_hexadecimal_integer_values() {
         ("0x10", 16),
         ("0X7f", 127),
         ("0x80000000", i32::MIN),
-        ("0x80000001", -2147483647),
+        ("0x80000001", -2_147_483_647),
         ("0XfFfFfFfF", -1),
         ("0xFFFFFFFE", -2),
         ("0x00000000FFFFFFFF", -1),

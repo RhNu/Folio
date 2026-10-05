@@ -1,13 +1,17 @@
-use super::*;
+use std::{fmt::Write, path::PathBuf};
+
 use folio_project_model::{DeclarationLocation, DeclaredScript, DependencyKind, SourceFile};
-use std::path::PathBuf;
+
+use super::*;
 
 fn fixture(names: &[&str]) -> (LoadedRoot, Vec<LoadedDependency>) {
     let mut text = "[package]\nname = \"root\"\nversion = \"0.2.0\"\n[languages.papyrus]\ndialect = \"skyrim\"\nextensions = [\"psc\"]\n[build]\ntarget = \"skyrim-se\"\nprofile = \"dev\"\nemit = [\"pex\"]\n".to_owned();
     for name in names {
-        text.push_str(&format!(
+        write!(
+            text,
             "\n[[dependencies]]\nname = \"{name}\"\nkind = \"decl\"\npath = \"api.json\"\n"
-        ));
+        )
+        .expect("formatting a fixture string succeeds");
     }
     let manifest = crate::manifest::parse("folio.toml", &text).unwrap();
     let dependencies = manifest

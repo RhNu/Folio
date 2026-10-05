@@ -20,13 +20,13 @@ pub fn normalize_constant_literal_text(text: &str) -> Option<String> {
         .filter(|token| !token.kind.is_trivia())
         .collect::<Vec<_>>();
     match tokens.as_slice() {
-        [token] if matches!(token.kind, SyntaxKind::Number | SyntaxKind::String) => {}
+        [token] if matches!(token.kind, SyntaxKind::Number | SyntaxKind::String) => {},
         [token]
             if token.kind == SyntaxKind::Ident
                 && ["true", "false", "none"]
                     .iter()
-                    .any(|word| token.text(text).eq_ignore_ascii_case(word)) => {}
-        [minus, value] if minus.kind == SyntaxKind::Minus && value.kind == SyntaxKind::Number => {}
+                    .any(|word| token.text(text).eq_ignore_ascii_case(word)) => {},
+        [minus, value] if minus.kind == SyntaxKind::Minus && value.kind == SyntaxKind::Number => {},
         _ => return None,
     }
     Some(tokens.iter().map(|token| token.text(text)).collect())
@@ -38,27 +38,26 @@ pub fn constant_literal_matches_type(text: &str, ty: &str) -> bool {
     let Some(spelling) = normalize_constant_literal_text(text) else {
         return false;
     };
-    let literal = crate::lex(&spelling)
-        .into_iter()
-        .last()
-        .expect("normalized nonempty literal");
+    let Some(literal) = crate::lex(&spelling).into_iter().last() else {
+        return false;
+    };
     let ty = ty.trim();
     match literal.kind {
         SyntaxKind::Number if spelling.contains('.') => {
             ty.eq_ignore_ascii_case("float") && spelling.parse::<f32>().is_ok_and(f32::is_finite)
-        }
+        },
         SyntaxKind::Number => {
             (ty.eq_ignore_ascii_case("int") || ty.eq_ignore_ascii_case("float"))
                 && decode_integer_literal(&spelling).is_some()
-        }
+        },
         SyntaxKind::String => {
             ty.eq_ignore_ascii_case("string") && decode_string_literal(&spelling).is_some()
-        }
+        },
         SyntaxKind::Ident
             if spelling.eq_ignore_ascii_case("true") || spelling.eq_ignore_ascii_case("false") =>
         {
             ty.eq_ignore_ascii_case("bool")
-        }
+        },
         SyntaxKind::Ident if spelling.eq_ignore_ascii_case("none") => {
             if let Some(element) = ty.strip_suffix("[]") {
                 valid_type_name(element)
@@ -68,7 +67,7 @@ pub fn constant_literal_matches_type(text: &str, ty: &str) -> bool {
                         .iter()
                         .any(|builtin| ty.eq_ignore_ascii_case(builtin))
             }
-        }
+        },
         _ => false,
     }
 }

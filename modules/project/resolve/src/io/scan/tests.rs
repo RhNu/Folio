@@ -1,8 +1,9 @@
 use super::*;
+
 #[test]
 fn encoding_is_explicit_and_utf8_bom_is_removed() {
     assert_eq!(
-        decode_source(&[0xef, 0xbb, 0xbf, b'A'], SourceEncoding::Utf8).unwrap(),
+        decode_source(&[0xEF, 0xBB, 0xBF, b'A'], SourceEncoding::Utf8).unwrap(),
         "A"
     );
     assert_eq!(

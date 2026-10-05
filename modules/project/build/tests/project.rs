@@ -1,10 +1,15 @@
 //! In-memory project resolution, projection, planning, and fingerprint contracts.
+#[path = "common/support.rs"]
 mod common;
-use common as test_support;
-use folio_build::plan::{PlanError, project_plan};
-use folio_build::{ProjectAnalysis, fingerprint, selected_inputs};
-use folio_project_model::Metadata;
 use std::path::PathBuf;
+
+use common as test_support;
+use folio_build::{
+    ProjectAnalysis, fingerprint,
+    plan::{PlanError, project_plan},
+    selected_inputs,
+};
+use folio_project_model::Metadata;
 
 #[test]
 fn selected_inputs_preserve_root_body_and_select_dependency_api() {

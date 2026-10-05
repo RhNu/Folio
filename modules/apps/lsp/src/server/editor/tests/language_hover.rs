@@ -1,9 +1,10 @@
-use super::*;
 use folio_declaration_tools::{GenerationOptions, SourceInput, generate};
 use folio_project_model::{
     DeclarationLocation, DeclaredScript, DependencyKind, LoadedDependency, LoadedRoot, SourceId,
 };
 use folio_project_resolve::io::{FolioHome, InputSnapshot, WatchPlan};
+
+use super::*;
 
 fn params(context: &QueryContext, uri: &str, text: &str, needle: &str) -> Value {
     let byte = text
@@ -118,20 +119,20 @@ fn documentation_and_details_settings_apply_independently_and_plaintext_has_urls
     let source = "ScriptName Demo\nInt Property Count = 42 Auto\n";
     let mut context = context_source(source, Vec::new());
     let uri = context.uris.keys().next().unwrap().clone();
-    context.settings.details = false;
+    context.settings.hover.details = false;
     let result = value(&context, &uri, source, "Int");
     let hover = result["contents"]["value"].as_str().unwrap();
     assert!(hover.contains("32-bit"));
     assert!(hover.contains("Creation Kit reference"));
     assert!(!hover.contains("Skyrim Papyrus"));
-    context.settings.details = true;
-    context.settings.documentation = false;
+    context.settings.hover.details = true;
+    context.settings.hover.documentation = false;
     let result = value(&context, &uri, source, "42");
     let hover = result["contents"]["value"].as_str().unwrap();
     assert!(hover.contains("Value of literal: 42"));
     assert!(!hover.contains("32-bit"));
     assert!(!hover.contains("Creation Kit reference"));
-    context.settings.documentation = true;
+    context.settings.hover.documentation = true;
     context.markdown = false;
     let result = value(&context, &uri, source, "Auto");
     assert_eq!(result["contents"]["kind"], "plaintext");

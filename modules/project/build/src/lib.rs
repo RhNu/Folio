@@ -5,9 +5,11 @@ pub mod fingerprint;
 pub mod output;
 pub mod plan;
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use folio_analysis::{AnalysisHost, AnalysisView, InputEdit, InputError};
 use folio_diagnostics::{Diagnostic, Severity};
@@ -44,6 +46,9 @@ impl ProjectSource {
 }
 
 /// Maps only the files explicitly loaded by the project resolver.
+///
+/// # Errors
+/// Returns an error when a root source has no matching loaded text input.
 pub fn sources_from_loaded(project: &LoadedProject) -> Result<Vec<ProjectSource>, ProjectionError> {
     let manifest = &project.root.manifest;
     let mut sources = Vec::new();
@@ -85,6 +90,9 @@ pub struct SelectedInputs {
 }
 
 /// Projects only resolver-selected providers into the visible semantic namespace.
+///
+/// # Errors
+/// Returns an error when a selected provider cannot be matched to its loaded source or declaration.
 pub fn selected_inputs(
     project: &LoadedProject,
     metadata: &Metadata,
@@ -176,13 +184,13 @@ impl std::fmt::Display for ProjectionError {
         match self {
             Self::MissingPackage(package) => {
                 write!(f, "no source package for loaded file in {package}")
-            }
+            },
             Self::MissingSelectedProvider => {
                 write!(f, "resolved script provider is missing from loaded inputs")
-            }
+            },
             Self::UnsupportedLanguage { package, language } => {
                 write!(f, "package {package} uses unsupported language {language}")
-            }
+            },
             Self::UnsupportedDialect { package, dialect } => write!(
                 f,
                 "package {package} uses unsupported Papyrus dialect {dialect}"
@@ -195,7 +203,7 @@ impl std::fmt::Display for ProjectionError {
             Self::FileIdExhausted => write!(f, "analysis file ID space exhausted"),
             Self::RevisionExhausted(file) => {
                 write!(f, "analysis revision space exhausted for {file:?}")
-            }
+            },
             Self::Input(cause) => write!(f, "analysis input update failed: {cause:?}"),
         }
     }
@@ -319,23 +327,24 @@ struct SelectedProjection {
 }
 
 impl ProjectAnalysis {
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
     #[tracing::instrument(
         name = "project.analysis.sync",
         skip(self, project, metadata),
         fields(phase = "analysis.update")
     )]
+    /// # Errors
+    /// Returns an error when selected project providers cannot be projected into analysis inputs.
     pub fn sync_project(
         &mut self,
         project: &LoadedProject,
         metadata: &Metadata,
     ) -> Result<ProjectAnalysisView, ProjectionError> {
         let reuse = self.selected.as_ref().is_some_and(|cached| {
+            let same_provider_count = cached.providers.len() == project.dependencies.len();
             cached.scripts == metadata.scripts
-                && cached.providers.len() == project.dependencies.len()
+                && same_provider_count
                 && cached.providers.iter().zip(&project.dependencies).all(
                     |((key, source), dependency)| {
                         key == &dependency.source_key && source == &dependency.source_id
@@ -383,6 +392,11 @@ impl ProjectAnalysis {
         skip(self, sources),
         fields(phase = "analysis.update")
     )]
+    /// # Errors
+    /// Returns an error for duplicate source identities or sources that cannot be projected into the analysis session.
+    ///
+    /// # Panics
+    /// Panics if an active source has no previously recorded revision.
     pub fn sync_sources(
         &mut self,
         sources: impl IntoIterator<Item = ProjectSource>,
@@ -466,6 +480,11 @@ impl ProjectAnalysis {
         self.known = known;
         self.next_file_id = next_file_id;
         self.active = next_active;
+        Ok(self.source_view())
+    }
+
+    /// Collect source/header issues from the successfully updated analysis snapshot.
+    fn source_view(&self) -> ProjectAnalysisView {
         let analysis = self.analysis.view();
         let mut source_map = BTreeMap::new();
         let mut issues = Vec::new();
@@ -490,13 +509,13 @@ impl ProjectAnalysis {
                         file: source.file,
                         candidate: source.source.script_candidate.clone(),
                         declared: declared.clone(),
-                    })
-                }
+                    });
+                },
                 [_, _, ..] => issues.push(SourceIssue::MultipleScriptHeaders {
                     file: source.file,
                     names: headers,
                 }),
-                _ => {}
+                _ => {},
             }
         }
         tracing::info!(
@@ -505,11 +524,11 @@ impl ProjectAnalysis {
             generation = analysis.generation(),
             "project sources projected into analysis"
         );
-        Ok(ProjectAnalysisView {
+        ProjectAnalysisView {
             analysis,
             sources: source_map,
             issues,
-        })
+        }
     }
 }
 

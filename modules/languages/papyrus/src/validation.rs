@@ -92,11 +92,11 @@ pub fn validate_declarations(
             ),
             Declaration::Function { modifiers, .. } | Declaration::Event { modifiers, .. } => {
                 (modifiers, FlagScope::Function, false)
-            }
+            },
             Declaration::State { flags, .. } => {
                 check_flags(&node, flags, None, false, conditional, user_flags, &mut out);
                 continue;
-            }
+            },
             Declaration::Import { .. } => continue,
         };
         check_flags(
@@ -112,22 +112,22 @@ pub fn validate_declarations(
             Declaration::Property { ty, flags, .. } => check_property(&node, ty, flags, &mut out),
             Declaration::Variable { ty, .. } => {
                 if let Some(value) = initializer(&node) {
-                    if !is_constant_literal(&value) {
+                    if is_constant_literal(&value) {
+                        check_constant_type(&value, ty, "semantic.initializer-type", &mut out);
+                    } else {
                         issue(
                             &mut out,
                             &value,
                             "semantic.variable-initializer",
                             "script variable initializer must be a literal",
                         );
-                    } else {
-                        check_constant_type(&value, ty, "semantic.initializer-type", &mut out);
                     }
                 }
-            }
+            },
             Declaration::Function { .. } | Declaration::Event { .. } => {
-                check_parameters(&node, &mut out)
-            }
-            _ => {}
+                check_parameters(&node, &mut out);
+            },
+            _ => {},
         }
     }
     tracing::debug!(issues = out.len(), "validated source declaration contracts");
@@ -184,17 +184,17 @@ fn check_flags(
             _ => None,
         };
         let allowed = standard.unwrap_or_else(|| {
-            if scope.is_none() {
+            let Some(scope) = scope else {
                 return false;
-            }
+            };
             match user_flags {
                 None => !folio_profiles::is_skyrim_keyword(&flag),
                 Some(definitions) => definitions
                     .iter()
                     .find(|definition| definition.name.eq_ignore_ascii_case(&flag))
                     .is_some_and(|definition| {
-                        definition.applies_to(scope.unwrap())
-                            || (scope == Some(FlagScope::Property)
+                        definition.applies_to(scope)
+                            || (scope == FlagScope::Property
                                 && auto
                                 && definition.applies_to(FlagScope::Variable))
                     }),
@@ -252,7 +252,7 @@ fn check_parameters(node: &SyntaxNode, out: &mut Vec<DeclarationIssue>) {
             } else if let Some(ty) = parameter
                 .children()
                 .find(|child| child.kind() == SyntaxKind::TypeRef)
-                .map(crate::ast::type_text)
+                .map(|node| crate::ast::type_text(&node))
             {
                 check_constant_type(&value, &ty, "semantic.parameter-default", out);
             }
@@ -325,13 +325,13 @@ fn check_property(node: &SyntaxNode, ty: &str, flags: &[String], out: &mut Vec<D
                     && accessor
                         .return_type()
                         .is_some_and(|result| result.eq_ignore_ascii_case(ty))
-            }
+            },
             "set" => {
                 accessor.return_type().is_none()
                     && parameters.len() == 1
                     && parameters[0].ty.eq_ignore_ascii_case(ty)
                     && parameters[0].default.is_none()
-            }
+            },
             _ => false,
         };
         if !valid {
@@ -357,7 +357,7 @@ fn initializer(node: &SyntaxNode) -> Option<SyntaxNode> {
     node.children_with_tokens()
         .skip_while(|item| item.kind() != SyntaxKind::Equals)
         .skip(1)
-        .find_map(|item| item.into_node())
+        .find_map(rowan::NodeOrToken::into_node)
 }
 
 fn check_constant_type(
@@ -388,7 +388,7 @@ pub fn is_constant_literal(node: &SyntaxNode) -> bool {
     }
     let tokens = node
         .descendants_with_tokens()
-        .filter_map(|item| item.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .filter(|token| !token.kind().is_trivia())
         .collect::<Vec<_>>();
     tokens.len() == 2

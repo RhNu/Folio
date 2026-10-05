@@ -26,6 +26,7 @@ pub struct SourceInput<'a> {
 }
 
 /// Reproducible provenance label; output location belongs to the caller.
+#[derive(Clone, Copy)]
 pub struct GenerationOptions<'a> {
     pub source: &'a str,
 }
@@ -45,6 +46,8 @@ impl std::fmt::Display for GenerationError {
 impl std::error::Error for GenerationError {}
 
 /// Produce a portable snapshot without reading the filesystem or resolving types.
+/// # Errors
+/// Returns an error for invalid paths, declaration headers, duplicate APIs, or an invalid output bundle.
 pub fn generate(
     options: GenerationOptions<'_>,
     sources: &[SourceInput<'_>],
@@ -107,38 +110,7 @@ fn error(path: &str, reason: impl Into<String>) -> GenerationError {
 
 fn extract(input: &SourceInput<'_>) -> Result<Script, GenerationError> {
     let parsed = parse(input.text, PapyrusDialect::Skyrim);
-    // Dependency bodies may be unavailable or invalid; their declaration headers may not.
-    let body_ranges = parsed
-        .syntax()
-        .descendants()
-        .filter(|node| {
-            node.kind() == SyntaxKind::Block
-                && node.parent().is_some_and(|parent| {
-                    matches!(
-                        parent.kind(),
-                        SyntaxKind::FunctionDecl | SyntaxKind::EventDecl
-                    )
-                })
-        })
-        .map(|node| node.text_range())
-        .collect::<Vec<_>>();
-    if let Some(cause) = parsed.errors.iter().find(|cause| {
-        !body_ranges.iter().any(|range| {
-            usize::from(range.start()) <= cause.range.start
-                && cause.range.start < usize::from(range.end())
-        })
-    }) {
-        return Err(error(
-            input.path,
-            format!("invalid declaration syntax: {}", cause.message),
-        ));
-    }
-    if let Some(cause) = folio_papyrus::validate_declarations(&parsed, None).first() {
-        return Err(error(
-            input.path,
-            format!("{}: {}", cause.code, cause.message),
-        ));
-    }
+    validate_headers(input, &parsed)?;
     let summaries = declarations(&parsed)
         .into_iter()
         .map(|item| (item.range.start, item.declaration))
@@ -154,101 +126,26 @@ fn extract(input: &SourceInput<'_>) -> Result<Script, GenerationError> {
                 if script.is_some() {
                     return Err(error(input.path, "multiple ScriptName declarations"));
                 }
-                let Declaration::Script {
-                    name,
-                    parent,
-                    flags,
-                } = declaration(&summaries, &node, input.path)?
-                else {
-                    return Err(error(input.path, "invalid ScriptName declaration"));
-                };
-                let basename = input
-                    .path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(input.path)
-                    .rsplit_once('.')
-                    .filter(|(_, extension)| extension.eq_ignore_ascii_case("psc"))
-                    .map(|(basename, _)| basename)
-                    .ok_or_else(|| error(input.path, "expected .psc source file"))?;
-                if !name.eq_ignore_ascii_case(basename) {
-                    return Err(error(
-                        input.path,
-                        format!("ScriptName {name} differs from file name {basename}"),
-                    ));
-                }
-                let (line, column) =
-                    line_column(input.text, usize::from(node.text_range().start()));
-                script = Some((
-                    name.clone(),
-                    parent.clone(),
-                    flags.clone(),
-                    declaration_documentation(&node),
-                    SourceLocation {
-                        path: input.path.to_owned(),
-                        line,
-                        column,
-                    },
-                ));
-            }
+                script = Some(extract_header(&summaries, &node, input)?);
+            },
             SyntaxKind::ImportDecl => {
                 if let Declaration::Import { name } = declaration(&summaries, &node, input.path)? {
                     imports.push(name.clone());
                 }
-            }
+            },
             SyntaxKind::FunctionDecl
             | SyntaxKind::EventDecl
             | SyntaxKind::PropertyDecl
             | SyntaxKind::VariableDecl => {
                 members.push(member(&summaries, &node, input.path)?);
-            }
+            },
             SyntaxKind::StateDecl => {
-                let Declaration::State { name, flags } =
-                    declaration(&summaries, &node, input.path)?
-                else {
-                    return Err(error(input.path, "invalid State declaration"));
-                };
-                let mut state_members = Vec::new();
-                for child in node
-                    .children()
-                    .filter(|child| child.kind() == SyntaxKind::Block)
-                    .flat_map(|block| block.children())
-                {
-                    match child.kind() {
-                        SyntaxKind::FunctionDecl | SyntaxKind::EventDecl => {
-                            state_members.push(member(&summaries, &child, input.path)?)
-                        }
-                        SyntaxKind::Error => {
-                            return Err(error(
-                                input.path,
-                                format!("unsupported declaration in state {name}"),
-                            ));
-                        }
-                        _ => {}
-                    }
-                }
-                if let Some(existing) = states
-                    .iter_mut()
-                    .find(|state: &&mut State| state.name.eq_ignore_ascii_case(name))
-                {
-                    existing.auto |= flags.iter().any(|flag| flag == "auto");
-                    if existing.documentation.is_none() {
-                        existing.documentation = declaration_documentation(&node);
-                    }
-                    existing.members.extend(state_members);
-                } else {
-                    states.push(State {
-                        name: name.clone(),
-                        documentation: declaration_documentation(&node),
-                        auto: flags.iter().any(|flag| flag == "auto"),
-                        members: state_members,
-                    });
-                }
-            }
+                extract_state(&summaries, &node, input.path, &mut states)?;
+            },
             SyntaxKind::Error => {
                 return Err(error(input.path, "unsupported top-level declaration"));
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     let (name, parent, flags, documentation, source) =
@@ -291,6 +188,144 @@ fn extract(input: &SourceInput<'_>) -> Result<Script, GenerationError> {
         states,
         source: Some(source),
     })
+}
+
+/// Dependency bodies may be unavailable; declaration headers still must be valid.
+fn validate_headers(
+    input: &SourceInput<'_>,
+    parsed: &folio_papyrus::Parse,
+) -> Result<(), GenerationError> {
+    // Dependency bodies may be unavailable or invalid; their declaration headers may not.
+    let body_ranges = parsed
+        .syntax()
+        .descendants()
+        .filter(|node| {
+            node.kind() == SyntaxKind::Block
+                && node.parent().is_some_and(|parent| {
+                    matches!(
+                        parent.kind(),
+                        SyntaxKind::FunctionDecl | SyntaxKind::EventDecl
+                    )
+                })
+        })
+        .map(|node| node.text_range())
+        .collect::<Vec<_>>();
+    if let Some(cause) = parsed.errors.iter().find(|cause| {
+        !body_ranges.iter().any(|range| {
+            usize::from(range.start()) <= cause.range.start
+                && cause.range.start < usize::from(range.end())
+        })
+    }) {
+        return Err(error(
+            input.path,
+            format!("invalid declaration syntax: {}", cause.message),
+        ));
+    }
+    if let Some(cause) = folio_papyrus::validate_declarations(parsed, None).first() {
+        return Err(error(
+            input.path,
+            format!("{}: {}", cause.code, cause.message),
+        ));
+    }
+    Ok(())
+}
+
+type ScriptHeader = (
+    String,
+    Option<String>,
+    Vec<String>,
+    Option<String>,
+    SourceLocation,
+);
+
+fn extract_header(
+    summaries: &BTreeMap<usize, Declaration>,
+    node: &SyntaxNode,
+    input: &SourceInput<'_>,
+) -> Result<ScriptHeader, GenerationError> {
+    let Declaration::Script {
+        name,
+        parent,
+        flags,
+    } = declaration(summaries, node, input.path)?
+    else {
+        return Err(error(input.path, "invalid ScriptName declaration"));
+    };
+    let basename = input
+        .path
+        .rsplit('/')
+        .next()
+        .unwrap_or(input.path)
+        .rsplit_once('.')
+        .filter(|(_, extension)| extension.eq_ignore_ascii_case("psc"))
+        .map(|(basename, _)| basename)
+        .ok_or_else(|| error(input.path, "expected .psc source file"))?;
+    if !name.eq_ignore_ascii_case(basename) {
+        return Err(error(
+            input.path,
+            format!("ScriptName {name} differs from file name {basename}"),
+        ));
+    }
+    let (line, column) = line_column(input.text, usize::from(node.text_range().start()));
+    Ok((
+        name.clone(),
+        parent.clone(),
+        flags.clone(),
+        declaration_documentation(node),
+        SourceLocation {
+            path: input.path.to_owned(),
+            line,
+            column,
+        },
+    ))
+}
+
+fn extract_state(
+    summaries: &BTreeMap<usize, Declaration>,
+    node: &SyntaxNode,
+    path: &str,
+    states: &mut Vec<State>,
+) -> Result<(), GenerationError> {
+    let Declaration::State { name, flags } = declaration(summaries, node, path)? else {
+        return Err(error(path, "invalid State declaration"));
+    };
+    let mut state_members = Vec::new();
+    for child in node
+        .children()
+        .filter(|child| child.kind() == SyntaxKind::Block)
+        .flat_map(|block| block.children())
+    {
+        match child.kind() {
+            SyntaxKind::FunctionDecl | SyntaxKind::EventDecl => {
+                state_members.push(member(summaries, &child, path)?);
+            },
+            SyntaxKind::Error => {
+                return Err(error(
+                    path,
+                    format!("unsupported declaration in state {name}"),
+                ));
+            },
+            _ => {},
+        }
+    }
+    if let Some(existing) = states
+        .iter_mut()
+        .find(|state: &&mut State| state.name.eq_ignore_ascii_case(name))
+    {
+        existing.auto |= flags.iter().any(|flag| flag == "auto");
+        if existing.documentation.is_none() {
+            existing.documentation = declaration_documentation(node);
+        }
+        existing.members.extend(state_members);
+    } else {
+        states.push(State {
+            name: name.clone(),
+            documentation: declaration_documentation(node),
+            auto: flags.iter().any(|flag| flag == "auto"),
+            members: state_members,
+        });
+    }
+    Ok(())
 }
 
 fn declaration<'a>(
@@ -353,17 +388,7 @@ fn member(
         .iter()
         .any(|flag| flag == "auto" || flag == "autoreadonly");
     let is_read_only = flags.iter().any(|flag| flag == "autoreadonly");
-    let accessors = node
-        .children()
-        .filter(|child| child.kind() == SyntaxKind::Block)
-        .flat_map(|block| block.children())
-        .filter(|child| child.kind() == SyntaxKind::FunctionDecl)
-        .filter_map(|child| declaration(summaries, &child, path).ok())
-        .filter_map(|declaration| match declaration {
-            Declaration::Function { name, .. } => Some(name.to_ascii_lowercase()),
-            _ => None,
-        })
-        .collect::<BTreeSet<_>>();
+    let accessors = property_accessors(summaries, node, path);
     // A nested literal in a binary expression is not the declaration's value.
     let initial_literal = node
         .children()
@@ -398,7 +423,7 @@ fn member(
                 access,
                 initial_literal,
             }
-        }
+        },
         MemberKind::Variable => MemberData::Variable {
             ty: ty.expect("variable type extracted"),
             initial_literal,
@@ -411,6 +436,24 @@ fn member(
         flags,
         data,
     })
+}
+
+/// Only direct property-body functions describe manual accessor permissions.
+fn property_accessors(
+    summaries: &BTreeMap<usize, Declaration>,
+    node: &SyntaxNode,
+    path: &str,
+) -> BTreeSet<String> {
+    node.children()
+        .filter(|child| child.kind() == SyntaxKind::Block)
+        .flat_map(|block| block.children())
+        .filter(|child| child.kind() == SyntaxKind::FunctionDecl)
+        .filter_map(|child| declaration(summaries, &child, path).ok())
+        .filter_map(|declaration| match declaration {
+            Declaration::Function { name, .. } => Some(name.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>()
 }
 
 fn is_expression(kind: SyntaxKind) -> bool {
@@ -435,15 +478,18 @@ fn parameter(source: &folio_papyrus::Parameter) -> Parameter {
         default: source
             .default
             .clone()
-            .map(ParameterDefault::Literal)
-            .unwrap_or(ParameterDefault::Required),
+            .map_or(ParameterDefault::Required, ParameterDefault::Literal),
     }
 }
 
 fn line_column(text: &str, byte: usize) -> (u32, u32) {
     let prefix = &text[..byte];
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1;
-    let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() as u32 + 1;
+    let line = u32::try_from(prefix.bytes().filter(|byte| *byte == b'\n').count())
+        .expect("parsed source fits Rowan offsets")
+        + 1;
+    let column = u32::try_from(prefix.rsplit('\n').next().unwrap_or("").chars().count())
+        .expect("parsed source fits Rowan offsets")
+        + 1;
     (line, column)
 }
 

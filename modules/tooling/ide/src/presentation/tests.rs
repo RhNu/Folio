@@ -1,9 +1,10 @@
-use super::*;
-use crate::tests::{file, project};
 use folio_analysis::AnalysisHost;
 use folio_format_declarations::{
     DeclarationBundle, Member, MemberData, Origin, Parameter, ParameterDefault, Script,
 };
+
+use super::*;
+use crate::tests::{file, project};
 
 fn external() -> IdeSnapshot {
     let member = Member {
@@ -45,7 +46,7 @@ fn external() -> IdeSnapshot {
     host.set_external_declarations(vec![bundle]);
     IdeSnapshot::from(folio_build::ProjectAnalysisView {
         analysis: host.view(),
-        sources: Default::default(),
+        sources: std::collections::BTreeMap::default(),
         issues: Vec::new(),
     })
 }

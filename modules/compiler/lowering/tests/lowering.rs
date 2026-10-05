@@ -1,4 +1,5 @@
 //! Lowering behavior observed through public HIR inputs and MIR outputs.
+#[path = "common/support.rs"]
 mod common;
 use common::*;
 use folio_hir::{

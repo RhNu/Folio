@@ -2,12 +2,12 @@ use super::*;
 
 #[test]
 fn full_width_hex_uses_signed_values_in_constants_and_float_widening() {
-    for (text, value) in [("0x80000000", i32::MIN), ("0xFFFFFFFF", -1)] {
+    for (text, value, widened) in [
+        ("0x80000000", i32::MIN, f32::from_bits(0xCF00_0000)),
+        ("0xFFFFFFFF", -1, -1.0),
+    ] {
         assert_eq!(literal(text, &Type::Int), Some(Value::Int(value)));
-        assert_eq!(
-            literal(text, &Type::Float),
-            Some(Value::Float(value as f32))
-        );
+        assert_eq!(literal(text, &Type::Float), Some(Value::Float(widened)));
         let mut member = property(true);
         member.initial_literal = Some(text.into());
         let output = lower_script(&script(vec![member]), TargetProfile::skyrim_se(), &[]).unwrap();

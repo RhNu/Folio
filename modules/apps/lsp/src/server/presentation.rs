@@ -1,9 +1,15 @@
 //! Hover rendering and URI actions at the protocol boundary.
-use super::*;
-use crate::protocol::{path_to_uri, percent_decode, range_json};
+use std::fmt::Write as _;
+
 use folio_hir::Symbol;
 use folio_project_model::{DependencyKind, SourceId};
 use folio_source::SourceSpan;
+
+use super::{
+    Arc, BTreeMap, LoadedProject, Metadata, PathBuf, PositionEncoding, ProjectAnalysisView, Value,
+    json, settings,
+};
+use crate::protocol::{path_to_uri, percent_decode, range_json};
 
 /// Escape user-authored prose before placing it inside trusted navigation Markdown.
 pub(super) fn prose(value: &str) -> String {
@@ -16,7 +22,7 @@ pub(super) fn prose(value: &str) -> String {
             '\\' | '\u{60}' | '*' | '_' | '[' | ']' | '(' | ')' | '#' | '!' | '|' => {
                 escaped.push('\\');
                 escaped.push(ch);
-            }
+            },
             _ => escaped.push(ch),
         }
     }
@@ -29,13 +35,13 @@ pub(super) fn encode(value: &str) -> String {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
             encoded.push(byte as char);
         } else {
-            encoded.push_str(&format!("%{byte:02X}"));
+            write!(encoded, "%{byte:02X}").expect("formatting into String cannot fail");
         }
     }
     encoded
 }
 
-pub(super) fn command_link(title: &str, command: &str, arguments: Value) -> String {
+pub(super) fn command_link(title: &str, command: &str, arguments: &Value) -> String {
     format!(
         "[{}](command:{command}?{})",
         prose(title),
@@ -71,16 +77,16 @@ fn readable_declaration(value: &str) -> String {
                         open = Some(token.range.end);
                     }
                     depth += 1;
-                }
+                },
                 folio_papyrus::SyntaxKind::RParen => {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
                         close = Some(token.range.start);
                         break;
                     }
-                }
+                },
                 folio_papyrus::SyntaxKind::Comma if depth == 1 => commas.push(token.range.start),
-                _ => {}
+                _ => {},
             }
         }
         let (Some(open), Some(close)) = (open, close) else {
@@ -94,14 +100,17 @@ fn readable_declaration(value: &str) -> String {
         let mut result = format!("{} \\\n", &line[..open]);
         let mut start = open;
         for end in commas {
-            result.push_str(&format!("    {}, \\\n", line[start..end].trim()));
+            writeln!(result, "    {}, \\", line[start..end].trim())
+                .expect("formatting into String cannot fail");
             start = end + 1;
         }
-        result.push_str(&format!(
+        write!(
+            result,
             "    {} \\\n{}",
             line[start..close].trim(),
             &line[close..]
-        ));
+        )
+        .expect("formatting into String cannot fail");
         lines.push(result);
     }
     lines.join("\n")
@@ -124,14 +133,14 @@ pub(super) fn hover_text(
         context.push_str(" · ");
         context.push_str(state);
     }
-    if settings.details
+    if settings.hover.details
         && let Some(origin) = origin
     {
         context.push_str(" · ");
         context.push_str(origin);
     }
     let mut header = Vec::new();
-    if settings.details {
+    if settings.hover.details {
         header.push(if markdown { prose(&context) } else { context });
     }
     header.push(if markdown {
@@ -141,7 +150,7 @@ pub(super) fn hover_text(
     });
     // VS Code's rule has a negative bottom margin; keep it away from the code block.
     let mut sections = vec![header.join("\n\n")];
-    if settings.documentation
+    if settings.hover.documentation
         && let Some(documentation) = &item.documentation
     {
         let mut text = if markdown {
@@ -163,15 +172,11 @@ pub(super) fn hover_text(
                 });
             }
             text.push_str("\n\n");
-            text.push_str(&if markdown {
-                format!("[Creation Kit reference (Skyrim)]({})", help.reference_url)
-            } else {
-                format!("Creation Kit reference (Skyrim): {}", help.reference_url)
-            });
+            append_reference(&mut text, help.reference_url, markdown);
         }
         sections.push(text);
     }
-    if settings.details && !item.details.is_empty() {
+    if settings.hover.details && !item.details.is_empty() {
         sections.push(
             item.details
                 .iter()
@@ -186,10 +191,20 @@ pub(super) fn hover_text(
                 .join("\n\n"),
         );
     }
-    if settings.details && markdown && !links.is_empty() {
+    if settings.hover.details && markdown && !links.is_empty() {
         sections.push(links.join(" · "));
     }
     sections.join(if markdown { "\n\n---\n\n" } else { "\n\n" })
+}
+
+/// Append a trusted reference using the client's supported prose format.
+fn append_reference(text: &mut String, url: &str, markdown: bool) {
+    let (prefix, suffix) = if markdown {
+        ("[Creation Kit reference (Skyrim)](", ")")
+    } else {
+        ("Creation Kit reference (Skyrim): ", "")
+    };
+    write!(text, "{prefix}{url}{suffix}").expect("formatting into String cannot fail");
 }
 
 pub(super) fn source_location(

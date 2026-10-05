@@ -1,8 +1,6 @@
 use super::*;
 
-// Each test target uses a subset of the shared in-memory project fixtures.
-#[allow(dead_code)]
-#[path = "../tests/common/mod.rs"]
+#[path = "../tests/common/support.rs"]
 pub(super) mod support;
 
 fn source(path: &str, text: &str) -> ProjectSource {

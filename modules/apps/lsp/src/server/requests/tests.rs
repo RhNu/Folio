@@ -1,6 +1,7 @@
-use super::{encode_semantic_tokens, request_stale};
 use folio_ide::PositionEncoding;
 use folio_source::TextRange;
+
+use super::{encode_semantic_tokens, request_stale};
 
 #[test]
 fn stale_or_cancelled_navigation_is_discarded() {

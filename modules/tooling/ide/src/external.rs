@@ -1,9 +1,10 @@
 //! Pure navigation into a supplied PSC snapshot; never resolves filesystem paths.
 
-use crate::IdeSnapshot;
 use folio_hir::Symbol;
 use folio_papyrus::{PapyrusDialect, SyntaxKind, SyntaxNode, parse};
 use folio_source::{FileId, TextRange};
+
+use crate::IdeSnapshot;
 
 /// Preserve the selected semantic owner when navigating inherited external members.
 pub fn referenced_symbol(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<Symbol> {
@@ -34,7 +35,7 @@ pub fn external_declaration_symbol(text: &str, byte: usize) -> Option<Symbol> {
     }
     let token = root
         .descendants_with_tokens()
-        .filter_map(|item| item.into_token())
+        .filter_map(folio_papyrus::SyntaxElement::into_token)
         .find(|token| {
             let range = token.text_range();
             usize::from(range.start()) <= byte && byte < usize::from(range.end())
@@ -180,7 +181,7 @@ fn name_after(node: &SyntaxNode, keyword: &str) -> Option<(String, TextRange)> {
     let mut eligible = keyword.is_empty();
     for token in node
         .children_with_tokens()
-        .filter_map(|item| item.into_token())
+        .filter_map(folio_papyrus::SyntaxElement::into_token)
     {
         if token.kind() != SyntaxKind::Ident {
             continue;

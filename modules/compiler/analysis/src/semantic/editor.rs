@@ -1,5 +1,9 @@
 //! Prefix selection uses indexed checker names before candidate materialization.
-use super::*;
+use super::{
+    AnalysisCancelled, AnalysisView, AnalyzedFile, BTreeMap, BTreeSet, Declaration, FileId,
+    HirMemberKind, MemberFact, MemberInfo, ScriptInfo, Symbol, SyntaxKind, SyntaxNode, Type, World,
+    enclosing_name, key, lookup_member, lookup_state_member, span,
+};
 
 pub(crate) fn completion_candidates(
     view: &AnalysisView,
@@ -12,7 +16,6 @@ pub(crate) fn completion_candidates(
 ) -> Result<Vec<crate::CompletionCandidate>, AnalysisCancelled> {
     view.try_warm_semantics(cancelled)?;
     checkpoint(cancelled)?;
-    let mut cancellation = Cancellation::new(cancelled);
     let analysis = view.semantic();
     let Some(facts) = analysis.file(file) else {
         return Ok(Vec::new());
@@ -24,7 +27,9 @@ pub(crate) fn completion_candidates(
     let Some(current) = world.scripts.get(&key(&name.text)) else {
         return Ok(Vec::new());
     };
-    let parse = view.parse(file).unwrap();
+    let Some(parse) = view.parse(file) else {
+        return Ok(Vec::new());
+    };
     let root = parse.syntax();
     let callable = byte
         .try_into()
@@ -53,25 +58,97 @@ pub(crate) fn completion_candidates(
     });
     let context_global = owner
         .is_some_and(|member| matches!(member.kind, HirMemberKind::Function { global: true, .. }));
-    let mut names = BTreeMap::new();
-    let indexed_prefix = key(prefix);
+    let mut collector = CandidateCollector::new(world, prefix, cancelled);
     if let Some(receiver @ Type::Array(_)) = receiver {
         for candidate in crate::intrinsics::intrinsic_candidates(receiver, prefix) {
-            names.insert(key(symbol_name(&candidate.symbol)), Some(candidate));
+            collector
+                .names
+                .insert(key(symbol_name(&candidate.symbol)), Some(candidate));
         }
         checkpoint(cancelled)?;
-        return Ok(names.into_values().flatten().collect());
+        return Ok(collector.names.into_values().flatten().collect());
     }
     if receiver.is_none() {
+        collector.collect_locals(file, facts, &root, owner, byte)?;
+    }
+    let receiver_name = match receiver {
+        Some(Type::Script(name)) => name.as_str(),
+        None => &current.name,
+        _ => return Ok(Vec::new()),
+    };
+    let state = callable
+        .as_ref()
+        .and_then(|node| enclosing_name(node, SyntaxKind::StateDecl, "state"));
+    collector.collect_members(
+        receiver_name,
+        state.as_deref(),
+        receiver,
+        global,
+        context_global,
+    )?;
+    if receiver.is_none() {
+        let imports = view
+            .declarations(file)
+            .expect("semantic source files retain declaration inputs");
+        collector.collect_globals(&imports)?;
+    }
+    if !global && !context_global {
+        for candidate in
+            crate::intrinsics::intrinsic_candidates(&Type::Script(receiver_name.into()), prefix)
+        {
+            collector
+                .names
+                .entry(key(symbol_name(&candidate.symbol)))
+                .or_insert(Some(candidate));
+        }
+    }
+    checkpoint(cancelled)?;
+    Ok(collector.names.into_values().flatten().collect())
+}
+
+/// Candidate identity and cancellation are shared across completion lookup priorities.
+struct CandidateCollector<'a> {
+    world: &'a World,
+    prefix: &'a str,
+    indexed_prefix: String,
+    names: BTreeMap<String, Option<crate::CompletionCandidate>>,
+    cancellation: Cancellation<'a>,
+}
+
+impl<'a> CandidateCollector<'a> {
+    fn new(world: &'a World, prefix: &'a str, cancelled: &'a dyn Fn() -> bool) -> Self {
+        Self {
+            world,
+            prefix,
+            indexed_prefix: key(prefix),
+            names: BTreeMap::new(),
+            cancellation: Cancellation::new(cancelled),
+        }
+    }
+
+    /// Collect locals using the shared shadowing map and cancellation batches.
+    fn collect_locals(
+        &mut self,
+        file: FileId,
+        facts: &AnalyzedFile,
+        root: &SyntaxNode,
+        owner: Option<&MemberFact>,
+        byte: usize,
+    ) -> Result<(), AnalysisCancelled> {
         for declaration in &facts.script.declarations {
-            cancellation.check()?;
+            self.cancellation.check()?;
             let name_key = key(symbol_name(&declaration.symbol));
-            if !name_key.starts_with(&indexed_prefix) {
+            if !name_key.starts_with(&self.indexed_prefix) {
                 continue;
             }
-            let local_owner = match &declaration.symbol {
-                Symbol::Local { owner, .. } | Symbol::Parameter { owner, .. } => owner,
-                _ => continue,
+            let (Symbol::Local {
+                owner: local_owner, ..
+            }
+            | Symbol::Parameter {
+                owner: local_owner, ..
+            }) = &declaration.symbol
+            else {
+                continue;
             };
             if !owner.is_some_and(|item| &item.symbol == local_owner.as_ref())
                 || declaration.span.range.start > byte
@@ -104,9 +181,9 @@ pub(crate) fn completion_candidates(
                     continue;
                 }
             }
-            names.insert(
+            self.names.insert(
                 name_key,
-                matches_prefix(symbol_name(&declaration.symbol), prefix).then(|| {
+                matches_prefix(symbol_name(&declaration.symbol), self.prefix).then(|| {
                     crate::CompletionCandidate {
                         symbol: declaration.symbol.clone(),
                         ty: declaration.ty.clone(),
@@ -115,104 +192,114 @@ pub(crate) fn completion_candidates(
                 }),
             );
         }
+        Ok(())
     }
-    let receiver_name = match receiver {
-        Some(Type::Script(name)) => name.as_str(),
-        None => &current.name,
-        _ => return Ok(Vec::new()),
-    };
-    let mut lineage = Some(key(receiver_name));
-    let mut visited = BTreeSet::new();
-    let mut possible = BTreeSet::new();
-    while let Some(script_key) = lineage {
-        cancellation.check()?;
-        if !visited.insert(script_key.clone()) {
-            break;
-        }
-        let Some(script) = world.scripts.get(&script_key) else {
-            break;
-        };
-        for members in [
-            &script.members,
-            &script.variables,
-            &script.callable_overloads,
-        ] {
-            for (name, _) in prefix_entries(members, &indexed_prefix) {
-                cancellation.check()?;
-                possible.insert(name.as_str());
+
+    /// Collect members using the shared shadowing map and cancellation batches.
+    fn collect_members(
+        &mut self,
+        receiver_name: &str,
+        state: Option<&str>,
+        receiver: Option<&Type>,
+        global: bool,
+        context_global: bool,
+    ) -> Result<(), AnalysisCancelled> {
+        let mut lineage = Some(key(receiver_name));
+        let mut visited = BTreeSet::new();
+        let mut possible = BTreeSet::new();
+        while let Some(script_key) = lineage {
+            self.cancellation.check()?;
+            if !visited.insert(script_key.clone()) {
+                break;
             }
-        }
-        if receiver.is_none() {
-            for state in script.states.values() {
-                cancellation.check()?;
-                for (name, _) in prefix_entries(state, &indexed_prefix) {
-                    cancellation.check()?;
+            let Some(script) = self.world.scripts.get(&script_key) else {
+                break;
+            };
+            for members in [
+                &script.members,
+                &script.variables,
+                &script.callable_overloads,
+            ] {
+                for (name, _) in prefix_entries(members, &self.indexed_prefix) {
+                    self.cancellation.check()?;
                     possible.insert(name.as_str());
                 }
             }
-        }
-        lineage = script.parent.as_ref().map(|parent| key(parent));
-    }
-    let state = callable
-        .as_ref()
-        .and_then(|node| enclosing_name(node, SyntaxKind::StateDecl, "state"));
-    for member_name in possible {
-        cancellation.check()?;
-        let selected = state
-            .as_ref()
-            .filter(|_| receiver.is_none())
-            .and_then(|state| lookup_state_member(world, receiver_name, state, &member_name));
-        let is_state = selected.is_some();
-        let Some((script, member)) =
-            selected.or_else(|| lookup_member(world, receiver_name, &member_name))
-        else {
-            continue;
-        };
-        if (global || (receiver.is_none() && context_global)) && !member.global {
-            continue;
-        }
-        if receiver.is_some() && !global && member.global {
-            continue;
-        }
-        names.entry(member_name.to_owned()).or_insert_with(|| {
-            // Excluded spellings still shadow lower-priority names sharing the
-            // same Unicode-normalized checker identity.
-            matches_prefix(&member.name, prefix).then(|| {
-                let symbol = if is_state {
-                    Symbol::StateMember {
-                        script: script.name.clone(),
-                        state: state.clone().unwrap(),
-                        name: member.name.clone(),
+            if receiver.is_none() {
+                for state in script.states.values() {
+                    self.cancellation.check()?;
+                    for (name, _) in prefix_entries(state, &self.indexed_prefix) {
+                        self.cancellation.check()?;
+                        possible.insert(name.as_str());
                     }
-                } else {
-                    Symbol::Member {
-                        script: script.name.clone(),
-                        name: member.name.clone(),
-                    }
-                };
-                crate::CompletionCandidate {
-                    symbol,
-                    ty: member.ty.clone(),
-                    definition: member.definition,
                 }
-            })
-        });
+            }
+            lineage = script.parent.as_ref().map(|parent| key(parent));
+        }
+        for member_name in possible {
+            self.cancellation.check()?;
+            let selected = state
+                .as_ref()
+                .filter(|_| receiver.is_none())
+                .and_then(|state| {
+                    lookup_state_member(self.world, receiver_name, state, member_name)
+                });
+            let is_state = selected.is_some();
+            let Some((script, member)) =
+                selected.or_else(|| lookup_member(self.world, receiver_name, member_name))
+            else {
+                continue;
+            };
+            if (global || (receiver.is_none() && context_global)) && !member.global {
+                continue;
+            }
+            if receiver.is_some() && !global && member.global {
+                continue;
+            }
+            self.names.entry(member_name.to_owned()).or_insert_with(|| {
+                // Excluded spellings still shadow lower-priority names sharing the
+                // same Unicode-normalized checker identity.
+                matches_prefix(&member.name, self.prefix).then(|| {
+                    let symbol = if is_state {
+                        Symbol::StateMember {
+                            script: script.name.clone(),
+                            state: state
+                                .expect("state member selection requires an enclosing state")
+                                .to_owned(),
+                            name: member.name.clone(),
+                        }
+                    } else {
+                        Symbol::Member {
+                            script: script.name.clone(),
+                            name: member.name.clone(),
+                        }
+                    };
+                    crate::CompletionCandidate {
+                        symbol,
+                        ty: member.ty.clone(),
+                        definition: member.definition,
+                    }
+                })
+            });
+        }
+        Ok(())
     }
-    if receiver.is_none() {
-        for (script_key, script) in prefix_entries(&world.scripts, &indexed_prefix) {
-            cancellation.check()?;
-            names.entry(script_key.clone()).or_insert_with(|| {
-                matches_prefix(&script.name, prefix).then(|| crate::CompletionCandidate {
+
+    /// Collect globals using the shared shadowing map and cancellation batches.
+    fn collect_globals(&mut self, imports: &[Declaration]) -> Result<(), AnalysisCancelled> {
+        for (script_key, script) in prefix_entries(&self.world.scripts, &self.indexed_prefix) {
+            self.cancellation.check()?;
+            self.names.entry(script_key.clone()).or_insert_with(|| {
+                matches_prefix(&script.name, self.prefix).then(|| crate::CompletionCandidate {
                     symbol: Symbol::Script(script.name.clone()),
                     ty: Type::Script(script.name.clone()),
                     definition: script.definition,
                 })
             });
         }
-        let imports = view.declarations(file).unwrap();
         let mut imported: BTreeMap<String, Vec<(&ScriptInfo, &MemberInfo)>> = BTreeMap::new();
-        for declaration in imports.iter() {
-            cancellation.check()?;
+        for declaration in imports {
+            self.cancellation.check()?;
             let Declaration::Import { name: import } = declaration else {
                 continue;
             };
@@ -220,22 +307,22 @@ pub(crate) fn completion_candidates(
             let mut visited = BTreeSet::new();
             let mut member_names = BTreeSet::new();
             while let Some(script_key) = lineage {
-                cancellation.check()?;
+                self.cancellation.check()?;
                 if !visited.insert(script_key.clone()) {
                     break;
                 }
-                let Some(script) = world.scripts.get(&script_key) else {
+                let Some(script) = self.world.scripts.get(&script_key) else {
                     break;
                 };
-                for (name, _) in prefix_entries(&script.members, &indexed_prefix) {
-                    cancellation.check()?;
+                for (name, _) in prefix_entries(&script.members, &self.indexed_prefix) {
+                    self.cancellation.check()?;
                     member_names.insert(name.as_str());
                 }
                 lineage = script.parent.as_ref().map(|parent| key(parent));
             }
             for member_name in member_names {
-                cancellation.check()?;
-                if let Some((owner, member)) = lookup_member(world, import, &member_name)
+                self.cancellation.check()?;
+                if let Some((owner, member)) = lookup_member(self.world, import, member_name)
                     && member.global
                 {
                     imported
@@ -246,10 +333,10 @@ pub(crate) fn completion_candidates(
             }
         }
         for (name_key, items) in imported {
-            cancellation.check()?;
+            self.cancellation.check()?;
             if let [(owner, member)] = items.as_slice() {
-                names.entry(name_key).or_insert_with(|| {
-                    matches_prefix(&member.name, prefix).then(|| crate::CompletionCandidate {
+                self.names.entry(name_key).or_insert_with(|| {
+                    matches_prefix(&member.name, self.prefix).then(|| crate::CompletionCandidate {
                         symbol: Symbol::Member {
                             script: owner.name.clone(),
                             name: member.name.clone(),
@@ -260,18 +347,8 @@ pub(crate) fn completion_candidates(
                 });
             }
         }
+        Ok(())
     }
-    if !global && !context_global {
-        for candidate in
-            crate::intrinsics::intrinsic_candidates(&Type::Script(receiver_name.into()), prefix)
-        {
-            names
-                .entry(key(symbol_name(&candidate.symbol)))
-                .or_insert(Some(candidate));
-        }
-    }
-    checkpoint(cancelled)?;
-    Ok(names.into_values().flatten().collect())
 }
 
 /// Normalized keys place every prefix match in one contiguous ordered range.

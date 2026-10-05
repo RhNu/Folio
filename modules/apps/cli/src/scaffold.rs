@@ -1,7 +1,9 @@
 //! Create project manifests and starter Papyrus sources.
-use super::CliError;
 use std::{fs, io::Write, path::Path};
+
 use tracing::info;
+
+use super::CliError;
 
 pub(super) fn create_project(
     directory: &Path,
@@ -27,19 +29,19 @@ pub(super) fn create_project(
                     "{} is not a plain directory",
                     path.display()
                 )));
-            }
-            Ok(_) => {}
+            },
+            Ok(_) => {},
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
                 fs::create_dir(path).map_err(|cause| {
                     CliError::ProjectCreation(format!("create {}: {cause}", path.display()))
                 })?;
-            }
+            },
             Err(cause) => {
                 return Err(CliError::ProjectCreation(format!(
                     "inspect {}: {cause}",
                     path.display()
                 )));
-            }
+            },
         }
     }
     let script_path = src.join(format!("{script}.psc"));
@@ -80,15 +82,16 @@ pub(super) fn scaffold(name: &str) -> Result<(String, String), CliError> {
             "project name must use ASCII letters, digits, '-' or '_'".into(),
         ));
     }
-    let suffix = name
+    let mut suffix = String::new();
+    for part in name
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|part| !part.is_empty())
-        .map(|part| {
-            let mut letters = part.chars();
-            let first = letters.next().expect("nonempty segment");
-            format!("{}{}", first.to_ascii_uppercase(), letters.as_str())
-        })
-        .collect::<String>();
+    {
+        let mut letters = part.chars();
+        let first = letters.next().expect("nonempty segment");
+        suffix.push(first.to_ascii_uppercase());
+        suffix.push_str(letters.as_str());
+    }
     let script = format!("Folio{suffix}");
     let text = format!(
         "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[languages.papyrus]\ndialect = \"skyrim\"\nextensions = [\"psc\"]\n\n[build]\ntarget = \"skyrim-se\"\nprofile = \"dev\"\nemit = [\"pex\"]\n"

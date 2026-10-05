@@ -96,7 +96,11 @@ fn cast_and_comparison_grouping_produces_reference_values() {
             .children()
             .next()
             .unwrap();
-        assert_eq!(evaluate(&value), expected, "{expression}");
+        assert_eq!(
+            evaluate(&value).to_bits(),
+            f64::to_bits(expected),
+            "{expression}"
+        );
     }
     let result = parsed("ScriptName Sample\nFunction Run()\nReturn value As Int[]\nEndFunction\n");
     assert!(result.errors.is_empty(), "{:?}", result.errors);
@@ -107,7 +111,7 @@ fn evaluate(node: &SyntaxNode) -> f64 {
     let children = node.children().collect::<Vec<_>>();
     let operator = node
         .children_with_tokens()
-        .filter_map(|item| item.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .find(|token| !token.kind().is_trivia())
         .map(|token| token.text().to_string())
         .unwrap_or_default();
@@ -124,11 +128,11 @@ fn evaluate(node: &SyntaxNode) -> f64 {
             match operator.as_str() {
                 "+" => left + right,
                 "*" => left * right,
-                "==" => f64::from(left == right),
+                "==" => f64::from(left.partial_cmp(&right) == Some(std::cmp::Ordering::Equal)),
                 "<" => f64::from(left < right),
                 _ => panic!("unexpected operator {operator}"),
             }
-        }
+        },
         _ => panic!("unexpected expression {node:?}"),
     }
 }

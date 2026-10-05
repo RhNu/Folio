@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    PexDebugFunctionInfo, PexDebugFunctionType, PexDebugInfo, PexFile, PexFunction, PexInstruction,
+    PexObject, PexProperty, PexState, PexStringId, PexValue, PexVariable, PexWriteError,
+    validate_property_model,
+};
 
 pub(crate) fn validate_for_write(file: &PexFile) -> Result<(), PexWriteError> {
     if !file
@@ -123,7 +127,7 @@ pub(crate) fn resolve_debug_function<'a>(
                 .find(|property| property.name == debug_function.function_name)
                 .and_then(|property| property.read_function.as_ref())
                 .ok_or_else(|| invalid_debug_reference(debug_function))
-        }
+        },
         PexDebugFunctionType::Setter => {
             if !string_id_eq(strings, debug_function.state_name, "") {
                 return Err(invalid_debug_reference(debug_function));
@@ -134,7 +138,7 @@ pub(crate) fn resolve_debug_function<'a>(
                 .find(|property| property.name == debug_function.function_name)
                 .and_then(|property| property.write_function.as_ref())
                 .ok_or_else(|| invalid_debug_reference(debug_function))
-        }
+        },
     }
 }
 
@@ -354,7 +358,12 @@ pub(crate) fn encoded_instruction_len(
         len = add_len(
             len,
             encoded_value_len(PexValue::Integer(
-                instruction.variadic_arguments.len() as i32
+                i32::try_from(instruction.variadic_arguments.len()).map_err(|_cause| {
+                    PexWriteError::CountTooLarge {
+                        what: "variadic argument count",
+                        len: instruction.variadic_arguments.len(),
+                    }
+                })?,
             )),
         )?;
         for argument in &instruction.variadic_arguments {
@@ -392,11 +401,8 @@ pub(crate) fn escape_dump_text(text: &str) -> String {
     })
 }
 
-pub(crate) fn ensure_u16(what: &'static str, len: usize) -> Result<(), PexWriteError> {
-    if len > u16::MAX as usize {
-        return Err(PexWriteError::CountTooLarge { what, len });
-    }
-    Ok(())
+pub(crate) fn ensure_u16(what: &'static str, len: usize) -> Result<u16, PexWriteError> {
+    u16::try_from(len).map_err(|_cause| PexWriteError::CountTooLarge { what, len })
 }
 
 #[cfg(test)]

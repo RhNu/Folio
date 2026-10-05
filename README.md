@@ -91,7 +91,14 @@ Rust crates live under `modules/<domain>/<crate>`; the VS Code client lives in `
 
 [AGENTS.md](AGENTS.md) contains project constraints. Keep both README language versions and the affected domain guide aligned with public configuration or behavior changes. Outstanding work and verification gaps belong in the [roadmap](docs/planning/roadmap.md).
 
-Run `cargo xtask check-lines` to count Rust code lines across the workspace. It excludes comments, blank lines, and generated directories, warns above 650 lines per file, and fails above 1,200. Use `--all` to list every file or `--manifest-path <Cargo.toml>` to select a workspace. See [Repository maintenance](docs/architecture/tooling.md#repository-maintenance) for counting and exit status rules.
+Use [Rusteward](https://github.com/RhNu/Rusteward) for Rust formatting and quality checks. Install it with `cargo install --git https://github.com/RhNu/Rusteward.git --locked rusteward`, then run:
+
+```powershell
+cargo dev format --locked
+cargo dev check --locked
+```
+
+Formatting, Clippy, module layout, and external unit-test checks use Rusteward's default rules. `rusteward.toml` preserves the project's effective code-line thresholds: warnings above 650 lines per file and errors above 1,200; line warnings do not fail the check. See [Repository maintenance](docs/architecture/tooling.md#repository-maintenance) for commands, configuration, and CI.
 
 ## License and provenance
 

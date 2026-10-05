@@ -9,6 +9,8 @@ use folio_format_pex::{
     PexStringId, PexUserFlag, PexValue, PexVariable,
 };
 use folio_mir::{BinaryOp, Function, Op, Script, UnaryOp, Value};
+
+mod instructions;
 use folio_source::{FileId, LineIndex, SourceSpan};
 
 /// Explicit metadata supplied by project build planning for reproducible PEX.
@@ -24,6 +26,9 @@ pub struct EmissionOptions {
 }
 
 /// Encode one script after target legalization and MIR validation.
+///
+/// # Errors
+/// Returns diagnostics for unsupported targets, invalid MIR, or PEX layout limits.
 pub fn emit(script: &Script, options: &EmissionOptions) -> Result<Vec<u8>, Vec<Diagnostic>> {
     let span = tracing::debug_span!("emit_pex", script = %script.name, target = script.target.id);
     let _entered = span.enter();
@@ -112,7 +117,6 @@ impl<'a> Emitter<'a> {
     }
 
     fn instruction(
-        &mut self,
         opcode: PexOpcode,
         args: Vec<PexValue>,
         extra: Vec<PexValue>,
@@ -128,6 +132,71 @@ impl<'a> Emitter<'a> {
         let name = self.intern(&self.script.name, source)?;
         let parent_class_name = self.intern(&self.script.parent, source)?;
         let auto_state_name = self.intern(&self.script.auto_state, source)?;
+        self.user_flags(source)?;
+
+        let mut variables = Vec::new();
+        for var in &self.script.variables {
+            variables.push(PexVariable {
+                name: self.intern(&var.name, var.source)?,
+                type_name: self.intern(&var.ty, var.source)?,
+                user_flags: var.flags,
+                default_value: self.value(&var.initial, var.source)?,
+            });
+        }
+        let mut states = vec![PexState {
+            name: empty,
+            functions: self.state_runtime()?,
+        }];
+        for function in self.script.functions.iter().filter(|f| f.state.is_empty()) {
+            let (compiled, lines) = self.function(function)?;
+            self.push_debug(
+                name,
+                empty,
+                compiled.name,
+                PexDebugFunctionType::Normal,
+                lines,
+            );
+            states[0].functions.push(compiled);
+        }
+        for state_name in &self.script.state_names {
+            let state_id = self.intern(state_name, source)?;
+            let mut functions = Vec::new();
+            for function in self
+                .script
+                .functions
+                .iter()
+                .filter(|f| f.state.eq_ignore_ascii_case(state_name))
+            {
+                let (compiled, lines) = self.function(function)?;
+                self.push_debug(
+                    name,
+                    state_id,
+                    compiled.name,
+                    PexDebugFunctionType::Normal,
+                    lines,
+                );
+                functions.push(compiled);
+            }
+            states.push(PexState {
+                name: state_id,
+                functions,
+            });
+        }
+        let properties = self.properties(name, empty)?;
+        Ok(PexObject {
+            name,
+            parent_class_name,
+            documentation_string: empty,
+            user_flags: self.script.flags,
+            auto_state_name,
+            variables,
+            properties,
+            states,
+        })
+    }
+
+    /// Populate and validate the flag table before emitting any object members.
+    fn user_flags(&mut self, source: SourceSpan) -> Result<(), Diagnostic> {
         let mut represented_flags = 0b11u32;
         let mut flag_names = BTreeSet::from(["hidden".to_owned(), "conditional".to_owned()]);
         for (flag_name, bit_index) in [("Hidden", 0), ("Conditional", 1)] {
@@ -182,54 +251,15 @@ impl<'a> Emitter<'a> {
             ));
         }
 
-        let mut variables = Vec::new();
-        for var in &self.script.variables {
-            variables.push(PexVariable {
-                name: self.intern(&var.name, var.source)?,
-                type_name: self.intern(&var.ty, var.source)?,
-                user_flags: var.flags,
-                default_value: self.value(&var.initial, var.source)?,
-            });
-        }
-        let mut states = vec![PexState {
-            name: empty,
-            functions: self.state_runtime()?,
-        }];
-        for function in self.script.functions.iter().filter(|f| f.state.is_empty()) {
-            let (compiled, lines) = self.function(function)?;
-            self.push_debug(
-                name,
-                empty,
-                compiled.name,
-                PexDebugFunctionType::Normal,
-                lines,
-            );
-            states[0].functions.push(compiled);
-        }
-        for state_name in &self.script.state_names {
-            let state_id = self.intern(state_name, source)?;
-            let mut functions = Vec::new();
-            for function in self
-                .script
-                .functions
-                .iter()
-                .filter(|f| f.state.eq_ignore_ascii_case(state_name))
-            {
-                let (compiled, lines) = self.function(function)?;
-                self.push_debug(
-                    name,
-                    state_id,
-                    compiled.name,
-                    PexDebugFunctionType::Normal,
-                    lines,
-                );
-                functions.push(compiled);
-            }
-            states.push(PexState {
-                name: state_id,
-                functions,
-            });
-        }
+        Ok(())
+    }
+
+    /// Emit property storage and accessor metadata using the validated object layout.
+    fn properties(
+        &mut self,
+        name: PexStringId,
+        empty: PexStringId,
+    ) -> Result<Vec<PexProperty>, Diagnostic> {
         let mut properties = Vec::new();
         for prop in &self.script.properties {
             let prop_name = self.intern(&prop.name, prop.source)?;
@@ -262,7 +292,7 @@ impl<'a> Emitter<'a> {
                                 lines,
                             );
                             Some(compiled)
-                        }
+                        },
                         None => None,
                     };
                     let setter = match &prop.setter {
@@ -276,7 +306,7 @@ impl<'a> Emitter<'a> {
                                 lines,
                             );
                             Some(compiled)
-                        }
+                        },
                         None => None,
                     };
                     (getter, setter, false, None)
@@ -294,16 +324,7 @@ impl<'a> Emitter<'a> {
                 write_function,
             });
         }
-        Ok(PexObject {
-            name,
-            parent_class_name,
-            documentation_string: empty,
-            user_flags: self.script.flags,
-            auto_state_name,
-            variables,
-            properties,
-            states,
-        })
+        Ok(properties)
     }
 
     fn push_debug(
@@ -361,252 +382,6 @@ impl<'a> Emitter<'a> {
         ))
     }
 
-    fn instructions(
-        &mut self,
-        function: &Function,
-    ) -> Result<(Vec<PexInstruction>, Vec<u16>), Diagnostic> {
-        let mut labels = BTreeMap::new();
-        let mut address = 0usize;
-        for item in &function.instructions {
-            match item.op {
-                Op::Label(id) => {
-                    labels.insert(id, address);
-                }
-                _ => address += 1,
-            }
-        }
-        let mut instructions = Vec::new();
-        let mut lines = Vec::new();
-        for item in &function.instructions {
-            let source = item.source;
-            let v = |this: &mut Self, value: &Value| this.value(value, source);
-            let (opcode, args, extra) = match &item.op {
-                Op::Label(_) => continue,
-                Op::Assign(dst, src) => (
-                    PexOpcode::Assign,
-                    vec![v(self, dst)?, v(self, src)?],
-                    vec![],
-                ),
-                Op::Cast(dst, src) => (PexOpcode::Cast, vec![v(self, dst)?, v(self, src)?], vec![]),
-                Op::Unary {
-                    operator,
-                    dest,
-                    value,
-                } => {
-                    let opcode = match operator {
-                        UnaryOp::Not => PexOpcode::Not,
-                        UnaryOp::NegInt => PexOpcode::INeg,
-                        UnaryOp::NegFloat => PexOpcode::FNeg,
-                    };
-                    (opcode, vec![v(self, dest)?, v(self, value)?], vec![])
-                }
-                Op::Binary {
-                    operator,
-                    dest,
-                    left,
-                    right,
-                } => {
-                    let opcode = match operator {
-                        BinaryOp::AddInt => PexOpcode::IAdd,
-                        BinaryOp::AddFloat => PexOpcode::FAdd,
-                        BinaryOp::AddString => PexOpcode::StrCat,
-                        BinaryOp::SubInt => PexOpcode::ISub,
-                        BinaryOp::SubFloat => PexOpcode::FSub,
-                        BinaryOp::MulInt => PexOpcode::IMul,
-                        BinaryOp::MulFloat => PexOpcode::FMul,
-                        BinaryOp::DivInt => PexOpcode::IDiv,
-                        BinaryOp::DivFloat => PexOpcode::FDiv,
-                        BinaryOp::ModInt => PexOpcode::IMod,
-                        BinaryOp::Eq => PexOpcode::CmpEq,
-                        BinaryOp::Lt => PexOpcode::CmpLt,
-                        BinaryOp::Lte => PexOpcode::CmpLte,
-                        BinaryOp::Gt => PexOpcode::CmpGt,
-                        BinaryOp::Gte => PexOpcode::CmpGte,
-                    };
-                    (
-                        opcode,
-                        vec![v(self, dest)?, v(self, left)?, v(self, right)?],
-                        vec![],
-                    )
-                }
-                Op::CallMethod {
-                    name,
-                    receiver,
-                    dest,
-                    args,
-                } => {
-                    let mut values = vec![
-                        PexValue::Identifier(self.intern(name, source)?),
-                        v(self, receiver)?,
-                        v(self, dest)?,
-                    ];
-                    (
-                        PexOpcode::CallMethod,
-                        std::mem::take(&mut values),
-                        args.iter()
-                            .map(|arg| v(self, arg))
-                            .collect::<Result<_, _>>()?,
-                    )
-                }
-                Op::CallParent { name, dest, args } => (
-                    PexOpcode::CallParent,
-                    vec![
-                        PexValue::Identifier(self.intern(name, source)?),
-                        v(self, dest)?,
-                    ],
-                    args.iter()
-                        .map(|arg| v(self, arg))
-                        .collect::<Result<_, _>>()?,
-                ),
-                Op::CallStatic {
-                    script,
-                    name,
-                    dest,
-                    args,
-                } => (
-                    PexOpcode::CallStatic,
-                    vec![
-                        PexValue::Identifier(self.intern(script, source)?),
-                        PexValue::Identifier(self.intern(name, source)?),
-                        v(self, dest)?,
-                    ],
-                    args.iter()
-                        .map(|arg| v(self, arg))
-                        .collect::<Result<_, _>>()?,
-                ),
-                Op::PropertyGet {
-                    name,
-                    receiver,
-                    dest,
-                } => (
-                    PexOpcode::PropGet,
-                    vec![
-                        PexValue::Identifier(self.intern(name, source)?),
-                        v(self, receiver)?,
-                        v(self, dest)?,
-                    ],
-                    vec![],
-                ),
-                Op::PropertySet {
-                    name,
-                    receiver,
-                    value,
-                } => (
-                    PexOpcode::PropSet,
-                    vec![
-                        PexValue::Identifier(self.intern(name, source)?),
-                        v(self, receiver)?,
-                        v(self, value)?,
-                    ],
-                    vec![],
-                ),
-                Op::ArrayCreate { dest, length } => (
-                    PexOpcode::ArrayCreate,
-                    vec![v(self, dest)?, v(self, length)?],
-                    vec![],
-                ),
-                Op::ArrayLength { dest, array } => (
-                    PexOpcode::ArrayLength,
-                    vec![v(self, dest)?, v(self, array)?],
-                    vec![],
-                ),
-                Op::ArrayGet { dest, array, index } => (
-                    PexOpcode::ArrayGetElement,
-                    vec![v(self, dest)?, v(self, array)?, v(self, index)?],
-                    vec![],
-                ),
-                Op::ArraySet {
-                    array,
-                    index,
-                    value,
-                } => (
-                    PexOpcode::ArraySetElement,
-                    vec![v(self, array)?, v(self, index)?, v(self, value)?],
-                    vec![],
-                ),
-                Op::ArrayFind {
-                    reverse,
-                    dest,
-                    array,
-                    value,
-                    start,
-                } => (
-                    if *reverse {
-                        PexOpcode::ArrayRFindElement
-                    } else {
-                        PexOpcode::ArrayFindElement
-                    },
-                    vec![
-                        v(self, array)?,
-                        v(self, dest)?,
-                        v(self, value)?,
-                        v(self, start)?,
-                    ],
-                    vec![],
-                ),
-                Op::Jump(target) => (
-                    PexOpcode::Jmp,
-                    vec![PexValue::Integer(self.branch_offset(
-                        &labels,
-                        instructions.len(),
-                        *target,
-                        source,
-                    )?)],
-                    vec![],
-                ),
-                Op::JumpIf {
-                    when_true,
-                    condition,
-                    target,
-                } => (
-                    if *when_true {
-                        PexOpcode::JmpT
-                    } else {
-                        PexOpcode::JmpF
-                    },
-                    vec![
-                        v(self, condition)?,
-                        PexValue::Integer(self.branch_offset(
-                            &labels,
-                            instructions.len(),
-                            *target,
-                            source,
-                        )?),
-                    ],
-                    vec![],
-                ),
-                Op::Return(value) => (PexOpcode::Return, vec![v(self, value)?], vec![]),
-            };
-            instructions.push(self.instruction(opcode, args, extra, source)?);
-            lines.push(if self.options.debug_info {
-                self.line(source)?
-            } else {
-                0
-            });
-        }
-        Ok((instructions, lines))
-    }
-
-    fn branch_offset(
-        &self,
-        labels: &BTreeMap<u32, usize>,
-        current: usize,
-        target: u32,
-        source: SourceSpan,
-    ) -> Result<i32, Diagnostic> {
-        let destination = labels
-            .get(&target)
-            .ok_or_else(|| error(source, "pex.branch", "unknown branch target"))?;
-        let delta = (*destination as i64) - (current as i64);
-        i32::try_from(delta).map_err(|_| {
-            error(
-                source,
-                "pex.branch",
-                "branch offset exceeds 32-bit PEX range",
-            )
-        })
-    }
-
     fn line(&self, source: SourceSpan) -> Result<u16, Diagnostic> {
         let Some(index) = self.line_indices.get(&source.file) else {
             return Ok(0);
@@ -618,8 +393,9 @@ impl<'a> Emitter<'a> {
                 "source span lies outside debug source text",
             ));
         };
-        u16::try_from(line + 1)
-            .map_err(|_| error(source, "pex.debug", "source line exceeds 16-bit PEX range"))
+        u16::try_from(line + 1).map_err(|_range_error| {
+            error(source, "pex.debug", "source line exceeds 16-bit PEX range")
+        })
     }
 
     fn state_runtime(&mut self) -> Result<Vec<PexFunction>, Diagnostic> {
@@ -634,7 +410,7 @@ impl<'a> Emitter<'a> {
             "Function that switches this object to the specified state",
             source,
         )?;
-        let get_return = self.instruction(
+        let get_return = Self::instruction(
             PexOpcode::Return,
             vec![PexValue::Identifier(state)],
             vec![],
@@ -657,7 +433,7 @@ impl<'a> Emitter<'a> {
         let on_end = self.intern("onEndState", source)?;
         let on_begin = self.intern("onBeginState", source)?;
         let goto_instructions = vec![
-            self.instruction(
+            Self::instruction(
                 PexOpcode::CallMethod,
                 vec![
                     PexValue::Identifier(on_end),
@@ -667,13 +443,13 @@ impl<'a> Emitter<'a> {
                 vec![],
                 source,
             )?,
-            self.instruction(
+            Self::instruction(
                 PexOpcode::Assign,
                 vec![PexValue::Identifier(state), PexValue::Identifier(new_state)],
                 vec![],
                 source,
             )?,
-            self.instruction(
+            Self::instruction(
                 PexOpcode::CallMethod,
                 vec![
                     PexValue::Identifier(on_begin),
@@ -683,7 +459,7 @@ impl<'a> Emitter<'a> {
                 vec![],
                 source,
             )?,
-            self.instruction(PexOpcode::Return, vec![PexValue::None], vec![], source)?,
+            Self::instruction(PexOpcode::Return, vec![PexValue::None], vec![], source)?,
         ];
         let goto = PexFunction {
             name: goto_name,
@@ -708,3 +484,23 @@ impl<'a> Emitter<'a> {
 
 #[cfg(test)]
 mod tests;
+
+fn binary_opcode(operator: BinaryOp) -> PexOpcode {
+    match operator {
+        BinaryOp::AddInt => PexOpcode::IAdd,
+        BinaryOp::AddFloat => PexOpcode::FAdd,
+        BinaryOp::AddString => PexOpcode::StrCat,
+        BinaryOp::SubInt => PexOpcode::ISub,
+        BinaryOp::SubFloat => PexOpcode::FSub,
+        BinaryOp::MulInt => PexOpcode::IMul,
+        BinaryOp::MulFloat => PexOpcode::FMul,
+        BinaryOp::DivInt => PexOpcode::IDiv,
+        BinaryOp::DivFloat => PexOpcode::FDiv,
+        BinaryOp::ModInt => PexOpcode::IMod,
+        BinaryOp::Eq => PexOpcode::CmpEq,
+        BinaryOp::Lt => PexOpcode::CmpLt,
+        BinaryOp::Lte => PexOpcode::CmpLte,
+        BinaryOp::Gt => PexOpcode::CmpGt,
+        BinaryOp::Gte => PexOpcode::CmpGte,
+    }
+}

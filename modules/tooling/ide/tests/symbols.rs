@@ -1,12 +1,10 @@
 //! Public crate behavior over in-memory inputs.
-use folio_ide::*;
-use folio_source::FileId;
-
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use folio_build::{ProjectAnalysis, ProjectSource};
+use folio_ide::*;
 use folio_papyrus::PapyrusDialect;
+use folio_source::FileId;
 
 fn view(text: &str) -> (IdeSnapshot, FileId) {
     let mut project = ProjectAnalysis::new();
@@ -19,8 +17,12 @@ fn view(text: &str) -> (IdeSnapshot, FileId) {
             dialect: PapyrusDialect::Skyrim,
             text: Arc::from(text),
         }])
-        .unwrap();
-    let file = *view.sources.keys().next().unwrap();
+        .expect("validated semantic index");
+    let file = *view
+        .sources
+        .keys()
+        .next()
+        .expect("validated semantic index");
     (view.into(), file)
 }
 
@@ -28,28 +30,28 @@ fn view(text: &str) -> (IdeSnapshot, FileId) {
 fn hover_and_signature_include_names_and_parameters() {
     let text = "Scriptname Example\nInt Function Sum(Int left, Int right)\n Return left + right\nEndFunction\nFunction Use()\n Int total = Sum(1, 2)\n Int other = Sum(right=2, left=1)\nEndFunction\n";
     let (view, file) = view(text);
-    let declaration = text.find("Sum").unwrap();
-    let hover = crate::hover(&view, file, declaration).unwrap();
+    let declaration = text.find("Sum").expect("validated semantic index");
+    let hover = crate::hover(&view, file, declaration).expect("validated semantic index");
     assert!(
         hover
             .content
             .contains("Int Function Sum(Int left, Int right)")
     );
-    let reference = text.rfind("Sum(").unwrap();
-    let target = source_declaration(&view, file, reference).unwrap();
+    let reference = text.rfind("Sum(").expect("validated semantic index");
+    let target = source_declaration(&view, file, reference).expect("validated semantic index");
     assert_eq!(target.range.start, declaration);
     assert!(
         crate::hover(&view, file, reference)
-            .unwrap()
+            .expect("validated semantic index")
             .content
             .contains("Sum(Int left, Int right)")
     );
-    let cursor = text.find("2)").unwrap();
-    let help = signature_help(&view, file, cursor).unwrap();
+    let cursor = text.find("2)").expect("validated semantic index");
+    let help = signature_help(&view, file, cursor).expect("validated semantic index");
     assert_eq!(help.active_parameter, 1);
     assert_eq!(help.parameters, ["Int left", "Int right"]);
-    let named_cursor = text.rfind("1)").unwrap();
-    let named_help = signature_help(&view, file, named_cursor).unwrap();
+    let named_cursor = text.rfind("1)").expect("validated semantic index");
+    let named_help = signature_help(&view, file, named_cursor).expect("validated semantic index");
     assert_eq!(named_help.active_parameter, 0);
 }
 
@@ -57,12 +59,12 @@ fn hover_and_signature_include_names_and_parameters() {
 fn signature_help_is_available_while_call_is_incomplete() {
     let text = "Scriptname Example\nFunction Sum(Int left, Int right) Native\nFunction Use()\n Sum(\n Sum(1,\nEndFunction\n";
     let (view, file) = view(text);
-    let cursor = text.find("Sum(\n").unwrap() + 4;
-    let help = signature_help(&view, file, cursor).unwrap();
+    let cursor = text.find("Sum(\n").expect("validated semantic index") + 4;
+    let help = signature_help(&view, file, cursor).expect("validated semantic index");
     assert_eq!(help.parameters, ["Int left", "Int right"]);
     assert_eq!(help.active_parameter, 0);
-    let comma_cursor = text.find("Sum(1,\n").unwrap() + 6;
-    let next = signature_help(&view, file, comma_cursor).unwrap();
+    let comma_cursor = text.find("Sum(1,\n").expect("validated semantic index") + 6;
+    let next = signature_help(&view, file, comma_cursor).expect("validated semantic index");
     assert_eq!(next.active_parameter, 1);
 }
 
@@ -72,23 +74,23 @@ fn semantic_tokens_and_outline_classify_declarations_and_references() {
     let (view, file) = view(text);
     let tokens = semantic_tokens(&view, file);
     let token_at = |name: &str| {
-        let at = text.find(name).unwrap();
+        let at = text.find(name).expect("validated semantic index");
         tokens
             .iter()
             .find(|item| item.range.start == at)
             .copied()
-            .unwrap()
+            .expect("validated semantic index")
     };
     assert_eq!(token_at("Example").kind, SemanticTokenKind::Class);
     assert_eq!(token_at("Count").kind, SemanticTokenKind::Property);
     assert_eq!(token_at("OnInit").kind, SemanticTokenKind::Event);
     assert_eq!(token_at("value").kind, SemanticTokenKind::Parameter);
-    let reference = text.rfind("value").unwrap();
+    let reference = text.rfind("value").expect("validated semantic index");
     assert_eq!(
         tokens
             .iter()
             .find(|item| item.range.start == reference)
-            .unwrap()
+            .expect("validated semantic index")
             .kind,
         SemanticTokenKind::Parameter
     );
@@ -109,7 +111,7 @@ fn semantic_tokens_and_outline_classify_declarations_and_references() {
         .children
         .iter()
         .find(|item| item.name == "Busy")
-        .unwrap();
+        .expect("validated semantic index");
     assert!(busy.children.iter().any(|item| item.name == "OnBeginState"));
 }
 
@@ -138,30 +140,44 @@ fn declaration_navigation_reaches_selected_dependency_source() {
                 text: Arc::from(root),
             },
         ])
-        .unwrap();
+        .expect("validated semantic index");
     let view = IdeSnapshot::from(view);
     let child = view
         .sources
         .iter()
         .find(|(_, source)| source.script_candidate == "Child")
-        .unwrap()
+        .expect("validated semantic index")
         .0;
     let parent = view
         .sources
         .iter()
         .find(|(_, source)| source.script_candidate == "Parent")
-        .unwrap()
+        .expect("validated semantic index")
         .0;
-    let inherited_type = source_declaration(&view, *child, root.find("Parent").unwrap()).unwrap();
+    let inherited_type = source_declaration(
+        &view,
+        *child,
+        root.find("Parent").expect("validated semantic index"),
+    )
+    .expect("validated semantic index");
     assert_eq!(inherited_type.file, *parent);
     assert_eq!(
-        crate::hover(&view, *child, root.find("Parent").unwrap())
-            .unwrap()
-            .owner_script
-            .as_deref(),
+        crate::hover(
+            &view,
+            *child,
+            root.find("Parent").expect("validated semantic index")
+        )
+        .expect("validated semantic index")
+        .owner_script
+        .as_deref(),
         Some("Parent")
     );
-    let method = source_declaration(&view, *child, root.find("GetNumber").unwrap()).unwrap();
+    let method = source_declaration(
+        &view,
+        *child,
+        root.find("GetNumber").expect("validated semantic index"),
+    )
+    .expect("validated semantic index");
     assert_eq!(method.file, *parent);
     assert_eq!(
         &dependency[method.range.start..method.range.end],

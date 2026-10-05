@@ -1,5 +1,6 @@
-use super::*;
 use folio_format_declarations::decode;
+
+use super::*;
 
 mod arguments;
 mod integers;
@@ -8,7 +9,7 @@ fn analyze_sources(sources: &[&str]) -> (Vec<Diagnostic>, Vec<Script>) {
     let mut host = crate::AnalysisHost::new();
     for (index, text) in sources.iter().enumerate() {
         host.upsert(
-            FileId(index as u32),
+            FileId(u32::try_from(index).expect("test fixture fits u32")),
             folio_source::Revision(1),
             std::sync::Arc::from(*text),
             folio_papyrus::PapyrusDialect::Skyrim,
@@ -19,7 +20,7 @@ fn analyze_sources(sources: &[&str]) -> (Vec<Diagnostic>, Vec<Script>) {
     let mut diagnostics = Vec::new();
     let mut scripts = Vec::new();
     for index in 0..sources.len() {
-        let file = FileId(index as u32);
+        let file = FileId(u32::try_from(index).expect("test fixture fits u32"));
         diagnostics.extend(view.diagnostics(file).unwrap());
         scripts.push((*view.hir(file).unwrap()).clone());
     }
@@ -364,7 +365,7 @@ fn external_declarations_preserve_states_variables_and_property_access() {
     let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[{"name":"count","kind":"variable","ty":"Int"},{"name":"Value","kind":"property","ty":"Int","access":{"kind":"manual","readable":true,"writable":false}}],"states":[{"name":"Busy","auto":true,"members":[{"name":"Pulse","kind":"function","return_type":"Int"}]}]}]}"#).unwrap();
     let world = script_from_external(&bundle.scripts[0]);
     assert_eq!(world.variables["count"].kind, MemberKind::Variable);
-    assert!(world.members["value"].read_only);
+    assert!(world.members["value"].property.read_only);
     assert_eq!(world.states["busy"]["pulse"].ty, Type::Int);
 }
 

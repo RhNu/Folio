@@ -1,11 +1,8 @@
 //! Public crate behavior over in-memory inputs.
 use folio_backend_pex::{EmissionOptions, emit};
 use folio_format_pex::{PexFile, PexOpcode, PexStringId, PexValue};
-use folio_mir::{Function, Op, Script, Value};
-use folio_source::{FileId, SourceSpan};
-
-use folio_mir::{Instruction, Local, Variable};
-use folio_source::TextRange;
+use folio_mir::{Function, Instruction, Local, Op, Script, Value, Variable};
+use folio_source::{FileId, SourceSpan, TextRange};
 
 fn source(start: usize) -> SourceSpan {
     SourceSpan {
@@ -74,10 +71,13 @@ fn emits_branch_relative_to_instruction_and_state_runtime() {
     assert_eq!(
         get_state.instructions[0].arguments,
         vec![PexValue::Identifier(PexStringId::new(
-            pex.string_table()
-                .iter()
-                .position(|s| s == "::State")
-                .unwrap() as u16
+            u16::try_from(
+                pex.string_table()
+                    .iter()
+                    .position(|s| s == "::State")
+                    .unwrap()
+            )
+            .expect("test string table fits u16")
         ))]
     );
     let run = root
@@ -173,13 +173,15 @@ fn array_find_uses_array_before_destination() {
     assert_eq!(
         instruction.arguments[0],
         PexValue::Identifier(PexStringId::new(
-            strings.iter().position(|s| s == "items").unwrap() as u16
+            u16::try_from(strings.iter().position(|s| s == "items").unwrap())
+                .expect("test string table fits u16")
         ))
     );
     assert_eq!(
         instruction.arguments[1],
         PexValue::Identifier(PexStringId::new(
-            strings.iter().position(|s| s == "tmp").unwrap() as u16
+            u16::try_from(strings.iter().position(|s| s == "tmp").unwrap())
+                .expect("test string table fits u16")
         ))
     );
 }

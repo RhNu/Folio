@@ -86,6 +86,6 @@ fn rejects_incorrect_fixed_array_lengths_and_tail_values() {
         Vec::<WireScript>::new(),
     ))
     .unwrap();
-    tail.push(0xc0);
+    tail.push(0xC0);
     assert!(decode(&tail, 1).is_err());
 }

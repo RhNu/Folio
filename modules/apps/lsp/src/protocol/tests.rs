@@ -1,6 +1,7 @@
-use super::negotiate_encoding;
 use folio_ide::PositionEncoding;
 use serde_json::json;
+
+use super::negotiate_encoding;
 
 #[test]
 fn utf16_is_default_and_utf8_is_negotiated() {

@@ -1,6 +1,7 @@
+use folio_project_model::{PackageId, SourceId};
+
 use super::*;
 use crate::plan::{BuildUnit, PlannedScript};
-use folio_project_model::{PackageId, SourceId};
 
 fn fixture() -> (ProjectPlan, UnitRecord) {
     let package = PackageId {

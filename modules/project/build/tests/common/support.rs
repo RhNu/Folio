@@ -1,11 +1,12 @@
 //! Minimal in-memory project inputs shared by pure build tests.
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+
 use folio_format_declarations::DeclarationBundle;
 use folio_project_model::{
     DeclarationLocation, DeclaredScript, DependencyKind, DependencySpec, LoadedDependency,
     LoadedRoot, LocatedString, SourceEncoding, SourceFile, SourceId, SourceSpan,
 };
 use folio_project_resolve::{LoadedProject, io::LoadedSourceInput};
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 pub(crate) fn fixture(text: &str, name: &str) -> LoadedProject {
     let manifest = folio_project_resolve::manifest::parse(
@@ -25,7 +26,7 @@ profile = "dev"
 emit = ["pex"]
 "#,
     )
-    .unwrap();
+    .expect("test fixture operation succeeds");
     let path = format!("src/{name}.psc");
     LoadedProject {
         folio_home: folio_project_resolve::io::FolioHome {
@@ -52,7 +53,7 @@ emit = ["pex"]
             text: Arc::from(text),
         }],
         input_snapshots: vec![],
-        watch_plan: Default::default(),
+        watch_plan: folio_project_resolve::io::WatchPlan::default(),
     }
 }
 
@@ -111,9 +112,10 @@ pub(crate) fn add_declarations(project: &mut LoadedProject, name: &str, bundle: 
 }
 
 pub(crate) fn declarations() -> DeclarationBundle {
-    folio_format_declarations::decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"self-authored"},"scripts":[{"name":"Sky"},{"name":"Actor"}]}"#).unwrap()
+    folio_format_declarations::decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"self-authored"},"scripts":[{"name":"Sky"},{"name":"Actor"}]}"#).expect("test fixture operation succeeds")
 }
 
 pub(crate) fn resolve(project: &LoadedProject) -> folio_project_model::Metadata {
-    folio_project_resolve::graph::resolve(&project.root, &project.dependencies).unwrap()
+    folio_project_resolve::graph::resolve(&project.root, &project.dependencies)
+        .expect("test fixture operation succeeds")
 }

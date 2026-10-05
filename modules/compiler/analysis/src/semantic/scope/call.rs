@@ -1,7 +1,11 @@
 //! Callable argument binding, defaults, and intrinsic signatures.
-use super::*;
+use super::{
+    BTreeSet, CheckedCall, Diagnostic, ExpressionFact, ExpressionKind, MemberInfo, MemberKind,
+    ParameterDefault, PropertyForm, Scope, Severity, SourceSpan, Symbol, Type,
+    lookup_callable_member, lookup_state_member, missing_argument_literal,
+};
 
-impl<'a> Scope<'a> {
+impl Scope<'_> {
     pub(super) fn check_call(
         &mut self,
         callee: &ExpressionFact,
@@ -15,52 +19,22 @@ impl<'a> Scope<'a> {
         let member = match &binding.symbol {
             Symbol::Member { script, name } => {
                 lookup_callable_member(self.world, script, name).map(|(_, member)| member)
-            }
+            },
             Symbol::StateMember {
                 script,
                 state,
                 name,
             } => lookup_state_member(self.world, script, state, name).map(|(_, member)| member),
             Symbol::Intrinsic { name } => {
-                let receiver = match &callee.kind {
-                    ExpressionKind::Member { owner, .. } => Some(&owner.ty),
-                    _ => None,
-                };
-                let Some(signature) = crate::intrinsic_signature(name, receiver) else {
-                    return CheckedCall::error();
-                };
-                let result = signature.result;
-                let params = signature
-                    .parameters
-                    .into_iter()
-                    .map(|(name, ty, default)| {
-                        (
-                            name,
-                            ty,
-                            default.map_or(ParameterDefault::Required, ParameterDefault::Literal),
-                        )
-                    })
-                    .collect();
-                let intrinsic = MemberInfo {
-                    name: name.clone(),
-                    ty: result,
-                    kind: MemberKind::Function,
-                    parameters: params,
-                    global: false,
-                    auto: false,
-                    read_only: false,
-                    readable: true,
-                    writable: true,
-                    definition: None,
-                };
-                return self.check_intrinsic_call(
-                    &intrinsic,
+                return self.resolve_intrinsic_call(
+                    callee,
+                    name,
                     args,
                     names,
                     location,
                     binding.symbol.clone(),
                 );
-            }
+            },
             _ => None,
         };
         let Some(member) = member else {
@@ -87,7 +61,7 @@ impl<'a> Scope<'a> {
                 member
                     .parameters
                     .iter()
-                    .position(|(parameter, _, _)| parameter.eq_ignore_ascii_case(name))
+                    .position(|(parameter, ..)| parameter.eq_ignore_ascii_case(name))
             } else {
                 if saw_named {
                     self.issue(
@@ -130,6 +104,52 @@ impl<'a> Scope<'a> {
         }
     }
 
+    /// Materialize the intrinsic signature before binding call arguments.
+    fn resolve_intrinsic_call(
+        &mut self,
+        callee: &ExpressionFact,
+        name: &str,
+        args: &mut [ExpressionFact],
+        names: &[Option<String>],
+        location: SourceSpan,
+        symbol: Symbol,
+    ) -> CheckedCall {
+        let receiver = match &callee.kind {
+            ExpressionKind::Member { owner, .. } => Some(&owner.ty),
+            _ => None,
+        };
+        let Some(signature) = crate::intrinsic_signature(name, receiver) else {
+            return CheckedCall::error();
+        };
+        let result = signature.result;
+        let params = signature
+            .parameters
+            .into_iter()
+            .map(|(name, ty, default)| {
+                (
+                    name,
+                    ty,
+                    default.map_or(ParameterDefault::Required, ParameterDefault::Literal),
+                )
+            })
+            .collect();
+        let intrinsic = MemberInfo {
+            name: name.to_owned(),
+            ty: result,
+            kind: MemberKind::Function,
+            parameters: params,
+            global: false,
+            property: PropertyForm {
+                auto: false,
+                read_only: false,
+            },
+            readable: true,
+            writable: true,
+            definition: None,
+        };
+        self.check_intrinsic_call(&intrinsic, args, names, location, symbol)
+    }
+
     fn check_intrinsic_call(
         &mut self,
         member: &MemberInfo,
@@ -145,7 +165,7 @@ impl<'a> Scope<'a> {
                 member
                     .parameters
                     .iter()
-                    .position(|(parameter, _, _)| parameter.eq_ignore_ascii_case(name))
+                    .position(|(parameter, ..)| parameter.eq_ignore_ascii_case(name))
             });
             let Some(ordinal) = ordinal
                 .filter(|ordinal| *ordinal < member.parameters.len() && used.insert(*ordinal))

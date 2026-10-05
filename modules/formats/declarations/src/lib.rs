@@ -15,6 +15,9 @@ pub const PROFILE: &str = "papyrus-skyrim";
 
 /// API identity excludes provenance and ordering of unordered declarations.
 /// Callers validate inputs before using this identity; parameter order is retained.
+///
+/// # Panics
+/// Panics if declaration facts cannot be serialized as JSON.
 pub fn semantic_digest(bundle: &DeclarationBundle) -> String {
     let mut normalized = bundle.clone();
     normalized.schema = SCHEMA_VERSION;

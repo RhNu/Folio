@@ -14,9 +14,7 @@ impl LanguageId {
         (!name.trim().is_empty()).then_some(Self(name))
     }
 
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+    pub fn as_str(&self) -> &str { &self.0 }
 }
 
 /// A target platform selected for compilation.
@@ -30,9 +28,7 @@ impl TargetId {
         (!name.trim().is_empty()).then_some(Self(name))
     }
 
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+    pub fn as_str(&self) -> &str { &self.0 }
 }
 
 /// A VM and ABI contract independent of installed SDK declarations.

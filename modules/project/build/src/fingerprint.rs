@@ -16,6 +16,9 @@ fn occurrence(source: &SourceId) -> Option<usize> {
 
 /// Hash semantic inputs, dependency occurrences and selected whole-script APIs.
 /// Physical input changes are checked independently before publishing artifacts.
+///
+/// # Panics
+/// Panics if a loaded dependency lacks its declaration bundle or fingerprint inputs cannot be serialized.
 pub fn command_fingerprint(
     project: &LoadedProject,
     metadata: &Metadata,
@@ -111,6 +114,9 @@ pub fn command_fingerprint(
 }
 
 /// A unit key includes its logical identity even when its command inputs match.
+///
+/// # Panics
+/// Panics if the build unit identity cannot be serialized.
 pub fn unit_fingerprint(command: &str, unit: &super::plan::BuildUnit) -> String {
     let identity = serde_json::to_vec(&(command, unit)).expect("build unit is serializable");
     blake3::hash(&identity).to_hex().to_string()

@@ -1,5 +1,10 @@
 //! Shared function lowering state, lifecycle, and MIR allocation.
-use super::*;
+use super::{
+    BTreeSet, BinaryOp, Decision, Diagnostic, ExpressionFact, ExpressionKind, FlagScope, Function,
+    HashMap, Instruction, Local, MemberFact, MemberKind, Op, Outcome, SourceSpan, Statement,
+    Symbol, TargetProfile, Type, UnaryOp, UserFlag, Value, find_member, flag_bits, literal,
+    member_name, reject, type_name,
+};
 
 /// Owns one function's MIR, diagnostics, and allocation counters across lowering phases.
 pub(super) struct FunctionLowerer<'a> {
@@ -225,7 +230,7 @@ fn returns_on_all_paths(statements: &[Statement]) -> bool {
                     .iter()
                     .all(|(_, branch)| returns_on_all_paths(branch))
                 && returns_on_all_paths(else_branch)
-        }
+        },
         _ => false,
     })
 }

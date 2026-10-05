@@ -1,7 +1,10 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+    mpsc,
+};
+
 use super::*;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
 
 #[test]
 fn concurrent_readers_compute_once_and_share_the_result() {

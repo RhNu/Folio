@@ -1,8 +1,9 @@
-use super::*;
 use folio_analysis::AnalysisHost;
-use folio_build::ProjectSource;
+use folio_build::{ProjectAnalysisView, ProjectSource};
 use folio_papyrus::PapyrusDialect;
 use folio_source::Revision;
+
+use super::*;
 
 mod language_hover;
 
@@ -61,9 +62,7 @@ fn only_identical_automatic_requests_are_coalesced() {
 
 const SOURCE: &str = "ScriptName Demo\n{Demo documentation.}\nInt Function Add(Int left, Int right = 2)\n{Adds values.}\n Return left + right\nEndFunction\nInt Function Use()\n Return Add(1)\nEndFunction\n";
 
-fn context() -> QueryContext {
-    context_with(Vec::new())
-}
+fn context() -> QueryContext { context_with(Vec::new()) }
 
 fn context_with(external: Vec<folio_format_declarations::DeclarationBundle>) -> QueryContext {
     context_source(SOURCE, external)
@@ -192,7 +191,7 @@ fn hover_has_owner_complete_declaration_documentation_and_navigation() {
             .contains("command:folio.openLocation?")
     );
     let mut context = context;
-    context.settings.documentation = false;
+    context.settings.hover.documentation = false;
     let result = context
         .answer(
             "textDocument/hover",
@@ -205,7 +204,7 @@ fn hover_has_owner_complete_declaration_documentation_and_navigation() {
             .unwrap()
             .contains("Adds values.")
     );
-    context.settings.details = false;
+    context.settings.hover.details = false;
     let result = context
         .answer(
             "textDocument/hover",
@@ -238,10 +237,10 @@ fn virtual_unknown_callable_navigation_uses_exact_generated_member_position() {
     assert_eq!(location["uri"], "folio-declaration:/External.psc");
     let params =
         json!({"textDocument":{"uri":location["uri"]},"position":location["range"]["start"]});
-    let content = context
+    let document = context
         .answer("folio/declarationContent", &json!({"uri":location["uri"]}))
         .unwrap();
-    let text = content["text"].as_str().unwrap();
+    let text = document["text"].as_str().unwrap();
     let range = crate::protocol::parse_range(&location["range"]).unwrap();
     let start = folio_ide::offset(text, range.start, context.encoding).unwrap();
     let end = folio_ide::offset(text, range.end, context.encoding).unwrap();

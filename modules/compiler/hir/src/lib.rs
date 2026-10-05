@@ -1,10 +1,9 @@
 //! Owned, source mapped semantic input and typed facts shared by analysis clients.
 
-use folio_source::SourceSpan;
-
 pub use folio_papyrus::{
     decode_integer_literal, decode_string_literal, normalize_constant_literal_text,
 };
+use folio_source::SourceSpan;
 
 /// A name and its original source range, before name binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,7 +28,7 @@ pub enum Type {
     Bool,
     String,
     Script(String),
-    Array(Box<Type>),
+    Array(Box<Self>),
     None,
     Error,
 }
@@ -80,11 +79,11 @@ pub enum Symbol {
         name: String,
     },
     Parameter {
-        owner: Box<Symbol>,
+        owner: Box<Self>,
         name: String,
     },
     Local {
-        owner: Box<Symbol>,
+        owner: Box<Self>,
         name: String,
         /// Declaration byte offset distinguishes equally named sibling-block locals.
         identity: usize,
@@ -173,14 +172,14 @@ pub enum Statement {
     If {
         span: SourceSpan,
         condition: ExpressionFact,
-        then_branch: Vec<Statement>,
-        else_if: Vec<(ExpressionFact, Vec<Statement>)>,
-        else_branch: Vec<Statement>,
+        then_branch: Vec<Self>,
+        else_if: Vec<(ExpressionFact, Vec<Self>)>,
+        else_branch: Vec<Self>,
     },
     While {
         span: SourceSpan,
         condition: ExpressionFact,
-        body: Vec<Statement>,
+        body: Vec<Self>,
     },
     Error(SourceSpan),
 }

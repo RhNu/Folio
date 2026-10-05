@@ -1,7 +1,9 @@
 //! Cancellable single-flight initialization for immutable semantic results.
 
-use std::sync::{Condvar, Mutex, OnceLock};
-use std::time::Duration;
+use std::{
+    sync::{Condvar, Mutex, OnceLock},
+    time::Duration,
+};
 
 use crate::AnalysisCancelled;
 
@@ -22,9 +24,7 @@ impl<T> Default for SingleFlight<T> {
 }
 
 impl<T> SingleFlight<T> {
-    pub(crate) fn get(&self) -> Option<&T> {
-        self.value.get()
-    }
+    pub(crate) fn get(&self) -> Option<&T> { self.value.get() }
 
     /// Only one caller computes; cancellation releases ownership for a later retry.
     pub(crate) fn warm(
@@ -42,7 +42,7 @@ impl<T> SingleFlight<T> {
             let mut running = self
                 .running
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(value) = self.value.get() {
                 return Ok(value);
             }
@@ -51,10 +51,11 @@ impl<T> SingleFlight<T> {
                 break;
             }
             // Waiters must observe their own cancellation even if the owner keeps running.
-            let _ = self
-                .ready
-                .wait_timeout(running, Duration::from_millis(10))
-                .unwrap_or_else(|error| error.into_inner());
+            drop(
+                self.ready
+                    .wait_timeout(running, Duration::from_millis(10))
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
         }
         let _ownership = Running(self);
         tracing::debug!("claimed semantic initialization");
@@ -64,7 +65,7 @@ impl<T> SingleFlight<T> {
             tracing::debug!("discarded cancelled semantic initialization");
             return Err(AnalysisCancelled);
         }
-        let _ = self.value.set(value);
+        let _already_published = self.value.set(value);
         Ok(self
             .value
             .get()
@@ -81,7 +82,7 @@ impl<T> Drop for Running<'_, T> {
             .0
             .running
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = false;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
         self.0.ready.notify_all();
     }
 }

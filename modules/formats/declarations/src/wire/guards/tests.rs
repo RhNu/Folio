@@ -3,16 +3,16 @@ use super::*;
 #[test]
 fn messagepack_rejects_excess_capacity_unknown_tags_and_trailing_values() {
     for bytes in [
-        &[0xdd, 0xff, 0xff, 0xff, 0xff][..],
-        &[0xc1],
-        &[0xc0, 0xc0],
-        &[0xa1, 0xff],
-        &[0x92, 0xc0],
+        &[0xDD, 0xFF, 0xFF, 0xFF, 0xFF][..],
+        &[0xC1],
+        &[0xC0, 0xC0],
+        &[0xA1, 0xFF],
+        &[0x92, 0xC0],
     ] {
         assert!(guard_messagepack(bytes).is_err());
     }
     let mut deep = vec![0x91; MAX_DEPTH + 1];
-    deep.push(0xc0);
+    deep.push(0xC0);
     assert!(guard_messagepack(&deep).is_err());
 }
 

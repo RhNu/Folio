@@ -1,5 +1,6 @@
 //! A single cancellable project worker owns disk caches and the mutable analysis host.
-use super::*;
+use std::sync::mpsc::{self, Receiver, Sender};
+
 use folio_diagnostics::Diagnostic;
 use folio_lint::{LintConfig, lint_script};
 use folio_project_model::SourceFile;
@@ -8,7 +9,11 @@ use folio_project_resolve::{
     io::{LoadCache, LoadedSourceInput, WatchPlan},
     resolve,
 };
-use std::sync::mpsc::{self, Receiver, Sender};
+
+use super::{
+    Arc, AtomicU64, BTreeMap, BTreeSet, FolioHome, Instant, LoadedProject, LspError, Metadata,
+    Ordering, Path, PathBuf, ProjectAnalysis, ProjectAnalysisView, overlays,
+};
 
 pub(super) struct Job {
     pub generation: u64,
@@ -59,7 +64,7 @@ impl Loader {
                 };
                 while let Ok(job) = incoming.recv() {
                     let revision = job.generation;
-                    let result = worker.prepare(job);
+                    let result = worker.prepare(&job);
                     if worker
                         .events
                         .send(Event::Finished(revision, result))
@@ -79,7 +84,7 @@ impl Loader {
     pub fn submit(&self, job: Job) -> Result<(), LspError> {
         self.jobs
             .send(job)
-            .map_err(|_| LspError::Protocol("project worker stopped".into()))
+            .map_err(|_poisoned| LspError::Protocol("project worker stopped".into()))
     }
 }
 
@@ -95,30 +100,48 @@ struct Worker {
 }
 
 impl Worker {
-    fn prepare(&mut self, job: Job) -> Result<Option<Prepared>, String> {
-        let started = Instant::now();
-        let current = Arc::clone(&self.generation);
-        let obsolete = || current.load(Ordering::SeqCst) != job.generation;
-        if obsolete() {
-            return Ok(None);
+    /// Collect compilation diagnostics and root-source suggestions while cancellation stays observable.
+    fn collect_diagnostics(
+        view: &ProjectAnalysisView,
+        loaded: &LoadedProject,
+        obsolete: &impl Fn() -> bool,
+    ) -> Result<Option<Vec<Diagnostic>>, String> {
+        let mut diagnostics = view.diagnostics();
+        let lint = LintConfig::from_rules(&loaded.root.manifest.lint_rules)
+            .map_err(|error| error.to_string())?;
+        for (&file, source) in &view.sources {
+            if obsolete() {
+                return Ok(None);
+            }
+            if source.package_key == loaded.root_key
+                && let Some(script) = view.analysis.hir(file)
+            {
+                diagnostics.extend(lint_script(&script, &lint));
+            }
         }
-        if job.refresh_disk || self.disk.is_none() {
-            // A failed or cancelled refresh must never make later buffer edits use old disk inputs.
-            self.disk = None;
-            let plan = folio_project_resolve::io::watch_plan_with_home(
-                &self.cwd,
-                self.manifest.as_deref(),
-                &self.home,
-            );
-            let _ = self.events.send(Event::Watches(job.generation, plan));
-            let events = &self.events;
-            let loaded = folio_project_resolve::io::load_cached_with_home(
-                &self.cwd,
-                self.manifest.as_deref(),
-                &self.home,
-                &mut self.cache,
-                &mut |completed, total, name| {
-                    let _ = events.send(Event::Progress(
+        Ok(Some(diagnostics))
+    }
+
+    /// Refresh disk inputs atomically with respect to the current generation.
+    fn refresh_disk(&mut self, job: &Job, obsolete: &impl Fn() -> bool) -> Result<bool, String> {
+        // A failed or cancelled refresh must never make later buffer edits use old disk inputs.
+        self.disk = None;
+        let plan = folio_project_resolve::io::watch_plan_with_home(
+            &self.cwd,
+            self.manifest.as_deref(),
+            &self.home,
+        );
+        report_progress(&self.events, Event::Watches(job.generation, plan));
+        let events = &self.events;
+        let loaded = folio_project_resolve::io::load_cached_with_home(
+            &self.cwd,
+            self.manifest.as_deref(),
+            &self.home,
+            &mut self.cache,
+            &mut |completed, total, name| {
+                report_progress(
+                    events,
+                    Event::Progress(
                         job.generation,
                         "dependencies",
                         if name.is_empty() {
@@ -128,20 +151,34 @@ impl Worker {
                         },
                         completed,
                         total,
-                    ));
-                    !obsolete()
-                },
-            );
-            if obsolete() {
-                return Ok(None);
-            }
-            let loaded = loaded.map_err(|error| error.to_string())?;
-            let _ = self
-                .events
-                .send(Event::Watches(job.generation, loaded.watch_plan.clone()));
-            let metadata =
-                resolve(&loaded.root, &loaded.dependencies).map_err(|error| error.to_string())?;
-            self.disk = Some((loaded, Arc::new(metadata)));
+                    ),
+                );
+                !obsolete()
+            },
+        );
+        if obsolete() {
+            return Ok(false);
+        }
+        let loaded = loaded.map_err(|error| error.to_string())?;
+        report_progress(
+            &self.events,
+            Event::Watches(job.generation, loaded.watch_plan.clone()),
+        );
+        let metadata =
+            resolve(&loaded.root, &loaded.dependencies).map_err(|error| error.to_string())?;
+        self.disk = Some((loaded, Arc::new(metadata)));
+        Ok(true)
+    }
+
+    fn prepare(&mut self, job: &Job) -> Result<Option<Prepared>, String> {
+        let started = Instant::now();
+        let current = Arc::clone(&self.generation);
+        let obsolete = || current.load(Ordering::SeqCst) != job.generation;
+        if obsolete() {
+            return Ok(None);
+        }
+        if (job.refresh_disk || self.disk.is_none()) && !self.refresh_disk(job, &obsolete)? {
+            return Ok(None);
         }
         if obsolete() {
             return Ok(None);
@@ -180,13 +217,16 @@ impl Worker {
             return Ok(None);
         }
         let files = loaded.source_inputs.len();
-        let _ = self.events.send(Event::Progress(
-            job.generation,
-            "analysis",
-            "Analyzing project sources".into(),
-            0,
-            files,
-        ));
+        report_progress(
+            &self.events,
+            Event::Progress(
+                job.generation,
+                "analysis",
+                "Analyzing project sources".into(),
+                0,
+                files,
+            ),
+        );
         let view = Arc::new(
             self.project
                 .sync_project(&loaded, &metadata)
@@ -199,26 +239,19 @@ impl Worker {
         }
         let analysis_us = analysis_started.elapsed().as_micros();
         let diagnostics_started = Instant::now();
-        let mut diagnostics = view.diagnostics();
-        let lint = LintConfig::from_rules(&loaded.root.manifest.lint_rules)
-            .map_err(|error| error.to_string())?;
-        for (&file, source) in &view.sources {
-            if obsolete() {
-                return Ok(None);
-            }
-            if source.package_key == loaded.root_key
-                && let Some(script) = view.analysis.hir(file)
-            {
-                diagnostics.extend(lint_script(&script, &lint));
-            }
-        }
-        let _ = self.events.send(Event::Progress(
-            job.generation,
-            "analysis",
-            "Project analysis complete".into(),
-            files,
-            files,
-        ));
+        let Some(diagnostics) = Self::collect_diagnostics(&view, &loaded, &obsolete)? else {
+            return Ok(None);
+        };
+        report_progress(
+            &self.events,
+            Event::Progress(
+                job.generation,
+                "analysis",
+                "Project analysis complete".into(),
+                files,
+                files,
+            ),
+        );
         tracing::debug!(
             generation = job.generation,
             files,
@@ -237,6 +270,7 @@ impl Worker {
             diagnostics,
         }))
     }
+
     /// Projects new open files through the same root manifest and resolver graph as disk files.
     fn add_unsaved_sources(
         cwd: &Path,
@@ -251,7 +285,7 @@ impl Worker {
             .parent()
             .ok_or_else(|| LspError::Project("manifest has no parent".into()))?;
         let manifest = loaded.root.manifest.clone();
-        for (path, text) in overlays.iter() {
+        for (path, text) in overlays {
             if disk_paths.contains(path) {
                 continue;
             }
@@ -299,5 +333,12 @@ impl Worker {
             });
         }
         Ok(())
+    }
+}
+
+/// Advisory worker events can be dropped after the session receiver closes.
+fn report_progress(sender: &Sender<Event>, event: Event) {
+    if let Err(error) = sender.send(event) {
+        tracing::debug!(%error, "discarded project progress after session closed");
     }
 }

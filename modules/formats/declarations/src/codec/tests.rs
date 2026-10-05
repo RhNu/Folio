@@ -1,6 +1,6 @@
 use super::*;
 use crate::codec;
-#[path = "../../tests/common/mod.rs"]
+#[path = "../../tests/common/support.rs"]
 mod common;
 use common::sample;
 
@@ -117,7 +117,7 @@ fn schema_one_binary_keeps_its_exact_legacy_tuple_shape() {
 #[test]
 fn documentation_round_trips_and_does_not_change_semantic_identity() {
     let original = sample();
-    let mut bundle = original.clone();
+    let mut bundle = original;
     bundle.scripts[0].documentation = Some("Script docs\nSecond line".into());
     bundle.scripts[0].members[0].documentation = Some("Callable docs".into());
     bundle.scripts[0].states.push(crate::State {

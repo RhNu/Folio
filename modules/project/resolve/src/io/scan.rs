@@ -1,6 +1,8 @@
 //! Raw filesystem snapshots and stable source-directory traversal.
 
-use super::*;
+use super::{
+    Arc, Component, LoadError, LoadedSourceInput, Path, PathBuf, SourceEncoding, SourceFile, fs,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputSnapshot {
@@ -45,7 +47,7 @@ pub(super) fn read_bytes(
         .into();
     snapshots.push(InputSnapshot::File {
         path: path.to_owned(),
-        bytes: bytes.clone(),
+        bytes: Arc::clone(&bytes),
     });
     Ok(bytes)
 }
@@ -55,13 +57,14 @@ fn directory_entries(path: &Path) -> Result<Vec<SnapshotEntry>, LoadError> {
         .map_err(|cause| io("read input directory", path, cause))?
         .map(|entry| {
             let entry = entry.map_err(|cause| io("read input entry", path, cause))?;
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| LoadError::InvalidPath {
-                    path: entry.path(),
-                    reason: "input entry name is not UTF-8",
-                })?;
+            let name =
+                entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_cause| LoadError::InvalidPath {
+                        path: entry.path(),
+                        reason: "input entry name is not UTF-8",
+                    })?;
             let kind = entry
                 .file_type()
                 .map_err(|cause| io("inspect input entry", &entry.path(), cause))?;
@@ -82,6 +85,9 @@ fn directory_entries(path: &Path) -> Result<Vec<SnapshotEntry>, LoadError> {
 }
 
 /// Verify the exact bytes and membership used by an operation before publication.
+///
+/// # Errors
+/// Returns an error if any recorded input changes or cannot be inspected safely.
 pub fn verify_snapshots(snapshots: &[InputSnapshot]) -> Result<(), LoadError> {
     for snapshot in snapshots {
         let (path, unchanged) = match snapshot {
@@ -94,7 +100,7 @@ pub fn verify_snapshots(snapshots: &[InputSnapshot]) -> Result<(), LoadError> {
             ),
             InputSnapshot::Directory { path, entries } => {
                 (path, directory_entries(path)? == *entries)
-            }
+            },
             InputSnapshot::Probe { path, exists } => (
                 path,
                 path.try_exists()
@@ -138,7 +144,7 @@ pub(super) fn collect_files(
                         path,
                         reason: "input directory contains a link or unsupported file type",
                     });
-                }
+                },
                 SnapshotEntryKind::File
                     if path.extension().is_some_and(|extension| {
                         extensions
@@ -156,8 +162,8 @@ pub(super) fn collect_files(
                         })?
                         .replace('\\', "/");
                     files.push((relative, path));
-                }
-                _ => {}
+                },
+                SnapshotEntryKind::File => {},
             }
         }
         snapshots.push(InputSnapshot::Directory {
@@ -220,6 +226,9 @@ pub(super) fn collect_sources(
 }
 
 /// Decode once at the filesystem boundary; semantics sees ordinary UTF-8 text.
+///
+/// # Errors
+/// Returns an error when bytes are invalid for the selected encoding.
 pub fn decode_source(bytes: &[u8], encoding: SourceEncoding) -> Result<String, String> {
     match encoding {
         SourceEncoding::Utf8 => std::str::from_utf8(bytes)
@@ -232,7 +241,7 @@ pub fn decode_source(bytes: &[u8], encoding: SourceEncoding) -> Result<String, S
             } else {
                 Ok(text.into_owned())
             }
-        }
+        },
     }
 }
 
@@ -258,6 +267,9 @@ pub(super) fn io(operation: &'static str, path: &Path, cause: std::io::Error) ->
 }
 
 /// Portable identity for paths known to lie on the same filesystem root.
+///
+/// # Errors
+/// Returns an error for different or incompatible filesystem roots or non-UTF-8 target components.
 pub fn relative_portable(base: &Path, target: &Path) -> Result<String, LoadError> {
     let base: Vec<_> = base.components().collect();
     let target_components: Vec<_> = target.components().collect();
@@ -289,13 +301,13 @@ pub fn relative_portable(base: &Path, target: &Path) -> Result<String, LoadError
                     })?
                     .to_owned(),
             ),
-            Component::CurDir => {}
+            Component::CurDir => {},
             _ => {
                 return Err(LoadError::InvalidPath {
                     path: target.to_owned(),
                     reason: "path has incompatible root",
                 });
-            }
+            },
         }
     }
     Ok(if parts.is_empty() {

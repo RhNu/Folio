@@ -1,8 +1,10 @@
 //! Pure editor document state and navigation over shared project analysis facts.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use folio_hir::Type;
 use folio_source::{FileId, LineIndex, SourceSpan, TextRange};
@@ -109,7 +111,7 @@ pub fn offset(text: &str, position: Position, encoding: PositionEncoding) -> Opt
         PositionEncoding::Utf8 => {
             let result = line_start.checked_add(position.character as usize)?;
             (result <= line_end && text.is_char_boundary(result)).then_some(result)
-        }
+        },
         PositionEncoding::Utf16 => {
             let mut units = 0usize;
             for (index, ch) in line.char_indices() {
@@ -122,7 +124,7 @@ pub fn offset(text: &str, position: Position, encoding: PositionEncoding) -> Opt
                 }
             }
             (units == position.character as usize).then_some(line_end)
-        }
+        },
     }
 }
 
@@ -173,9 +175,7 @@ pub enum EditError {
 }
 
 impl Documents {
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
+    pub fn generation(&self) -> u64 { self.generation }
 
     pub fn disk_update(&mut self, path: PathBuf, text: Arc<str>) {
         match self.files.get_mut(&path) {
@@ -188,7 +188,7 @@ impl Documents {
                         overlay: None,
                     },
                 );
-            }
+            },
         }
         self.generation += 1;
     }
@@ -211,6 +211,8 @@ impl Documents {
         self.generation += 1;
     }
 
+    /// # Errors
+    /// Returns an error when the proposed buffer version does not advance the current version.
     pub fn open(&mut self, path: &Path, version: i32, text: Arc<str>) -> Result<(), EditError> {
         let document = self
             .files
@@ -233,6 +235,8 @@ impl Documents {
     }
 
     /// Applies all changes against successive intermediate texts as LSP specifies.
+    /// # Errors
+    /// Returns an error for unknown or closed documents, stale versions, or invalid edit ranges.
     pub fn change(
         &mut self,
         path: &PathBuf,
@@ -259,7 +263,7 @@ impl Documents {
                 }
                 updated.replace_range(start..end, replacement);
             } else {
-                updated = replacement.clone();
+                updated.clone_from(replacement);
             }
         }
         document.overlay = Some((version, Arc::from(updated)));
@@ -267,6 +271,8 @@ impl Documents {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error for an unknown document or a buffer that is not open.
     pub fn close(&mut self, path: &PathBuf) -> Result<(), EditError> {
         let document = self.files.get_mut(path).ok_or(EditError::UnknownDocument)?;
         if document.overlay.take().is_none() {
@@ -293,9 +299,7 @@ impl Documents {
             .map(|(version, _)| *version)
     }
 
-    pub fn is_open(&self, path: &PathBuf) -> bool {
-        self.version(path).is_some()
-    }
+    pub fn is_open(&self, path: &PathBuf) -> bool { self.version(path).is_some() }
 
     pub fn overlays(&self) -> impl Iterator<Item = (&PathBuf, &str)> {
         self.files.iter().filter_map(|(path, document)| {
@@ -340,36 +344,35 @@ pub fn hover(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<Hover> {
     }
     let language = language_help::at(&syntax, view.analysis.dialect(file)?, byte);
     // Self and Parent resolve to scripts, but their help describes the special variable.
-    if token.text().eq_ignore_ascii_case("self") || token.text().eq_ignore_ascii_case("parent") {
-        if let Some((mut result, range)) = language.clone() {
-            result.span = Some(SourceSpan { file, range });
-            if let Some(occurrence) = symbol_at(view, file, byte) {
-                result.owner_script = symbols::owner_script(&occurrence.symbol);
-                result.symbol = Some(occurrence.symbol);
-            }
-            if let Some(script) = view.analysis.hir(file)
-                && let Some(fact) = script.expression_at(byte)
-                && fact.ty != Type::Error
-            {
-                result.declaration = format!("{} {}", display_type(&fact.ty), result.declaration);
-                result.content = result.declaration.clone();
-            }
-            return Some(result);
+    if (token.text().eq_ignore_ascii_case("self") || token.text().eq_ignore_ascii_case("parent"))
+        && let Some((mut result, range)) = language.clone()
+    {
+        result.span = Some(SourceSpan { file, range });
+        if let Some(occurrence) = symbol_at(view, file, byte) {
+            result.owner_script = symbols::owner_script(&occurrence.symbol);
+            result.symbol = Some(occurrence.symbol);
         }
-    }
-    if let Some(occurrence) = symbol_at(view, file, byte) {
-        if let Some(mut result) =
-            presentation::hover_at_definition(view, &occurrence.symbol, occurrence.definition)
+        if let Some(script) = view.analysis.hir(file)
+            && let Some(fact) = script.expression_at(byte)
+            && fact.ty != Type::Error
         {
-            result.span = Some(occurrence.span);
-            if matches!(occurrence.symbol, folio_hir::Symbol::Intrinsic { .. })
-                && let Some((help, _)) = language.clone()
-            {
-                result.documentation = help.documentation;
-                result.language = help.language;
-            }
-            return Some(result);
+            result.declaration = format!("{} {}", display_type(&fact.ty), result.declaration);
+            result.content = result.declaration.clone();
         }
+        return Some(result);
+    }
+    if let Some(occurrence) = symbol_at(view, file, byte)
+        && let Some(mut result) =
+            presentation::hover_at_definition(view, &occurrence.symbol, occurrence.definition)
+    {
+        result.span = Some(occurrence.span);
+        if matches!(occurrence.symbol, folio_hir::Symbol::Intrinsic { .. })
+            && let Some((help, _)) = language.clone()
+        {
+            result.documentation = help.documentation;
+            result.language = help.language;
+        }
+        return Some(result);
     }
     if let Some((mut result, range)) = language {
         // Length is represented as an unbound member fact; keep its authoritative signature.
@@ -388,6 +391,11 @@ pub fn hover(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<Hover> {
         result.span = Some(SourceSpan { file, range });
         return Some(result);
     }
+    semantic_hover(view, file, byte)
+}
+
+/// Recover typed hover when no declaration or language catalog entry handled the token.
+fn semantic_hover(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<Hover> {
     let script = view.analysis.hir(file)?;
     if let Some(name) = &script.name
         && name.span.range.start <= byte
@@ -450,6 +458,49 @@ pub fn hover(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<Hover> {
             owner_script: Some(name),
         });
     }
+    if let Some(hover) = state_hover(view, file, byte, &script) {
+        return Some(hover);
+    }
+    let fact = script.expression_at(byte)?;
+    if fact.ty == Type::Error {
+        return None;
+    }
+    if let folio_hir::ExpressionKind::Member { owner, name } = &fact.kind
+        && let Some(mut hover) = presentation::intrinsic_hover(&name.text, Some(&owner.ty))
+    {
+        hover.span = Some(name.span);
+        return Some(hover);
+    }
+    let content = fact.binding.as_ref().map_or_else(
+        || display_type(&fact.ty),
+        |binding| symbols::describe_symbol(&script, &binding.symbol, &fact.ty),
+    );
+    let span = fact
+        .binding
+        .as_ref()
+        .map_or(fact.span, |binding| binding.name.span);
+    Some(Hover {
+        symbol: fact.binding.as_ref().map(|binding| binding.symbol.clone()),
+        declaration: content.clone(),
+        documentation: None,
+        language: None,
+        details: Vec::new(),
+        content,
+        span: Some(span),
+        owner_script: fact
+            .binding
+            .as_ref()
+            .and_then(|binding| symbols::owner_script(&binding.symbol)),
+    })
+}
+
+/// State names are runtime declarations rather than ordinary bound symbols.
+fn state_hover(
+    view: &IdeSnapshot,
+    file: FileId,
+    byte: usize,
+    script: &folio_hir::Script,
+) -> Option<Hover> {
     if let Some(parse) = view.analysis.parse(file) {
         for node in parse
             .syntax()
@@ -458,7 +509,7 @@ pub fn hover(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<Hover> {
         {
             let Some(token) = node
                 .children_with_tokens()
-                .filter_map(|item| item.into_token())
+                .filter_map(folio_papyrus::SyntaxElement::into_token)
                 .filter(|token| token.kind() == folio_papyrus::SyntaxKind::Ident)
                 .find(|token| {
                     !token.text().eq_ignore_ascii_case("state")
@@ -483,37 +534,7 @@ pub fn hover(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<Hover> {
             }
         }
     }
-    let fact = script.expression_at(byte)?;
-    if fact.ty == Type::Error {
-        return None;
-    }
-    if let folio_hir::ExpressionKind::Member { owner, name } = &fact.kind {
-        if let Some(mut hover) = presentation::intrinsic_hover(&name.text, Some(&owner.ty)) {
-            hover.span = Some(name.span);
-            return Some(hover);
-        }
-    }
-    let content = fact.binding.as_ref().map_or_else(
-        || display_type(&fact.ty),
-        |binding| symbols::describe_symbol(&script, &binding.symbol, &fact.ty),
-    );
-    let span = fact
-        .binding
-        .as_ref()
-        .map_or(fact.span, |binding| binding.name.span);
-    Some(Hover {
-        symbol: fact.binding.as_ref().map(|binding| binding.symbol.clone()),
-        declaration: content.clone(),
-        documentation: None,
-        language: None,
-        details: Vec::new(),
-        content,
-        span: Some(span),
-        owner_script: fact
-            .binding
-            .as_ref()
-            .and_then(|binding| symbols::owner_script(&binding.symbol)),
-    })
+    None
 }
 
 pub(crate) fn display_type(ty: &Type) -> String {

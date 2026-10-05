@@ -12,6 +12,9 @@ pub enum FormatError {
 }
 
 /// Formats supported Papyrus syntax while retaining every nontrivia token.
+///
+/// # Errors
+/// Returns an error for invalid source syntax or a candidate that changes its tokens.
 #[tracing::instrument(skip(source), fields(bytes = source.len()))]
 pub fn format_source(source: &str, dialect: PapyrusDialect) -> Result<String, FormatError> {
     let parsed = parse(source, dialect);
@@ -25,7 +28,7 @@ pub fn format_source(source: &str, dialect: PapyrusDialect) -> Result<String, Fo
     let tokens = parsed
         .syntax()
         .descendants_with_tokens()
-        .filter_map(|element| element.into_token())
+        .filter_map(folio_papyrus::SyntaxElement::into_token)
         .collect::<Vec<_>>();
     let mut formatted = String::with_capacity(source.len());
     let mut offset = 0;
@@ -64,7 +67,7 @@ pub fn format_source(source: &str, dialect: PapyrusDialect) -> Result<String, Fo
                 &check
                     .syntax()
                     .descendants_with_tokens()
-                    .filter_map(|element| element.into_token())
+                    .filter_map(folio_papyrus::SyntaxElement::into_token)
                     .collect::<Vec<_>>(),
             )
     {

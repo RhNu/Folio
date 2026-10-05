@@ -8,6 +8,7 @@ use super::{
 
 #[derive(Deserialize)]
 struct LegacyBundle(u32, String, String, Option<String>, Vec<LegacyScript>);
+
 #[derive(Deserialize)]
 struct LegacyScript(
     String,
@@ -19,8 +20,10 @@ struct LegacyScript(
     Vec<LegacyState>,
     Option<WireSource>,
 );
+
 #[derive(Deserialize)]
 struct LegacyState(String, bool, Vec<LegacyMember>);
+
 #[derive(Deserialize)]
 struct LegacyMember(
     String,

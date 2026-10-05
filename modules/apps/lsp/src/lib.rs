@@ -1,12 +1,13 @@
 //! LSP 3.17 stdio adapter over the project resolver and shared semantic analysis.
-use folio_project_resolve::io::FolioHome;
-use protocol::read_message;
-use server::Server;
 use std::{
     io,
     path::Path,
     sync::{Arc, Mutex},
 };
+
+use folio_project_resolve::io::FolioHome;
+use protocol::read_message;
+use server::Server;
 
 mod protocol;
 mod server;
@@ -27,14 +28,17 @@ impl std::fmt::Display for LspError {
         }
     }
 }
+
 impl std::error::Error for LspError {}
+
 impl From<io::Error> for LspError {
-    fn from(value: io::Error) -> Self {
-        Self::Io(value)
-    }
+    fn from(value: io::Error) -> Self { Self::Io(value) }
 }
 
 /// Runs a single LSP session. The caller initializes a tracing subscriber that writes to stderr.
+///
+/// # Errors
+/// Returns an error when session setup, input framing, project services, or response output fails.
 pub fn serve_stdio(manifest_path: Option<&Path>) -> Result<(), LspError> {
     let cwd = std::env::current_dir()?;
     let output = Arc::new(Mutex::new(io::stdout()));
@@ -58,13 +62,13 @@ pub fn serve_stdio(manifest_path: Option<&Path>) -> Result<(), LspError> {
         server.poll_background()?;
         match incoming.recv_timeout(std::time::Duration::from_millis(10)) {
             Ok(Ok(Some(message))) => {
-                if server.handle(message)? {
+                if server.handle(&message)? {
                     break;
                 }
-            }
+            },
             Ok(Ok(None)) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             Ok(Err(error)) => return Err(error),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {},
         }
     }
     Ok(())

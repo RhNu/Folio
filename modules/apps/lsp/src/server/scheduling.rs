@@ -1,7 +1,9 @@
 //! Fixed workers and a bounded queue keep request bursts from exhausting threads and memory.
-use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Condvar, Mutex},
+    time::{Duration, Instant},
+};
 
 /// At most one load runs; later edits replace the pending generation while retaining disk refreshes.
 #[derive(Default)]
@@ -92,7 +94,7 @@ impl<T> QueryQueue<T> {
                 } else {
                     background
                 }
-            }
+            },
             (Some(index), None) | (None, Some(index)) => index,
             (None, None) => return None,
         };

@@ -1,7 +1,9 @@
 //! Disposable editor indices bound to one immutable semantic project snapshot.
-use std::collections::{BTreeMap, HashMap};
-use std::ops::Deref;
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::{BTreeMap, HashMap},
+    ops::Deref,
+    sync::{Arc, OnceLock},
+};
 
 use folio_build::ProjectAnalysisView;
 use folio_hir::Symbol;
@@ -18,7 +20,6 @@ pub(crate) struct SymbolKey(Symbol);
 
 impl SymbolKey {
     pub(crate) fn new(symbol: &Symbol) -> Self {
-        let mut symbol = symbol.clone();
         fn normalize(symbol: &mut Symbol) {
             match symbol {
                 Symbol::Script(name)
@@ -27,7 +28,7 @@ impl SymbolKey {
                 Symbol::Member { script, name } => {
                     script.make_ascii_lowercase();
                     name.make_ascii_lowercase();
-                }
+                },
                 Symbol::StateMember {
                     script,
                     state,
@@ -36,7 +37,7 @@ impl SymbolKey {
                     script.make_ascii_lowercase();
                     state.make_ascii_lowercase();
                     name.make_ascii_lowercase();
-                }
+                },
                 Symbol::PropertyAccessor {
                     script,
                     property,
@@ -45,13 +46,14 @@ impl SymbolKey {
                     script.make_ascii_lowercase();
                     property.make_ascii_lowercase();
                     name.make_ascii_lowercase();
-                }
+                },
                 Symbol::Parameter { owner, name } | Symbol::Local { owner, name, .. } => {
                     normalize(owner);
                     name.make_ascii_lowercase();
-                }
+                },
             }
         }
+        let mut symbol = symbol.clone();
         normalize(&mut symbol);
         Self(symbol)
     }
@@ -99,6 +101,7 @@ impl IdeSnapshot {
     }
 
     /// Adds cooperative cancellation while keeping every completed immutable index shared.
+    #[must_use]
     pub fn with_cancellation(&self, cancelled: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
         Self {
             cancelled,
@@ -106,9 +109,7 @@ impl IdeSnapshot {
         }
     }
 
-    pub fn is_cancelled(&self) -> bool {
-        (self.cancelled)()
-    }
+    pub fn is_cancelled(&self) -> bool { (self.cancelled)() }
 
     fn declarations(&self) -> Option<&DeclarationIndex> {
         cached(self, &self.cache.declarations, || {
@@ -222,21 +223,18 @@ fn cached<'a, T>(
     if view.is_cancelled() {
         return None;
     }
-    let _ = cell.set(value);
+    drop(cell.set(value));
     cell.get()
 }
 
 impl From<ProjectAnalysisView> for IdeSnapshot {
-    fn from(project: ProjectAnalysisView) -> Self {
-        Self::new(Arc::new(project))
-    }
+    fn from(project: ProjectAnalysisView) -> Self { Self::new(Arc::new(project)) }
 }
 
 impl Deref for IdeSnapshot {
     type Target = ProjectAnalysisView;
-    fn deref(&self) -> &Self::Target {
-        &self.project
-    }
+
+    fn deref(&self) -> &Self::Target { &self.project }
 }
 
 #[cfg(test)]

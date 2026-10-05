@@ -1,7 +1,9 @@
 //! Incremental syntax inputs and consistent, owned analysis views.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, OnceLock},
+};
 
 use folio_diagnostics::Diagnostic;
 use folio_format_declarations::DeclarationBundle;
@@ -129,9 +131,7 @@ pub struct AnalysisHost {
 }
 
 impl AnalysisHost {
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
     /// Replaces the selected external API snapshots independently of editable files.
     pub fn set_external_declarations(&mut self, bundles: Vec<DeclarationBundle>) {
@@ -168,6 +168,10 @@ impl AnalysisHost {
         }
     }
 
+    /// Replace one input in the next immutable view.
+    ///
+    /// # Errors
+    /// Returns an input error if its revision does not advance or its text is too large.
     pub fn upsert(
         &mut self,
         file: FileId,
@@ -183,11 +187,18 @@ impl AnalysisHost {
         }])
     }
 
+    /// Remove one input from later views.
+    ///
+    /// # Errors
+    /// Returns an input error if its revision does not advance.
     pub fn remove(&mut self, file: FileId, revision: Revision) -> Result<(), InputError> {
         self.apply_batch([InputEdit::Remove { file, revision }])
     }
 
     /// Validates a complete project update before changing any input.
+    ///
+    /// # Errors
+    /// Rejects duplicate file edits, stale revisions, or text exceeding parser limits.
     #[tracing::instrument(skip(self, edits), fields(generation = self.generation, phase = "analysis.update"))]
     pub fn apply_batch(
         &mut self,
@@ -212,11 +223,11 @@ impl AnalysisHost {
             match edit {
                 InputEdit::Remove { .. } if !self.active.contains_key(&file) => {
                     return Err(InputError::UnknownFile(file));
-                }
+                },
                 InputEdit::Upsert { text, .. } if text.len() > u32::MAX as usize => {
                     return Err(InputError::TextTooLarge(file));
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
         if edits.is_empty() {
@@ -242,11 +253,11 @@ impl AnalysisHost {
                         self.active.insert(file, ActiveFile { input, revision });
                         tracing::debug!(?file, ?revision, "added analysis source");
                     }
-                }
+                },
                 InputEdit::Remove { .. } => {
                     self.active.remove(&file);
                     tracing::debug!(?file, ?revision, "removed analysis source");
-                }
+                },
             }
             self.last_revisions.insert(file, revision);
         }
@@ -262,9 +273,7 @@ impl AnalysisHost {
 
     /// Materializes one coherent result set; it can outlive later host edits.
     #[tracing::instrument(skip(self), fields(generation = self.generation, phase = "analysis.query"))]
-    pub fn view(&self) -> AnalysisView {
-        self.view.get_or_init(|| self.materialize_view()).clone()
-    }
+    pub fn view(&self) -> AnalysisView { self.view.get_or_init(|| self.materialize_view()).clone() }
 
     /// Retains complete semantic facts until an actual host input changes.
     fn materialize_view(&self) -> AnalysisView {
@@ -332,17 +341,17 @@ impl AnalysisView {
         self.external_declarations.script(name)
     }
 
-    pub fn user_flags(&self) -> &[folio_profiles::UserFlag] {
-        &self.user_flags
-    }
-    pub fn fill_missing_arguments(&self) -> bool {
-        self.fill_missing_arguments
-    }
+    pub fn user_flags(&self) -> &[folio_profiles::UserFlag] { &self.user_flags }
+
+    pub fn fill_missing_arguments(&self) -> bool { self.fill_missing_arguments }
 
     /// Enumerates matching names through the checker's selected world and lookup precedence.
     /// The prefix is ASCII case insensitive; cancellation never returns partial candidates.
     /// Results follow normalized checker-name order, which is ASCII case-insensitive order
     /// for ordinary Papyrus identifiers.
+    ///
+    /// # Errors
+    /// Returns `AnalysisCancelled` if the predicate requests cancellation.
     pub fn completion_candidates(
         &self,
         file: FileId,
@@ -354,6 +363,7 @@ impl AnalysisView {
     ) -> Result<Vec<CompletionCandidate>, AnalysisCancelled> {
         semantic::completion_candidates(self, file, byte, receiver, global, prefix, cancelled)
     }
+
     fn semantic(&self) -> &semantic::Analysis {
         self.semantic
             .warm(&|| false, || semantic::analyze_with_cancel(self, &|| false))
@@ -364,6 +374,9 @@ impl AnalysisView {
     ///
     /// Callers may then use `type_at`, `definition`, or `hir` against the warmed view.
     /// The predicate may be checked many times and should be inexpensive.
+    ///
+    /// # Errors
+    /// Returns `AnalysisCancelled` when the predicate requests cancellation.
     pub fn try_warm_semantics(
         &self,
         cancelled: impl Fn() -> bool,
@@ -374,32 +387,37 @@ impl AnalysisView {
             })
             .map(|_| ())
     }
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-    pub fn file_ids(&self) -> impl Iterator<Item = FileId> + '_ {
-        self.files.keys().copied()
-    }
+
+    pub fn generation(&self) -> u64 { self.generation }
+
+    pub fn file_ids(&self) -> impl Iterator<Item = FileId> + '_ { self.files.keys().copied() }
+
     pub fn revision(&self, file: FileId) -> Option<Revision> {
         self.files.get(&file).map(|item| item.revision)
     }
+
     pub fn dialect(&self, file: FileId) -> Option<PapyrusDialect> {
         self.files.get(&file).map(|item| item.dialect)
     }
+
     pub fn text(&self, file: FileId) -> Option<&str> {
         self.files.get(&file).map(|item| item.text.as_ref())
     }
+
     pub fn line_index(&self, file: FileId) -> Option<LineIndex> {
         self.text(file).map(LineIndex::new)
     }
+
     pub fn parse(&self, file: FileId) -> Option<Arc<Parse>> {
         self.files.get(&file).map(|item| Arc::clone(&item.parse))
     }
+
     pub fn declarations(&self, file: FileId) -> Option<Arc<Vec<Declaration>>> {
         self.files
             .get(&file)
             .map(|item| Arc::clone(&item.declarations))
     }
+
     pub fn located_declarations(&self, file: FileId) -> Option<Arc<Vec<LocatedDeclaration>>> {
         self.files.get(&file).map(|item| Arc::clone(&item.located))
     }
@@ -410,7 +428,7 @@ impl AnalysisView {
         Some(self.semantic().file(file)?.diagnostics.clone())
     }
 
-    /// Reports errors in external declarations without pretending they have a source FileId.
+    /// Reports errors in external declarations without pretending they have a source `FileId`.
     pub fn project_diagnostics(&self) -> Vec<Diagnostic> {
         self.semantic().project_diagnostics.clone()
     }

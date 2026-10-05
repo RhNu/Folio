@@ -1,19 +1,21 @@
 //! Filesystem adapters for one root and four parallel declaration inputs.
 
-use crate::{graph, manifest};
-use folio_declaration_tools::{GenerationOptions, PexInput, SourceInput, extract_pex, generate};
-use folio_format_declarations::{DeclarationBundle, decode, semantic_digest};
-use folio_project_model::{
-    DeclarationLocation, DeclaredScript, DependencyKind, LoadedDependency, LoadedRoot,
-    SourceEncoding, SourceFile, SourceId,
-};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
+
+use folio_declaration_tools::{GenerationOptions, PexInput, SourceInput, extract_pex, generate};
+use folio_format_declarations::{DeclarationBundle, decode, semantic_digest};
+use folio_project_model::{
+    DeclarationLocation, DeclaredScript, DependencyKind, LoadedDependency, LoadedRoot,
+    SourceEncoding, SourceFile, SourceId,
+};
 use tracing::{debug, info, instrument};
+
+use crate::{graph, manifest};
 
 mod repo;
 mod scan;
@@ -57,6 +59,12 @@ pub struct RootSources {
 }
 
 /// Load only editable sources for tools that do not require dependency APIs.
+///
+/// # Errors
+/// Returns an error if discovery, manifest parsing, path validation, source scanning, or decoding fails.
+///
+/// # Panics
+/// Panics if a canonical manifest path has no parent directory.
 #[instrument(name = "project.load_root_sources", skip_all, fields(phase = "load"))]
 pub fn load_root_sources(start: &Path, explicit: Option<&Path>) -> Result<RootSources, LoadError> {
     let path = discover(start, explicit)?;
@@ -139,7 +147,7 @@ impl std::fmt::Display for LoadError {
             Self::Declaration { path, cause } => write!(f, "{}: {cause}", path.display()),
             Self::SourceDeclarations { path, reason } | Self::PexDeclarations { path, reason } => {
                 write!(f, "{}: {reason}", path.display())
-            }
+            },
             Self::ExperimentalDependency { name } => write!(
                 f,
                 "PEX dependency {name} requires [experimental] pex-dependencies = true"
@@ -158,7 +166,7 @@ impl std::fmt::Display for LoadError {
                     write!(f, " {}", candidate.display())?;
                 }
                 Ok(())
-            }
+            },
             Self::RepoAmbiguous { key, candidates } => {
                 write!(
                     f,
@@ -168,19 +176,23 @@ impl std::fmt::Display for LoadError {
                     write!(f, " {}", candidate.display())?;
                 }
                 Ok(())
-            }
+            },
             Self::InputChanged(path) => {
                 write!(f, "input changed during operation: {}", path.display())
-            }
+            },
             Self::Cancelled => write!(f, "project loading cancelled"),
             Self::Resolve(cause) => write!(f, "{cause}"),
             Self::InvalidPath { path, reason } => write!(f, "{}: {reason}", path.display()),
         }
     }
 }
+
 impl std::error::Error for LoadError {}
 
 /// Find the nearest manifest, or use an explicitly selected manifest.
+///
+/// # Errors
+/// Returns an error if no manifest is found or the selected manifest cannot be safely resolved.
 pub fn discover(start: &Path, explicit: Option<&Path>) -> Result<PathBuf, LoadError> {
     if let Some(path) = explicit {
         if path.file_name().is_none_or(|name| name != MANIFEST_FILE) {
@@ -236,11 +248,16 @@ fn contains_manifest(directory: &Path) -> Result<bool, LoadError> {
     Ok(false)
 }
 
+/// # Errors
+/// Returns an error for invalid Folio home settings, manifest or dependency data, paths, or filesystem reads.
 pub fn load(start: &Path, explicit: Option<&Path>) -> Result<LoadedProject, LoadError> {
     load_with_home(start, explicit, &FolioHome::from_env()?)
 }
 
 /// Read all dependency modes through the same normalized declaration boundary.
+///
+/// # Errors
+/// Returns an error when project discovery, validation, source loading, or dependency loading fails.
 #[instrument(name = "project.load", skip_all, fields(phase = "load"))]
 pub fn load_with_home(
     start: &Path,
@@ -271,6 +288,12 @@ struct CachedDependency {
 
 /// Loads a coherent project while reusing unchanged dependency decoding and API extraction.
 /// Returning false from progress cancels between dependencies; no partial project escapes.
+///
+/// # Errors
+/// Returns an error for invalid manifests, unsafe paths, unreadable inputs, or malformed dependency declarations.
+///
+/// # Panics
+/// Panics if a canonical manifest path has no parent directory.
 pub fn load_cached_with_home(
     start: &Path,
     explicit: Option<&Path>,
@@ -300,6 +323,47 @@ pub fn load_cached_with_home(
         &mut snapshots,
     )?;
     info!(manifest = %path.display(), dependency_count = manifest.dependencies.len(), "loading root and declaration dependencies");
+    let LoadedDependencies {
+        dependencies,
+        bundles,
+    } = load_dependencies(&manifest, base, home, cache, &mut snapshots, progress)?;
+    let root = LoadedRoot {
+        source_key: root_key.clone(),
+        source_id: SourceId::Project,
+        manifest,
+        source_files,
+    };
+    // Plan watches before final snapshot verification so a concurrently changed
+    // manifest cannot leave a successfully loaded project watching the old inputs.
+    let watch_plan = watch_plan_with_home(start, explicit, home);
+    verify_snapshots(&snapshots)?;
+    Ok(LoadedProject {
+        root_key,
+        root,
+        dependencies,
+        declaration_bundles: bundles,
+        source_inputs,
+        input_snapshots: snapshots,
+        watch_plan,
+        folio_home: home.clone(),
+    })
+}
+
+/// Cached dependency projections collected for one coherent manifest snapshot.
+struct LoadedDependencies {
+    dependencies: Vec<LoadedDependency>,
+    bundles: BTreeMap<String, Arc<DeclarationBundle>>,
+}
+
+/// Resolve dependency paths and reuse only physically verified cached projections.
+fn load_dependencies(
+    manifest: &folio_project_model::Manifest,
+    base: &Path,
+    home: &FolioHome,
+    cache: &mut LoadCache,
+    snapshots: &mut Vec<InputSnapshot>,
+    progress: &mut dyn FnMut(usize, usize, &str) -> bool,
+) -> Result<LoadedDependencies, LoadError> {
     let mut dependencies = Vec::new();
     let mut bundles = BTreeMap::new();
     cache
@@ -320,7 +384,7 @@ pub fn load_cached_with_home(
         }
         let declared = &specification.path.value;
         let canonical_path = if specification.kind == DependencyKind::Repo {
-            home.locate(declared, &mut snapshots)?
+            home.locate(declared, snapshots)?
         } else {
             let path = base.join(declared);
             let canonical_path = canonical_file(&path)?;
@@ -345,86 +409,19 @@ pub fn load_cached_with_home(
         let snapshot_start = snapshots.len();
         // The relative host path may traverse parents; provenance remains a portable label.
         let source_label = format!("dependency/{index}");
-        let (bundle, pex_paths) = match specification.kind {
-            DependencyKind::Psc => {
-                let (_, inputs) = collect_sources(
-                    &canonical_path,
-                    "",
-                    &["psc".into()],
-                    &source_key,
-                    specification.encoding,
-                    &mut snapshots,
-                )?;
-                if inputs.is_empty() {
-                    return Err(LoadError::InvalidPath {
-                        path: canonical_path,
-                        reason: "PSC dependency contains no scripts",
-                    });
-                }
-                let bundle = psc_declarations(&source_label, &inputs).map_err(|cause| {
-                    LoadError::SourceDeclarations {
-                        path: canonical_path.clone(),
-                        reason: cause.to_string(),
-                    }
-                })?;
-                (bundle, None)
-            }
-            DependencyKind::Pex => {
-                let files = scan::collect_files(&canonical_path, &["pex".into()], &mut snapshots)?;
-                let mut binary_inputs = Vec::new();
-                for (relative, path) in files {
-                    binary_inputs.push((relative, read_bytes(&path, &mut snapshots)?));
-                }
-                let inputs = binary_inputs
-                    .iter()
-                    .map(|(path, bytes)| PexInput { path, bytes })
-                    .collect::<Vec<_>>();
-                let extracted = extract_pex(&source_label, &inputs).map_err(|reason| {
-                    LoadError::PexDeclarations {
-                        path: canonical_path.clone(),
-                        reason,
-                    }
-                })?;
-                (extracted.bundle, Some(extracted.paths))
-            }
-            DependencyKind::Decl | DependencyKind::Repo => {
-                if !canonical_path.is_file() {
-                    return Err(LoadError::InvalidPath {
-                        path: canonical_path,
-                        reason: "declaration dependency is not a file",
-                    });
-                }
-                let bytes = read_bytes(&canonical_path, &mut snapshots)?;
-                let bundle = decode(&bytes).map_err(|cause| LoadError::Declaration {
-                    path: canonical_path.clone(),
-                    cause,
-                })?;
-                (bundle, None)
-            }
-        };
+        let (bundle, pex_paths) = read_dependency_bundle(
+            specification,
+            &canonical_path,
+            &source_key,
+            &source_label,
+            snapshots,
+        )?;
         let carrier = if specification.kind == DependencyKind::Repo {
             format!("repo:{declared}")
         } else {
             declared.clone()
         };
-        let scripts = bundle
-            .scripts
-            .iter()
-            .enumerate()
-            .map(|(index, script)| DeclaredScript {
-                name: script.name.clone(),
-                location: DeclarationLocation {
-                    carrier_path: pex_paths.as_ref().map_or_else(
-                        || carrier.clone(),
-                        |paths| format!("{carrier}/{}", paths[index]),
-                    ),
-                    script_name: script.name.to_ascii_lowercase(),
-                    source_path: script.source.as_ref().map(|source| source.path.clone()),
-                    line: script.source.as_ref().map(|source| source.line),
-                    column: script.source.as_ref().map(|source| source.column),
-                },
-            })
-            .collect();
+        let scripts = declared_scripts(&bundle, &carrier, pex_paths.as_deref());
         let source_id = SourceId::Dependency {
             index,
             kind: specification.kind,
@@ -459,29 +456,110 @@ pub fn load_cached_with_home(
     if !progress(manifest.dependencies.len(), manifest.dependencies.len(), "") {
         return Err(LoadError::Cancelled);
     }
-    let root = LoadedRoot {
-        source_key: root_key.clone(),
-        source_id: SourceId::Project,
-        manifest,
-        source_files,
-    };
-    // Plan watches before final snapshot verification so a concurrently changed
-    // manifest cannot leave a successfully loaded project watching the old inputs.
-    let watch_plan = watch_plan_with_home(start, explicit, home);
-    verify_snapshots(&snapshots)?;
-    Ok(LoadedProject {
-        root_key,
-        root,
+    Ok(LoadedDependencies {
         dependencies,
-        declaration_bundles: bundles,
-        source_inputs,
-        input_snapshots: snapshots,
-        watch_plan,
-        folio_home: home.clone(),
+        bundles,
     })
 }
 
+/// Keep carrier provenance separate from navigable root source locations.
+fn declared_scripts(
+    bundle: &DeclarationBundle,
+    carrier: &str,
+    pex_paths: Option<&[String]>,
+) -> Vec<DeclaredScript> {
+    bundle
+        .scripts
+        .iter()
+        .enumerate()
+        .map(|(index, script)| DeclaredScript {
+            name: script.name.clone(),
+            location: DeclarationLocation {
+                carrier_path: pex_paths.map_or_else(
+                    || carrier.to_owned(),
+                    |paths| format!("{carrier}/{}", paths[index]),
+                ),
+                script_name: script.name.to_ascii_lowercase(),
+                source_path: script.source.as_ref().map(|source| source.path.clone()),
+                line: script.source.as_ref().map(|source| source.line),
+                column: script.source.as_ref().map(|source| source.column),
+            },
+        })
+        .collect()
+}
+
+/// Read the selected declaration carrier without changing provider precedence.
+fn read_dependency_bundle(
+    specification: &folio_project_model::DependencySpec,
+    canonical_path: &Path,
+    source_key: &str,
+    source_label: &str,
+    snapshots: &mut Vec<InputSnapshot>,
+) -> Result<(DeclarationBundle, Option<Vec<String>>), LoadError> {
+    let (bundle, pex_paths) = match specification.kind {
+        DependencyKind::Psc => {
+            let (_, inputs) = collect_sources(
+                canonical_path,
+                "",
+                &["psc".into()],
+                source_key,
+                specification.encoding,
+                snapshots,
+            )?;
+            if inputs.is_empty() {
+                return Err(LoadError::InvalidPath {
+                    path: canonical_path.to_owned(),
+                    reason: "PSC dependency contains no scripts",
+                });
+            }
+            let bundle = psc_declarations(source_label, &inputs).map_err(|cause| {
+                LoadError::SourceDeclarations {
+                    path: canonical_path.to_owned(),
+                    reason: cause.to_string(),
+                }
+            })?;
+            (bundle, None)
+        },
+        DependencyKind::Pex => {
+            let files = scan::collect_files(canonical_path, &["pex".into()], snapshots)?;
+            let mut binary_inputs = Vec::new();
+            for (relative, path) in files {
+                binary_inputs.push((relative, read_bytes(&path, snapshots)?));
+            }
+            let inputs = binary_inputs
+                .iter()
+                .map(|(path, bytes)| PexInput { path, bytes })
+                .collect::<Vec<_>>();
+            let extracted = extract_pex(source_label, &inputs).map_err(|reason| {
+                LoadError::PexDeclarations {
+                    path: canonical_path.to_owned(),
+                    reason,
+                }
+            })?;
+            (extracted.bundle, Some(extracted.paths))
+        },
+        DependencyKind::Decl | DependencyKind::Repo => {
+            if !canonical_path.is_file() {
+                return Err(LoadError::InvalidPath {
+                    path: canonical_path.to_owned(),
+                    reason: "declaration dependency is not a file",
+                });
+            }
+            let bytes = read_bytes(canonical_path, snapshots)?;
+            let bundle = decode(&bytes).map_err(|cause| LoadError::Declaration {
+                path: canonical_path.to_owned(),
+                cause,
+            })?;
+            (bundle, None)
+        },
+    };
+    Ok((bundle, pex_paths))
+}
+
 /// Shared PSC directory loading for direct dependencies and generation commands.
+///
+/// # Errors
+/// Returns an error when the source directory cannot be safely scanned or source text cannot be decoded.
 pub fn read_psc_sources(
     root: &Path,
     encoding: SourceEncoding,
@@ -505,6 +583,8 @@ pub fn read_psc_sources(
     Ok(inputs)
 }
 
+/// # Errors
+/// Returns an error for unsafe or unreadable inputs, invalid source declarations, or duplicate script identities.
 pub fn generate_psc_directory(
     root: &Path,
     source: &str,
@@ -567,17 +647,19 @@ fn validate_workspace_directory(
                     path,
                     reason: "workspace path is not a plain directory",
                 });
-            }
-            Ok(_) => {}
+            },
+            Ok(_) => {},
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound && !required => {
-                missing = true
-            }
+                missing = true;
+            },
             Err(cause) => return Err(io("inspect workspace path", &path, cause)),
         }
     }
     Ok(())
 }
 
+/// # Errors
+/// Returns an error when loading or dependency resolution fails.
 pub fn load_and_resolve(
     start: &Path,
     explicit: Option<&Path>,
@@ -585,6 +667,8 @@ pub fn load_and_resolve(
     load_and_resolve_with_home(start, explicit, &FolioHome::from_env()?)
 }
 
+/// # Errors
+/// Returns an error when loading or dependency resolution fails.
 pub fn load_and_resolve_with_home(
     start: &Path,
     explicit: Option<&Path>,

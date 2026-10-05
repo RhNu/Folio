@@ -7,6 +7,3 @@ publish.workspace = true
 
 [dependencies]
 folio-source = { path = "../source" }
-
-[lints]
-workspace = true

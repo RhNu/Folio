@@ -1,11 +1,13 @@
 //! Local declaration repository location, containment and atomic publication.
 
-use super::*;
-use folio_format_declarations::DeclarationFormat;
 use std::{
     io::Write,
     sync::atomic::{AtomicU64, Ordering},
 };
+
+use folio_format_declarations::DeclarationFormat;
+
+use super::{InputSnapshot, LoadError, Path, PathBuf, decode, fs, info, io, manifest, scan};
 
 #[derive(Clone, Debug)]
 pub struct FolioHome {
@@ -23,6 +25,9 @@ pub struct RepoEntry {
 
 impl FolioHome {
     /// Resolve once at application startup; an explicit home must be absolute.
+    ///
+    /// # Errors
+    /// Returns an error when environment values do not identify an absolute Folio home.
     pub fn from_env() -> Result<Self, LoadError> {
         let value = std::env::var_os("FOLIO_HOME");
         let user = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" });
@@ -30,6 +35,9 @@ impl FolioHome {
     }
 
     /// Pure environment-value handling shared by hosts and unit tests.
+    ///
+    /// # Errors
+    /// Returns an error if neither value provides a valid absolute Folio home.
     pub fn from_values(
         value: Option<&std::ffi::OsStr>,
         user: Option<&std::ffi::OsStr>,
@@ -52,9 +60,7 @@ impl FolioHome {
         Ok(Self { path })
     }
 
-    pub fn repo(&self) -> PathBuf {
-        self.path.join("repo")
-    }
+    pub fn repo(&self) -> PathBuf { self.path.join("repo") }
 
     fn contained(&self, path: &Path) -> Result<PathBuf, LoadError> {
         let home = canonical_allow_missing(&self.path)?;
@@ -69,6 +75,8 @@ impl FolioHome {
         Ok(actual)
     }
 
+    /// # Errors
+    /// Returns an error for invalid repository keys or unsafe repository paths.
     pub fn repo_output(&self, key: &str, format: DeclarationFormat) -> Result<PathBuf, LoadError> {
         manifest::validate_repo_key(key).map_err(|reason| LoadError::InvalidPath {
             path: PathBuf::from(key),
@@ -81,7 +89,7 @@ impl FolioHome {
                     path: PathBuf::from(key),
                     reason: "repository file suffix does not match output format",
                 });
-            }
+            },
             Some(_) => key.to_owned(),
             None => format!("{key}.{extension}"),
         };
@@ -91,6 +99,12 @@ impl FolioHome {
     }
 
     /// Recheck containment at publication time, after declaration generation completes.
+    ///
+    /// # Errors
+    /// Returns an error for invalid keys, unsafe repository directories, existing destinations, or publication failures.
+    ///
+    /// # Panics
+    /// Panics if a validated repository output path has no parent directory.
     pub fn publish_repo(
         &self,
         key: &str,
@@ -147,6 +161,9 @@ impl FolioHome {
     }
 
     /// Enumerate actual JSON and binary declaration files in stable repository order.
+    ///
+    /// # Errors
+    /// Returns an error if repository traversal encounters unsafe entries or filesystem failures.
     pub fn list_repo(&self) -> Result<Vec<RepoEntry>, LoadError> {
         if !self
             .repo()
@@ -240,7 +257,7 @@ fn canonical_allow_missing(path: &Path) -> Result<PathBuf, LoadError> {
                     actual.push(component);
                 }
                 return Ok(actual);
-            }
+            },
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
                 let name = current.file_name().ok_or_else(|| LoadError::InvalidPath {
                     path: path.to_owned(),
@@ -251,13 +268,16 @@ fn canonical_allow_missing(path: &Path) -> Result<PathBuf, LoadError> {
                     path: path.to_owned(),
                     reason: "path has no filesystem parent",
                 })?;
-            }
+            },
             Err(cause) => return Err(io("resolve repository path", current, cause)),
         }
     }
 }
 
 /// Publish already validated bytes atomically, refusing accidental replacement.
+///
+/// # Errors
+/// Returns an error for unsafe paths, existing destinations, or staging and publication failures.
 pub fn publish_declaration(path: &Path, bytes: &[u8]) -> Result<(), LoadError> {
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     let parent = path
@@ -305,7 +325,7 @@ pub fn publish_declaration(path: &Path, bytes: &[u8]) -> Result<(), LoadError> {
         Ok(())
     })();
     if created_temporary {
-        let _ = fs::remove_file(&temporary);
+        drop(fs::remove_file(&temporary));
     }
     if result.is_ok() {
         info!(path = %path.display(), bytes = bytes.len(), "published declaration");

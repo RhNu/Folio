@@ -1,11 +1,19 @@
 //! Parameter binding and statement checking for one shared semantic scope.
-use super::*;
+use super::{
+    BTreeSet, Binding, CallFact, CheckedCall, DeclarationFact, Diagnostic, ExpressionFact,
+    ExpressionKind, Local, MemberInfo, MemberKind, NameRef, ParameterDefault, ParameterFact,
+    PropertyForm, Scope, Severity, SourceSpan, Statement, Symbol, SyntaxKind, SyntaxNode, Type,
+    assignable, castable, diagnostic, direct_expression, direct_expressions,
+    implicitly_convertible, is_expression, key, known_type, lookup_callable_member, lookup_member,
+    lookup_state_member, missing_argument_literal, span, state_runtime_intrinsic_type, token_span,
+    type_text,
+};
 
 mod call;
 mod expression;
 mod resolution;
 
-impl<'a> Scope<'a> {
+impl Scope<'_> {
     fn issue(&mut self, code: &str, message: impl Into<String>, at: SourceSpan) {
         self.result.diagnostics.push(diagnostic(code, message, at));
     }
@@ -23,7 +31,7 @@ impl<'a> Scope<'a> {
         {
             let Some(token) = parameter
                 .children_with_tokens()
-                .filter_map(|item| item.into_token())
+                .filter_map(rowan::NodeOrToken::into_token)
                 .find(|token| token.kind() == SyntaxKind::Ident)
             else {
                 continue;
@@ -32,8 +40,7 @@ impl<'a> Scope<'a> {
             let ty = parameter
                 .children()
                 .find(|child| child.kind() == SyntaxKind::TypeRef)
-                .map(|node| Type::from_spelling(&type_text(&node)))
-                .unwrap_or(Type::Error);
+                .map_or(Type::Error, |node| Type::from_spelling(&type_text(&node)));
             let definition = token_span(self.file, &token);
             let symbol = Symbol::Parameter {
                 owner: Box::new(self.callable.clone()),
@@ -46,7 +53,7 @@ impl<'a> Scope<'a> {
                     .member
                     .parameters
                     .iter()
-                    .find(|(parameter, _, _)| parameter.eq_ignore_ascii_case(&name))
+                    .find(|(parameter, ..)| parameter.eq_ignore_ascii_case(&name))
                     .and_then(|(_, _, default)| default.literal().map(str::to_owned)),
                 span: definition,
             });
@@ -114,139 +121,10 @@ impl<'a> Scope<'a> {
                     span: span(self.file, &node),
                     value,
                 })
-            }
+            },
             SyntaxKind::VariableDecl => self.local_variable(&node),
-            SyntaxKind::AssignmentStmt => {
-                let expressions = direct_expressions(&node).collect::<Vec<_>>();
-                if expressions.len() < 2 {
-                    return Some(Statement::Error(span(self.file, &node)));
-                }
-                let target = self.expr_with_access(&expressions[0], false);
-                let mut value = self.expr(&expressions[1]);
-                let compound = node
-                    .children_with_tokens()
-                    .filter_map(|item| item.into_token())
-                    .find(|token| {
-                        matches!(
-                            token.kind(),
-                            SyntaxKind::PlusEq
-                                | SyntaxKind::MinusEq
-                                | SyntaxKind::StarEq
-                                | SyntaxKind::SlashEq
-                                | SyntaxKind::PercentEq
-                        )
-                    });
-                if !matches!(
-                    target.kind,
-                    ExpressionKind::Reference(_)
-                        | ExpressionKind::Member { .. }
-                        | ExpressionKind::Index { .. }
-                ) {
-                    self.issue(
-                        "semantic.not-assignable",
-                        "assignment target is not writable",
-                        target.span,
-                    );
-                }
-                if let Some(binding) = &target.binding {
-                    let member = match &binding.symbol {
-                        Symbol::Member { script, name } => {
-                            lookup_member(self.world, script, name).map(|(_, member)| member)
-                        }
-                        Symbol::StateMember {
-                            script,
-                            state,
-                            name,
-                        } => lookup_state_member(self.world, script, state, name)
-                            .map(|(_, member)| member),
-                        _ => None,
-                    };
-                    if member.is_some_and(|member| {
-                        member.kind == MemberKind::Property && !member.writable
-                    }) {
-                        self.issue(
-                            "semantic.read-only-property",
-                            "property has no writable accessor",
-                            target.span,
-                        );
-                    }
-                }
-                if let Some(operator) = &compound {
-                    self.check_readable(&target);
-                    let operator = operator.text().trim_end_matches('=');
-                    let result_type =
-                        self.binary_type(operator, &target.ty, &value.ty, span(self.file, &node));
-                    if operator == "+"
-                        && result_type == Type::String
-                        && matches!(value.ty, Type::Int | Type::Float)
-                    {
-                        value.conversion = Some(Type::String);
-                    }
-                    if !assignable(self.world, &result_type, &target.ty) {
-                        self.issue(
-                            "semantic.assignment-type",
-                            format!(
-                                "compound result {result_type:?} cannot be assigned to {:?}",
-                                target.ty
-                            ),
-                            span(self.file, &node),
-                        );
-                    }
-                } else {
-                    self.expect(&mut value, &target.ty, "semantic.assignment-type");
-                }
-                Some(Statement::Assignment {
-                    span: span(self.file, &node),
-                    target: Box::new(target),
-                    value: Box::new(value),
-                    operator: compound
-                        .map_or_else(|| "=".to_owned(), |token| token.text().to_owned()),
-                })
-            }
-            SyntaxKind::IfStmt => {
-                let mut condition = direct_expression(&node).map(|expr| self.expr(&expr))?;
-                self.expect(&mut condition, &Type::Bool, "semantic.condition-type");
-                let then_branch = node
-                    .children()
-                    .find(|child| child.kind() == SyntaxKind::Block)
-                    .map(|block| self.block(&block))
-                    .unwrap_or_default();
-                let mut else_if = Vec::new();
-                let mut else_branch = Vec::new();
-                for clause in node.children().filter(|child| {
-                    matches!(
-                        child.kind(),
-                        SyntaxKind::ElseIfClause | SyntaxKind::ElseClause
-                    )
-                }) {
-                    if clause.kind() == SyntaxKind::ElseIfClause
-                        && let Some(expr) = direct_expression(&clause)
-                    {
-                        let mut test = self.expr(&expr);
-                        self.expect(&mut test, &Type::Bool, "semantic.condition-type");
-                        let branch = clause
-                            .children()
-                            .find(|child| child.kind() == SyntaxKind::Block)
-                            .map(|block| self.block(&block))
-                            .unwrap_or_default();
-                        else_if.push((test, branch));
-                        continue;
-                    }
-                    if let Some(block) = clause
-                        .children()
-                        .find(|child| child.kind() == SyntaxKind::Block)
-                    {
-                        else_branch.extend(self.block(&block));
-                    }
-                }
-                Some(Statement::If {
-                    span: span(self.file, &node),
-                    condition,
-                    then_branch,
-                    else_if,
-                    else_branch,
-                })
-            }
+            SyntaxKind::AssignmentStmt => Some(self.assignment_statement(&node)),
+            SyntaxKind::IfStmt => self.conditional_statement(&node),
             SyntaxKind::WhileStmt => {
                 let mut condition = direct_expression(&node).map(|expr| self.expr(&expr))?;
                 self.expect(&mut condition, &Type::Bool, "semantic.condition-type");
@@ -260,21 +138,152 @@ impl<'a> Scope<'a> {
                     condition,
                     body,
                 })
-            }
+            },
             kind if is_expression(kind) => Some(Statement::Expression(self.expr(&node))),
             _ => Some(Statement::Error(span(self.file, &node))),
         }
+    }
+
+    /// Analyze the assignment statement with the current lexical scope.
+    fn assignment_statement(&mut self, node: &SyntaxNode) -> Statement {
+        let expressions = direct_expressions(node).collect::<Vec<_>>();
+        if expressions.len() < 2 {
+            return Statement::Error(span(self.file, node));
+        }
+        let target = self.expr_with_access(&expressions[0], false);
+        let mut value = self.expr(&expressions[1]);
+        let compound = node
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .find(|token| {
+                matches!(
+                    token.kind(),
+                    SyntaxKind::PlusEq
+                        | SyntaxKind::MinusEq
+                        | SyntaxKind::StarEq
+                        | SyntaxKind::SlashEq
+                        | SyntaxKind::PercentEq
+                )
+            });
+        if !matches!(
+            target.kind,
+            ExpressionKind::Reference(_)
+                | ExpressionKind::Member { .. }
+                | ExpressionKind::Index { .. }
+        ) {
+            self.issue(
+                "semantic.not-assignable",
+                "assignment target is not writable",
+                target.span,
+            );
+        }
+        if let Some(binding) = &target.binding {
+            let member = match &binding.symbol {
+                Symbol::Member { script, name } => {
+                    lookup_member(self.world, script, name).map(|(_, member)| member)
+                },
+                Symbol::StateMember {
+                    script,
+                    state,
+                    name,
+                } => lookup_state_member(self.world, script, state, name).map(|(_, member)| member),
+                _ => None,
+            };
+            if member.is_some_and(|member| member.kind == MemberKind::Property && !member.writable)
+            {
+                self.issue(
+                    "semantic.read-only-property",
+                    "property has no writable accessor",
+                    target.span,
+                );
+            }
+        }
+        if let Some(operator) = &compound {
+            self.check_readable(&target);
+            let operator = operator.text().trim_end_matches('=');
+            let result_type =
+                self.binary_type(operator, &target.ty, &value.ty, span(self.file, node));
+            if operator == "+"
+                && result_type == Type::String
+                && matches!(value.ty, Type::Int | Type::Float)
+            {
+                value.conversion = Some(Type::String);
+            }
+            if !assignable(self.world, &result_type, &target.ty) {
+                self.issue(
+                    "semantic.assignment-type",
+                    format!(
+                        "compound result {result_type:?} cannot be assigned to {:?}",
+                        target.ty
+                    ),
+                    span(self.file, node),
+                );
+            }
+        } else {
+            self.expect(&mut value, &target.ty, "semantic.assignment-type");
+        }
+        Statement::Assignment {
+            span: span(self.file, node),
+            target: Box::new(target),
+            value: Box::new(value),
+            operator: compound.map_or_else(|| "=".to_owned(), |token| token.text().to_owned()),
+        }
+    }
+
+    /// Analyze the conditional statement with the current lexical scope.
+    fn conditional_statement(&mut self, node: &SyntaxNode) -> Option<Statement> {
+        let mut condition = direct_expression(node).map(|expr| self.expr(&expr))?;
+        self.expect(&mut condition, &Type::Bool, "semantic.condition-type");
+        let then_branch = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Block)
+            .map(|block| self.block(&block))
+            .unwrap_or_default();
+        let mut else_if = Vec::new();
+        let mut else_branch = Vec::new();
+        for clause in node.children().filter(|child| {
+            matches!(
+                child.kind(),
+                SyntaxKind::ElseIfClause | SyntaxKind::ElseClause
+            )
+        }) {
+            if clause.kind() == SyntaxKind::ElseIfClause
+                && let Some(expr) = direct_expression(&clause)
+            {
+                let mut test = self.expr(&expr);
+                self.expect(&mut test, &Type::Bool, "semantic.condition-type");
+                let branch = clause
+                    .children()
+                    .find(|child| child.kind() == SyntaxKind::Block)
+                    .map(|block| self.block(&block))
+                    .unwrap_or_default();
+                else_if.push((test, branch));
+                continue;
+            }
+            if let Some(block) = clause
+                .children()
+                .find(|child| child.kind() == SyntaxKind::Block)
+            {
+                else_branch.extend(self.block(&block));
+            }
+        }
+        Some(Statement::If {
+            span: span(self.file, node),
+            condition,
+            then_branch,
+            else_if,
+            else_branch,
+        })
     }
 
     fn local_variable(&mut self, node: &SyntaxNode) -> Option<Statement> {
         let ty = node
             .children()
             .find(|child| child.kind() == SyntaxKind::TypeRef)
-            .map(|node| Type::from_spelling(&type_text(&node)))
-            .unwrap_or(Type::Error);
+            .map_or(Type::Error, |node| Type::from_spelling(&type_text(&node)));
         let token = node
             .children_with_tokens()
-            .filter_map(|item| item.into_token())
+            .filter_map(rowan::NodeOrToken::into_token)
             .find(|token| token.kind() == SyntaxKind::Ident)?;
         let name = token.text().to_string();
         let definition = token_span(self.file, &token);

@@ -1,68 +1,14 @@
 //! Public crate behavior over in-memory inputs.
 use folio_declaration_tools::{PexInput, extract_pex};
-use folio_format_declarations::ParameterDefault;
-use folio_format_pex::{PexFile, PexFunction};
-
-use folio_format_declarations::{DeclarationFormat, MemberKind, decode, encode};
+use folio_format_declarations::{DeclarationFormat, MemberKind, ParameterDefault, decode, encode};
 use folio_format_pex::{
-    PexHeader, PexObject, PexParameter, PexProperty, PexState, PexValue, PexVariable,
+    PexFile, PexFunction, PexHeader, PexObject, PexParameter, PexProperty, PexState, PexValue,
+    PexVariable,
 };
 
 #[test]
 fn extracts_callable_signature_without_inventing_event_or_defaults() {
-    let mut file = PexFile::new(PexHeader::skyrim(0, "Actor.psc", "", ""));
-    let empty = file.intern("").unwrap();
-    let actor = file.intern("Actor").unwrap();
-    let get_value = file.intern("GetValue").unwrap();
-    let int = file.intern("Int").unwrap();
-    let count = file.intern("count").unwrap();
-    let value = file.intern("Value").unwrap();
-    let backing = file.intern("::Value_var").unwrap();
-    let script_doc = file.intern("Actor docs").unwrap();
-    let property_doc = file.intern("Value docs").unwrap();
-    let callable_doc = file.intern("GetValue docs").unwrap();
-    file.objects.push(PexObject {
-        name: actor,
-        parent_class_name: empty,
-        documentation_string: script_doc,
-        user_flags: 0,
-        auto_state_name: empty,
-        variables: vec![PexVariable {
-            name: backing,
-            type_name: int,
-            user_flags: 0,
-            default_value: PexValue::None,
-        }],
-        properties: vec![PexProperty {
-            name: value,
-            type_name: int,
-            documentation_string: property_doc,
-            user_flags: 0,
-            is_readable: true,
-            is_writable: true,
-            is_auto: true,
-            auto_var: Some(backing),
-            read_function: None,
-            write_function: None,
-        }],
-        states: vec![PexState {
-            name: empty,
-            functions: vec![PexFunction {
-                name: get_value,
-                return_type_name: int,
-                documentation_string: callable_doc,
-                user_flags: 0,
-                is_global: false,
-                is_native: true,
-                parameters: vec![PexParameter {
-                    name: count,
-                    type_name: int,
-                }],
-                locals: vec![],
-                instructions: vec![],
-            }],
-        }],
-    });
+    let file = actor_fixture();
     let bytes = file.write_to_vec().unwrap();
     let extracted = extract_pex(
         "binary-mod",
@@ -139,4 +85,81 @@ fn malformed_binary_reports_its_dependency_path() {
     .err()
     .unwrap();
     assert!(error.contains("Broken.pex"));
+}
+
+fn actor_fixture() -> PexFile {
+    let mut file = PexFile::new(PexHeader::skyrim(0, "Actor.psc", "", ""));
+    let empty = file
+        .intern("")
+        .expect("synthetic fixture has a small string table");
+    let actor = file
+        .intern("Actor")
+        .expect("synthetic fixture has a small string table");
+    let get_value = file
+        .intern("GetValue")
+        .expect("synthetic fixture has a small string table");
+    let int = file
+        .intern("Int")
+        .expect("synthetic fixture has a small string table");
+    let count = file
+        .intern("count")
+        .expect("synthetic fixture has a small string table");
+    let value = file
+        .intern("Value")
+        .expect("synthetic fixture has a small string table");
+    let backing = file
+        .intern("::Value_var")
+        .expect("synthetic fixture has a small string table");
+    let script_doc = file
+        .intern("Actor docs")
+        .expect("synthetic fixture has a small string table");
+    let property_doc = file
+        .intern("Value docs")
+        .expect("synthetic fixture has a small string table");
+    let callable_doc = file
+        .intern("GetValue docs")
+        .expect("synthetic fixture has a small string table");
+    file.objects.push(PexObject {
+        name: actor,
+        parent_class_name: empty,
+        documentation_string: script_doc,
+        user_flags: 0,
+        auto_state_name: empty,
+        variables: vec![PexVariable {
+            name: backing,
+            type_name: int,
+            user_flags: 0,
+            default_value: PexValue::None,
+        }],
+        properties: vec![PexProperty {
+            name: value,
+            type_name: int,
+            documentation_string: property_doc,
+            user_flags: 0,
+            is_readable: true,
+            is_writable: true,
+            is_auto: true,
+            auto_var: Some(backing),
+            read_function: None,
+            write_function: None,
+        }],
+        states: vec![PexState {
+            name: empty,
+            functions: vec![PexFunction {
+                name: get_value,
+                return_type_name: int,
+                documentation_string: callable_doc,
+                user_flags: 0,
+                is_global: false,
+                is_native: true,
+                parameters: vec![PexParameter {
+                    name: count,
+                    type_name: int,
+                }],
+                locals: vec![],
+                instructions: vec![],
+            }],
+        }],
+    });
+    file
 }

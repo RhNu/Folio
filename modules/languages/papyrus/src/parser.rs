@@ -1,6 +1,7 @@
-use crate::{LexToken, PapyrusDialect, Parse, SyntaxError, SyntaxErrorKind, SyntaxKind, lex};
 use folio_source::TextRange;
 use rowan::{GreenNodeBuilder, Language};
+
+use crate::{LexToken, PapyrusDialect, Parse, SyntaxError, SyntaxErrorKind, SyntaxKind, lex};
 
 /// Parses the supported Papyrus subset and retains all source text on errors.
 pub fn parse(source: &str, dialect: PapyrusDialect) -> Parse {
@@ -66,7 +67,7 @@ pub fn parse(source: &str, dialect: PapyrusDialect) -> Parse {
     }
     parser.builder.finish_node();
     let green = parser.builder.finish();
-    debug_assert_eq!(green.text_len(), rowan::TextSize::from(source.len() as u32));
+    debug_assert_eq!(green.text_len(), rowan::TextSize::of(source));
     crate::source_structure::validate(
         &crate::SyntaxNode::new_root(green.clone()),
         source,
@@ -83,6 +84,9 @@ pub fn parse(source: &str, dialect: PapyrusDialect) -> Parse {
     }
 }
 
+mod expressions;
+mod statements;
+
 struct Parser<'a> {
     source: &'a str,
     tokens: Vec<LexToken>,
@@ -92,9 +96,7 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
-    fn done(&self) -> bool {
-        self.cursor >= self.tokens.len()
-    }
+    fn done(&self) -> bool { self.cursor >= self.tokens.len() }
 
     fn significant(&self) -> Option<usize> {
         (self.cursor..self.tokens.len()).find(|&index| !self.inline_trivia(index))
@@ -118,9 +120,7 @@ impl Parser<'_> {
                 || token.text(self.source).contains('\n'))
     }
 
-    fn kind(&self) -> Option<SyntaxKind> {
-        self.significant().map(|index| self.tokens[index].kind)
-    }
+    fn kind(&self) -> Option<SyntaxKind> { self.significant().map(|index| self.tokens[index].kind) }
 
     fn text(&self) -> Option<&str> {
         self.significant()
@@ -224,9 +224,8 @@ impl Parser<'_> {
         self.builder
             .start_node(crate::PapyrusLanguage::kind_to_raw(kind));
     }
-    fn finish(&mut self) {
-        self.builder.finish_node();
-    }
+
+    fn finish(&mut self) { self.builder.finish_node(); }
 
     fn bump(&mut self) {
         let token = self.tokens[self.cursor];
@@ -279,13 +278,13 @@ impl Parser<'_> {
     }
 
     fn issue(&mut self, kind: SyntaxErrorKind, message: &str) {
-        let range = self
-            .significant()
-            .map(|index| self.tokens[index].range)
-            .unwrap_or(TextRange {
+        let range = self.significant().map_or(
+            TextRange {
                 start: self.source.len(),
                 end: self.source.len(),
-            });
+            },
+            |index| self.tokens[index].range,
+        );
         self.errors.push(SyntaxError {
             kind,
             range,
@@ -296,8 +295,7 @@ impl Parser<'_> {
     fn issue_missing(&mut self, kind: SyntaxErrorKind, message: &str) {
         let offset = self
             .significant()
-            .map(|index| self.tokens[index].range.start)
-            .unwrap_or(self.source.len());
+            .map_or(self.source.len(), |index| self.tokens[index].range.start);
         self.errors.push(SyntaxError {
             kind,
             range: TextRange {
@@ -571,140 +569,6 @@ impl Parser<'_> {
         self.finish();
     }
 
-    fn statement(&mut self) {
-        self.start(SyntaxKind::Statement);
-        if self.at_keyword("if") {
-            self.if_statement();
-            self.finish();
-            return;
-        }
-        if self.at_keyword("while") {
-            self.while_statement();
-            self.finish();
-            return;
-        }
-        if self.is_unsupported_statement() {
-            self.error_line(
-                SyntaxErrorKind::UnsupportedStatement,
-                "unsupported statement",
-            );
-            self.finish();
-            return;
-        }
-        if self.at_keyword("return") {
-            self.start(SyntaxKind::ReturnStmt);
-            self.bump_keyword("return");
-            if !self.at_line_end() {
-                self.expression(0);
-            }
-            self.finish();
-        } else if self.starts_variable() {
-            self.variable();
-            self.finish();
-            return;
-        } else if !self.at_line_end() {
-            let checkpoint = self.builder.checkpoint();
-            self.expression(0);
-            if matches!(
-                self.kind(),
-                Some(
-                    SyntaxKind::Equals
-                        | SyntaxKind::PlusEq
-                        | SyntaxKind::MinusEq
-                        | SyntaxKind::StarEq
-                        | SyntaxKind::SlashEq
-                        | SyntaxKind::PercentEq
-                )
-            ) {
-                self.builder.start_node_at(
-                    checkpoint,
-                    crate::PapyrusLanguage::kind_to_raw(SyntaxKind::AssignmentStmt),
-                );
-                self.trivia();
-                self.bump();
-                self.expression(0);
-                self.finish();
-            }
-        }
-        self.line_tail();
-        self.finish();
-    }
-
-    fn if_statement(&mut self) {
-        self.start(SyntaxKind::IfStmt);
-        self.bump_keyword("if");
-        self.expression(0);
-        self.line_tail();
-        self.control_block(&["elseif", "else", "endif"]);
-        while self.at_keyword("elseif") {
-            self.start(SyntaxKind::ElseIfClause);
-            self.bump_keyword("elseif");
-            self.expression(0);
-            self.line_tail();
-            self.control_block(&["elseif", "else", "endif"]);
-            self.finish();
-        }
-        if self.at_keyword("else") {
-            self.start(SyntaxKind::ElseClause);
-            self.bump_keyword("else");
-            self.line_tail();
-            self.control_block(&["endif"]);
-            self.finish();
-        }
-        if self.bump_keyword("endif") {
-            self.line_tail();
-        } else {
-            self.issue_missing(SyntaxErrorKind::MissingEndIf, "expected EndIf");
-        }
-        self.finish();
-    }
-
-    fn while_statement(&mut self) {
-        self.start(SyntaxKind::WhileStmt);
-        self.bump_keyword("while");
-        self.expression(0);
-        self.line_tail();
-        self.control_block(&["endwhile"]);
-        if self.bump_keyword("endwhile") {
-            self.line_tail();
-        } else {
-            self.issue_missing(SyntaxErrorKind::MissingEndWhile, "expected EndWhile");
-        }
-        self.finish();
-    }
-
-    /// Leave enclosing terminators and new declarations for their owning parser frame.
-    fn control_block(&mut self, terminators: &[&str]) {
-        self.start(SyntaxKind::Block);
-        loop {
-            self.eat_blank();
-            if self.done()
-                || terminators.iter().any(|word| self.at_keyword(word))
-                || [
-                    "endfunction",
-                    "endevent",
-                    "endstate",
-                    "endproperty",
-                    "else",
-                    "elseif",
-                    "endif",
-                    "endwhile",
-                ]
-                .iter()
-                .any(|word| self.at_keyword(word))
-                || self.at_keyword("scriptname")
-                || self.starts_function()
-                || self.starts_state()
-                || self.starts_property()
-                || self.at_keyword("event")
-            {
-                break;
-            }
-            self.statement();
-        }
-        self.finish();
-    }
-
     fn at_line_end(&self) -> bool {
         self.significant()
             .is_none_or(|index| self.newline_like(index))
@@ -736,146 +600,9 @@ impl Parser<'_> {
         }
         self.finish();
     }
-
-    fn expression(&mut self, min_binding_power: u8) {
-        self.trivia();
-        let checkpoint = self.builder.checkpoint();
-        match self.kind() {
-            Some(SyntaxKind::Plus | SyntaxKind::Minus | SyntaxKind::Bang) => {
-                self.start(SyntaxKind::UnaryExpr);
-                self.bump();
-                self.expression(13);
-                self.finish();
-            }
-            Some(SyntaxKind::Ident) if self.at_keyword("new") => {
-                self.start(SyntaxKind::NewArrayExpr);
-                self.bump_keyword("new");
-                self.type_name("expected array element type");
-                self.expect_kind(SyntaxKind::LBracket, "expected [");
-                self.expression(0);
-                self.expect_kind(SyntaxKind::RBracket, "expected ]");
-                self.finish();
-            }
-            Some(SyntaxKind::Ident) => {
-                let literal = self.text().is_some_and(|text| {
-                    text.eq_ignore_ascii_case("true")
-                        || text.eq_ignore_ascii_case("false")
-                        || text.eq_ignore_ascii_case("none")
-                });
-                self.start(if literal {
-                    SyntaxKind::LiteralExpr
-                } else {
-                    SyntaxKind::NameExpr
-                });
-                self.bump();
-                self.finish();
-            }
-            Some(SyntaxKind::Number | SyntaxKind::String | SyntaxKind::UnclosedString) => {
-                self.start(SyntaxKind::LiteralExpr);
-                self.bump();
-                self.finish();
-            }
-            Some(SyntaxKind::LParen) => {
-                self.start(SyntaxKind::ParenExpr);
-                self.bump();
-                self.expression(0);
-                self.expect_kind(SyntaxKind::RParen, "expected )");
-                self.finish();
-            }
-            _ => {
-                self.issue_missing(SyntaxErrorKind::ExpectedExpression, "expected expression");
-                return;
-            }
-        }
-        loop {
-            if self.kind() == Some(SyntaxKind::Dot) {
-                self.builder.start_node_at(
-                    checkpoint,
-                    crate::PapyrusLanguage::kind_to_raw(SyntaxKind::MemberExpr),
-                );
-                self.bump_kind(SyntaxKind::Dot);
-                self.expect_kind(SyntaxKind::Ident, "expected member name");
-                self.finish();
-                continue;
-            }
-            if self.kind() == Some(SyntaxKind::LBracket) {
-                self.builder.start_node_at(
-                    checkpoint,
-                    crate::PapyrusLanguage::kind_to_raw(SyntaxKind::IndexExpr),
-                );
-                self.bump_kind(SyntaxKind::LBracket);
-                self.expression(0);
-                self.expect_kind(SyntaxKind::RBracket, "expected ]");
-                self.finish();
-                continue;
-            }
-            if self.kind() == Some(SyntaxKind::LParen) {
-                self.builder.start_node_at(
-                    checkpoint,
-                    crate::PapyrusLanguage::kind_to_raw(SyntaxKind::CallExpr),
-                );
-                self.bump_kind(SyntaxKind::LParen);
-                while !self.done() && self.kind() != Some(SyntaxKind::RParen) && !self.at_line_end()
-                {
-                    let before = self.cursor;
-                    let argument = self.builder.checkpoint();
-                    self.expression(0);
-                    if self.kind() == Some(SyntaxKind::Equals) {
-                        self.builder.start_node_at(
-                            argument,
-                            crate::PapyrusLanguage::kind_to_raw(SyntaxKind::NamedArgument),
-                        );
-                        self.bump_kind(SyntaxKind::Equals);
-                        self.expression(0);
-                        self.finish();
-                    }
-                    if self.cursor == before || !self.bump_kind(SyntaxKind::Comma) {
-                        break;
-                    }
-                }
-                self.expect_kind(SyntaxKind::RParen, "expected )");
-                self.finish();
-                continue;
-            }
-            let (left, right) = match self.kind() {
-                Some(SyntaxKind::Star | SyntaxKind::Slash | SyntaxKind::Percent) => (11, 12),
-                Some(SyntaxKind::Plus | SyntaxKind::Minus) => (9, 10),
-                Some(
-                    SyntaxKind::Less
-                    | SyntaxKind::Greater
-                    | SyntaxKind::LessEq
-                    | SyntaxKind::GreaterEq
-                    | SyntaxKind::EqEq
-                    | SyntaxKind::NotEq,
-                ) => (7, 8),
-                Some(SyntaxKind::Ident) if self.at_keyword("as") => (15, 16),
-                Some(SyntaxKind::AndAnd) => (3, 4),
-                Some(SyntaxKind::OrOr) => (1, 2),
-                _ => break,
-            };
-            if left < min_binding_power {
-                break;
-            }
-            self.builder.start_node_at(
-                checkpoint,
-                crate::PapyrusLanguage::kind_to_raw(SyntaxKind::BinaryExpr),
-            );
-            self.trivia();
-            let cast = self.at_keyword("as");
-            self.bump();
-            if cast {
-                self.type_ref();
-            } else {
-                self.expression(right);
-            }
-            self.finish();
-        }
-    }
 }
 
-fn reserved_word(text: &str) -> bool {
-    folio_profiles::is_skyrim_keyword(text)
-}
+fn reserved_word(text: &str) -> bool { folio_profiles::is_skyrim_keyword(text) }
 
 #[cfg(test)]
 mod tests;

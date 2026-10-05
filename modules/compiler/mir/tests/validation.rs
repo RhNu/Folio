@@ -1,4 +1,5 @@
 //! Public validation of complete scripts, properties, and inherited storage.
+#[path = "common/support.rs"]
 mod common;
 use common::{function, source};
 use folio_mir::{

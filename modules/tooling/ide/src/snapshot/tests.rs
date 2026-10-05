@@ -19,7 +19,7 @@ fn cancellation_during_cold_reference_build_does_not_publish_partial_counts() {
     }));
     assert!(crate::references_of(&cancelled, &count, true).is_empty());
     assert_eq!(crate::references_of(&view, &count, true).len(), 3);
-    assert_eq!(crate::references_of(&view.clone(), &count, false).len(), 2);
+    assert_eq!(crate::references_of(&view, &count, false).len(), 2);
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn warmed_indices_keep_sibling_local_scope_identity() {
         second
     );
     assert_eq!(
-        crate::references(&view.clone(), file, text.find("value").unwrap(), true),
+        crate::references(&view, file, text.find("value").unwrap(), true),
         first
     );
 }
@@ -85,10 +85,7 @@ fn cancelled_hierarchy_build_can_retry_and_preserves_transitive_overrides() {
     let actual = crate::implementation_symbols(&view, &target);
     assert_eq!(actual.len(), 2);
     assert!(actual.iter().any(|symbol| matches!(symbol, Symbol::StateMember { script, state, .. } if script == "Leaf" && state == "Busy")));
-    assert_eq!(
-        crate::implementation_symbols(&view.clone(), &target),
-        actual
-    );
+    assert_eq!(crate::implementation_symbols(&view, &target), actual);
 }
 
 #[test]

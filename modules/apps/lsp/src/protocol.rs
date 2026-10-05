@@ -1,12 +1,15 @@
 //! LSP message framing, position encodings, and local file URIs.
-use super::LspError;
-use folio_ide::{Position, PositionEncoding, Range};
-use serde_json::{Value, json};
 use std::{
+    fmt::Write as _,
     io::{self, BufRead, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+
+use folio_ide::{Position, PositionEncoding, Range};
+use serde_json::{Value, json};
+
+use super::LspError;
 
 pub(super) type Output = Arc<Mutex<io::Stdout>>;
 
@@ -14,19 +17,19 @@ pub(super) fn send(output: &Output, value: &Value) -> Result<(), LspError> {
     let started = std::time::Instant::now();
     let bytes = serde_json::to_vec(value).map_err(|error| LspError::Protocol(error.to_string()))?;
     let serialize_us = started.elapsed().as_micros();
-    let waiting = std::time::Instant::now();
+    let lock_started = std::time::Instant::now();
     let mut stream = output
         .lock()
-        .map_err(|_| LspError::Protocol("stdout lock poisoned".into()))?;
-    let output_wait_us = waiting.elapsed().as_micros();
-    let writing = std::time::Instant::now();
+        .map_err(|_poisoned| LspError::Protocol("stdout lock poisoned".into()))?;
+    let output_wait_us = lock_started.elapsed().as_micros();
+    let write_started = std::time::Instant::now();
     write!(stream, "Content-Length: {}\r\n\r\n", bytes.len())?;
     stream.write_all(&bytes)?;
     stream.flush()?;
     drop(stream);
     tracing::trace!(id = ?value.get("id"), method = value.get("method").and_then(|method| method.as_str()),
         bytes = bytes.len(), serialize_us, output_wait_us,
-        write_us = writing.elapsed().as_micros(), "sent LSP message");
+        write_us = write_started.elapsed().as_micros(), "sent LSP message");
     Ok(())
 }
 
@@ -51,7 +54,7 @@ pub(super) fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>, L
                 value
                     .trim()
                     .parse::<usize>()
-                    .map_err(|_| LspError::Protocol("invalid Content-Length".into()))?,
+                    .map_err(|_poisoned| LspError::Protocol("invalid Content-Length".into()))?,
             );
         }
     }
@@ -132,7 +135,7 @@ pub(super) fn path_to_uri(path: &Path) -> String {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b':' | b'-' | b'_' | b'.' | b'~') {
             result.push(byte as char);
         } else {
-            result.push_str(&format!("%{byte:02X}"));
+            write!(result, "%{byte:02X}").expect("formatting into String cannot fail");
         }
     }
     result

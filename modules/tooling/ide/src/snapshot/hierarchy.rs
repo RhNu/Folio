@@ -1,7 +1,9 @@
 //! Script ancestry is indexed separately from callable members, so script hover
 //! never enumerates the SDK's complete member population.
-use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::{Arc, Mutex},
+};
 
 use folio_format_declarations::MemberData;
 use folio_hir::{MemberKind, Symbol};
@@ -113,13 +115,98 @@ impl HierarchyIndex {
         Some(result)
     }
 
+    /// Find compatible overrides in selected source and external descendant scripts.
+    fn member_implementations(
+        &self,
+        view: &IdeSnapshot,
+        target: &Symbol,
+        owner: &str,
+        name: &str,
+    ) -> Option<Vec<Symbol>> {
+        let Some(kind @ (_, false)) = callable_kind(view, target) else {
+            return Some(Vec::new());
+        };
+        let mut eligible = self
+            .descendants(view, owner)?
+            .into_iter()
+            .filter_map(|symbol| {
+                if let Symbol::Script(name) = symbol {
+                    Some(name.to_ascii_lowercase())
+                } else {
+                    None
+                }
+            })
+            .collect::<BTreeSet<_>>();
+        eligible.insert(owner.to_ascii_lowercase());
+        let mut candidates = Vec::new();
+        for child in &eligible {
+            if view.is_cancelled() {
+                return None;
+            }
+            if let Some(file) = self.sources.get(child) {
+                let Some(script) = view.analysis.hir(*file) else {
+                    continue;
+                };
+                candidates.extend(
+                    script
+                        .members
+                        .iter()
+                        .filter(|item| {
+                            crate::navigation::name(&item.symbol).eq_ignore_ascii_case(name)
+                        })
+                        .map(|item| item.symbol.clone()),
+                );
+                continue;
+            }
+            let Some(script) = view.analysis.external_script(child) else {
+                continue;
+            };
+            candidates.extend(
+                script
+                    .members
+                    .iter()
+                    .filter(|item| item.name.eq_ignore_ascii_case(name))
+                    .map(|item| Symbol::Member {
+                        script: script.name.clone(),
+                        name: item.name.clone(),
+                    }),
+            );
+            for state in &script.states {
+                if view.is_cancelled() {
+                    return None;
+                }
+                candidates.extend(
+                    state
+                        .members
+                        .iter()
+                        .filter(|item| item.name.eq_ignore_ascii_case(name))
+                        .map(|item| Symbol::StateMember {
+                            script: script.name.clone(),
+                            state: state.name.clone(),
+                            name: item.name.clone(),
+                        }),
+                );
+            }
+        }
+        candidates.retain(|candidate| {
+            !crate::navigation::same(target, candidate)
+                && callable_kind(view, candidate) == Some(kind)
+        });
+        Some(candidates)
+    }
+
     pub(crate) fn implementations(
         &self,
         view: &IdeSnapshot,
         target: &Symbol,
     ) -> Option<Arc<Vec<Symbol>>> {
         let key = SymbolKey::new(target);
-        if let Some(cached) = self.implementations.lock().unwrap().get(&key) {
+        if let Some(cached) = self
+            .implementations
+            .lock()
+            .expect("validated semantic index")
+            .get(&key)
+        {
             return Some(Arc::clone(cached));
         }
         if view.is_cancelled() {
@@ -135,78 +222,7 @@ impl HierarchyIndex {
                 script: owner,
                 name,
                 ..
-            } => {
-                let Some(kind @ (_, false)) = callable_kind(view, target) else {
-                    return Some(Arc::new(Vec::new()));
-                };
-                let mut eligible = self
-                    .descendants(view, owner)?
-                    .into_iter()
-                    .filter_map(|symbol| {
-                        if let Symbol::Script(name) = symbol {
-                            Some(name.to_ascii_lowercase())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<BTreeSet<_>>();
-                eligible.insert(owner.to_ascii_lowercase());
-                let mut candidates = Vec::new();
-                for child in &eligible {
-                    if view.is_cancelled() {
-                        return None;
-                    }
-                    if let Some(file) = self.sources.get(child) {
-                        let Some(script) = view.analysis.hir(*file) else {
-                            continue;
-                        };
-                        candidates.extend(
-                            script
-                                .members
-                                .iter()
-                                .filter(|item| {
-                                    crate::navigation::name(&item.symbol).eq_ignore_ascii_case(name)
-                                })
-                                .map(|item| item.symbol.clone()),
-                        );
-                        continue;
-                    }
-                    let Some(script) = view.analysis.external_script(child) else {
-                        continue;
-                    };
-                    candidates.extend(
-                        script
-                            .members
-                            .iter()
-                            .filter(|item| item.name.eq_ignore_ascii_case(name))
-                            .map(|item| Symbol::Member {
-                                script: script.name.clone(),
-                                name: item.name.clone(),
-                            }),
-                    );
-                    for state in &script.states {
-                        if view.is_cancelled() {
-                            return None;
-                        }
-                        candidates.extend(
-                            state
-                                .members
-                                .iter()
-                                .filter(|item| item.name.eq_ignore_ascii_case(name))
-                                .map(|item| Symbol::StateMember {
-                                    script: script.name.clone(),
-                                    state: state.name.clone(),
-                                    name: item.name.clone(),
-                                }),
-                        );
-                    }
-                }
-                candidates.retain(|candidate| {
-                    !crate::navigation::same(target, candidate)
-                        && callable_kind(view, candidate) == Some(kind)
-                });
-                candidates
-            }
+            } => self.member_implementations(view, target, owner, name)?,
             _ => Vec::new(),
         };
         result.sort_by_key(|symbol| format!("{symbol:?}").to_ascii_lowercase());
@@ -216,7 +232,10 @@ impl HierarchyIndex {
         }
         tracing::debug!(symbol = ?target, implementations = result.len(), "editor implementations indexed");
         let result = Arc::new(result);
-        let mut cache = self.implementations.lock().unwrap();
+        let mut cache = self
+            .implementations
+            .lock()
+            .expect("validated semantic index");
         Some(Arc::clone(cache.entry(key).or_insert(result)))
     }
 }

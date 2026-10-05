@@ -1,7 +1,6 @@
 //! Managed generation, discardable cache and replaceable success index.
 
 use std::{
-    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Component, Path, PathBuf},
@@ -9,7 +8,10 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
+
+mod publication;
+pub use publication::publish_project;
 
 /// Persisted provenance for one generated PEX.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,11 +88,11 @@ impl std::fmt::Display for OutputError {
 
 impl std::error::Error for OutputError {}
 
-fn error(operation: &'static str, path: &Path, cause: impl ToString) -> OutputError {
+fn error(operation: &'static str, path: &Path, cause: impl std::fmt::Display) -> OutputError {
     OutputError {
         operation,
         path: path.to_owned(),
-        cause: cause.to_string(),
+        cause: format!("{cause}"),
     }
 }
 
@@ -130,8 +132,8 @@ fn existing_output_directory(
         match fs::symlink_metadata(&directory) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
                 return Ok(None);
-            }
-            Ok(_) => {}
+            },
+            Ok(_) => {},
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(cause) => return Err(error("inspect output directory", &directory, cause)),
         }
@@ -140,6 +142,9 @@ fn existing_output_directory(
 }
 
 /// The visible output is valid only when every selected artifact matches its digest.
+///
+/// # Errors
+/// Returns an error if managed paths or published artifacts cannot be inspected safely.
 pub fn verify_published(project_root: &Path, result: &SuccessRecord) -> Result<bool, OutputError> {
     if !safe_workspace_path(&result.output) {
         return Ok(false);
@@ -209,12 +214,15 @@ fn ensure_plain_directory(path: &Path) -> Result<(), OutputError> {
         Ok(_) => Ok(()),
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir(path).map_err(|cause| error("create managed directory", path, cause))
-        }
+        },
         Err(cause) => Err(error("inspect managed directory", path, cause)),
     }
 }
 
 /// The output root is private to Folio; each component is checked for symlinks.
+///
+/// # Errors
+/// Returns an error if managed directories cannot be safely created or contain links or unexpected entry types.
 pub fn managed_paths(project_root: &Path) -> Result<(PathBuf, PathBuf), OutputError> {
     let folio = project_root.join(".folio");
     ensure_plain_directory(&folio)?;
@@ -226,6 +234,9 @@ pub fn managed_paths(project_root: &Path) -> Result<(PathBuf, PathBuf), OutputEr
 }
 
 /// Locate an existing managed build root without changing the project.
+///
+/// # Errors
+/// Returns an error if the managed build directory cannot be inspected safely.
 pub fn existing_build_root(project_root: &Path) -> Result<Option<PathBuf>, OutputError> {
     let folio = project_root.join(".folio");
     let build = folio.join("build");
@@ -237,8 +248,8 @@ pub fn existing_build_root(project_root: &Path) -> Result<Option<PathBuf>, Outpu
                     path,
                     "not a plain directory",
                 ));
-            }
-            Ok(_) => {}
+            },
+            Ok(_) => {},
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(cause) => return Err(error("inspect managed directory", path, cause)),
         }
@@ -246,6 +257,8 @@ pub fn existing_build_root(project_root: &Path) -> Result<Option<PathBuf>, Outpu
     Ok(Some(build))
 }
 
+/// # Errors
+/// Returns an error if managed directories or a fresh generation directory cannot be created safely.
 pub fn create_generation(build: &Path, unit_id: &str) -> Result<(String, PathBuf), OutputError> {
     let unit_root = build.join(unit_id);
     ensure_plain_directory(&unit_root)?;
@@ -261,7 +274,7 @@ pub fn create_generation(build: &Path, unit_id: &str) -> Result<(String, PathBuf
         let path = build.join(&relative);
         match fs::create_dir(&path) {
             Ok(()) => return Ok((relative, path)),
-            Err(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists => {},
             Err(cause) => return Err(error("create generation", &path, cause)),
         }
     }
@@ -272,6 +285,8 @@ pub fn create_generation(build: &Path, unit_id: &str) -> Result<(String, PathBuf
     ))
 }
 
+/// # Errors
+/// Returns an error for unsafe artifact names, invalid directory entries, or file write failures.
 pub fn write_artifact(dir: &Path, name: &str, bytes: &[u8]) -> Result<String, OutputError> {
     if !safe_artifact_name(name) {
         return Err(error("validate artifact name", dir, name));
@@ -306,7 +321,7 @@ fn existing_plain_artifact(path: &Path) -> Result<bool, OutputError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             Err(error("inspect output artifact", path, "not a plain file"))
-        }
+        },
         Ok(_) => Ok(true),
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(cause) => Err(error("inspect output artifact", path, cause)),
@@ -321,6 +336,9 @@ struct CacheEntry {
 }
 
 /// A cache hit requires an exact artifact list, valid metadata and content digests.
+///
+/// # Errors
+/// Returns an error if the cache directory cannot be inspected safely or read.
 pub fn read_cache(
     cache: &Path,
     fingerprint: &str,
@@ -333,11 +351,11 @@ pub fn read_cache(
     match fs::symlink_metadata(&dir) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
             return Ok((CacheDecision::Invalid("cache directory"), Vec::new()));
-        }
-        Ok(_) => {}
+        },
+        Ok(_) => {},
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
             return Ok((CacheDecision::Missing, Vec::new()));
-        }
+        },
         Err(cause) => return Err(error("inspect cache directory", &dir, cause)),
     }
     let manifest = dir.join("manifest.json");
@@ -345,7 +363,7 @@ pub fn read_cache(
         Ok(value) => value,
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
             return Ok((CacheDecision::Invalid("manifest missing"), Vec::new()));
-        }
+        },
         Err(cause) => return Err(error("inspect cache manifest", &manifest, cause)),
     };
     if !manifest_metadata.is_file() || manifest_metadata.file_type().is_symlink() {
@@ -355,7 +373,7 @@ pub fn read_cache(
         Ok(bytes) => bytes,
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
             return Ok((CacheDecision::Invalid("manifest missing"), Vec::new()));
-        }
+        },
         Err(cause) => return Err(error("read cache manifest", &manifest, cause)),
     };
     let entry: CacheEntry = match serde_json::from_slice(&bytes) {
@@ -388,6 +406,9 @@ fn safe_hex(value: &str) -> bool {
 }
 
 /// Discard only a fingerprint-named directory directly beneath Folio's cache.
+///
+/// # Errors
+/// Returns an error for invalid cache keys, unsafe directory entries, or cache removal failures.
 pub fn discard_cache(cache: &Path, fingerprint: &str) -> Result<(), OutputError> {
     if !safe_hex(fingerprint) {
         return Err(error("discard cache", cache, "invalid fingerprint"));
@@ -401,10 +422,10 @@ pub fn discard_cache(cache: &Path, fingerprint: &str) -> Result<(), OutputError>
     match fs::symlink_metadata(&dir) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             fs::remove_file(&dir).map_err(|cause| error("discard cache symlink", &dir, cause))
-        }
+        },
         Ok(metadata) if metadata.is_dir() => {
             fs::remove_dir_all(&dir).map_err(|cause| error("discard cache entry", &dir, cause))
-        }
+        },
         Ok(_) => fs::remove_file(&dir).map_err(|cause| error("discard cache entry", &dir, cause)),
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(cause) => Err(error("inspect cache entry", &dir, cause)),
@@ -412,6 +433,9 @@ pub fn discard_cache(cache: &Path, fingerprint: &str) -> Result<(), OutputError>
 }
 
 /// Cache entries are immutable; concurrent or abandoned partial entries are misses.
+///
+/// # Errors
+/// Returns an error for invalid cache keys, unsafe paths, or cache publication failures.
 pub fn write_cache(
     cache: &Path,
     fingerprint: &str,
@@ -422,7 +446,7 @@ pub fn write_cache(
     }
     let dir = cache.join(fingerprint);
     match fs::create_dir(&dir) {
-        Ok(()) => {}
+        Ok(()) => {},
         Err(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
         Err(cause) => return Err(error("create cache entry", &dir, cause)),
     }
@@ -452,6 +476,8 @@ pub fn write_cache(
     Ok(())
 }
 
+/// # Errors
+/// Returns an error if the record cannot be serialized or written to the generation.
 pub fn write_generation_manifest(dir: &Path, unit: &UnitRecord) -> Result<(), OutputError> {
     let path = dir.join("manifest.json");
     let bytes = serde_json::to_vec_pretty(unit)
@@ -469,6 +495,9 @@ pub fn write_generation_manifest(dir: &Path, unit: &UnitRecord) -> Result<(), Ou
 }
 
 /// Verify every declared generation and artifact before considering an index valid.
+///
+/// # Errors
+/// Returns an error if recorded generation paths or artifact contents cannot be inspected safely.
 pub fn verify_success(build: &Path, result: &SuccessRecord) -> Result<bool, OutputError> {
     if result.schema != 2 || !safe_workspace_path(&result.output) {
         return Ok(false);
@@ -535,6 +564,8 @@ pub struct IndexRead {
     pub invalid: bool,
 }
 
+/// # Errors
+/// Returns an error if the successful build index cannot be inspected or read.
 pub fn read_index(build: &Path) -> Result<IndexRead, OutputError> {
     let path = build.join("last-success.json");
     match fs::symlink_metadata(&path) {
@@ -543,14 +574,14 @@ pub fn read_index(build: &Path) -> Result<IndexRead, OutputError> {
                 result: None,
                 invalid: true,
             });
-        }
-        Ok(_) => {}
+        },
+        Ok(_) => {},
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
             return Ok(IndexRead {
                 result: None,
                 invalid: false,
             });
-        }
+        },
         Err(cause) => return Err(error("inspect success index", &path, cause)),
     }
     let bytes = match fs::read(&path) {
@@ -560,7 +591,7 @@ pub fn read_index(build: &Path) -> Result<IndexRead, OutputError> {
                 result: None,
                 invalid: false,
             });
-        }
+        },
         Err(cause) => return Err(error("read success index", &path, cause)),
     };
     let Ok(record) = serde_json::from_slice::<SuccessRecord>(&bytes) else {
@@ -583,6 +614,9 @@ pub fn read_index(build: &Path) -> Result<IndexRead, OutputError> {
 
 /// Publish one complete selection through a synced same-directory temporary file.
 /// Rename replaces the prior index only after every generation has been verified.
+///
+/// # Errors
+/// Returns an error if the success index cannot be serialized, staged, or replaced.
 pub fn publish(build: &Path, result: &SuccessRecord) -> Result<(), OutputError> {
     if !verify_success(build, result)? {
         return Err(error(
@@ -625,210 +659,14 @@ pub fn publish(build: &Path, result: &SuccessRecord) -> Result<(), OutputError> 
     Ok(())
 }
 
-struct PublishedFile {
-    destination: PathBuf,
-    staging: Option<PathBuf>,
-    backup: Option<PathBuf>,
-    installed: bool,
-}
-
-/// Publish the complete selected set to the configured output, preserving unrelated files.
-/// Normal failures restore the prior files; abrupt termination is detectable by digest checks.
-pub fn publish_project(
-    project_root: &Path,
-    build: &Path,
-    previous: Option<&SuccessRecord>,
-    result: &SuccessRecord,
-) -> Result<(), OutputError> {
-    if !verify_success(build, result)? {
-        return Err(error(
-            "publish output",
-            build,
-            "generation validation failed",
-        ));
-    }
-    let output = output_directory(project_root, &result.output)?;
-    let old_directory = previous
-        .map(|old| existing_output_directory(project_root, &old.output))
-        .transpose()?
-        .flatten();
-    let mut owned = BTreeMap::new();
-    if let (Some(old), Some(directory)) = (previous, &old_directory) {
-        for artifact in old.units.iter().flat_map(|unit| &unit.artifacts) {
-            owned.insert(directory.join(&artifact.path), &artifact.digest);
-        }
-    }
-    let mut selected = BTreeMap::new();
-    for unit in &result.units {
-        for artifact in &unit.artifacts {
-            let destination = output.join(&artifact.path);
-            selected.insert(
-                destination,
-                (
-                    build.join(&unit.generation).join(&artifact.path),
-                    &artifact.digest,
-                ),
-            );
-        }
-    }
-    // Validate ownership before touching any visible output.
-    for destination in selected.keys() {
-        if existing_plain_artifact(destination)? {
-            let Some(digest) = owned.get(destination) else {
-                return Err(error(
-                    "publish output",
-                    destination,
-                    "existing file is not owned by Folio",
-                ));
-            };
-            if read_verified(destination, digest)?.is_none() {
-                return Err(error(
-                    "publish output",
-                    destination,
-                    "owned file was modified",
-                ));
-            }
-        }
-    }
-    for (destination, digest) in &owned {
-        if existing_plain_artifact(destination)? && read_verified(destination, digest)?.is_none() {
-            return Err(error(
-                "publish output",
-                destination,
-                "owned file was modified",
-            ));
-        }
-    }
-    let mut stale = Vec::new();
-    for destination in owned.keys().filter(|path| !selected.contains_key(*path)) {
-        if existing_plain_artifact(destination)? {
-            stale.push(destination.clone());
-        }
-    }
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|cause| error("read clock", &output, cause))?
-        .as_nanos();
-    let mut changes = Vec::new();
-    let staging_result = (|| {
-        for (index, (destination, (source, digest))) in selected.iter().enumerate() {
-            let bytes = read_verified(source, digest)?
-                .ok_or_else(|| error("stage output", source, "artifact digest mismatch"))?;
-            let staging = output.join(format!(
-                ".folio-stage-{nonce:x}-{:x}-{index:x}",
-                std::process::id()
-            ));
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&staging)
-                .map_err(|cause| error("create staged output", &staging, cause))?;
-            changes.push(PublishedFile {
-                destination: destination.clone(),
-                staging: Some(staging.clone()),
-                backup: None,
-                installed: false,
-            });
-            file.write_all(&bytes)
-                .map_err(|cause| error("write staged output", &staging, cause))?;
-            file.sync_all()
-                .map_err(|cause| error("sync staged output", &staging, cause))?;
-        }
-        Ok::<(), OutputError>(())
-    })();
-    if let Err(cause) = staging_result {
-        for change in &changes {
-            if let Some(staging) = &change.staging {
-                let _ = fs::remove_file(staging);
-            }
-        }
-        return Err(cause);
-    }
-    for destination in stale {
-        changes.push(PublishedFile {
-            destination,
-            staging: None,
-            backup: None,
-            installed: false,
-        });
-    }
-    let operation = (|| {
-        for (index, change) in changes.iter_mut().enumerate() {
-            if existing_plain_artifact(&change.destination)? {
-                let Some(digest) = owned.get(&change.destination) else {
-                    return Err(error(
-                        "publish output",
-                        &change.destination,
-                        "existing file is not owned by Folio",
-                    ));
-                };
-                if read_verified(&change.destination, digest)?.is_none() {
-                    return Err(error(
-                        "publish output",
-                        &change.destination,
-                        "owned file changed during publication",
-                    ));
-                }
-                let backup = change.destination.with_file_name(format!(
-                    ".folio-backup-{nonce:x}-{:x}-{index:x}",
-                    std::process::id()
-                ));
-                if fs::symlink_metadata(&backup).is_ok() {
-                    return Err(error(
-                        "backup output",
-                        &backup,
-                        "backup path already exists",
-                    ));
-                }
-                fs::rename(&change.destination, &backup)
-                    .map_err(|cause| error("backup output", &change.destination, cause))?;
-                change.backup = Some(backup);
-            }
-            if let Some(staging) = &change.staging {
-                fs::rename(staging, &change.destination)
-                    .map_err(|cause| error("install output", &change.destination, cause))?;
-                change.installed = true;
-            }
-        }
-        publish(build, result)
-    })();
-    if let Err(cause) = operation {
-        for change in changes.iter().rev() {
-            if change.installed
-                && let Err(restore) = fs::remove_file(&change.destination)
-            {
-                warn!(path = %change.destination.display(), %restore, "could not remove incomplete output");
-            }
-            if let Some(backup) = &change.backup
-                && let Err(restore) = fs::rename(backup, &change.destination)
-            {
-                warn!(path = %change.destination.display(), %restore, "could not restore prior output");
-            }
-        }
-        for change in &changes {
-            if let Some(staging) = &change.staging {
-                let _ = fs::remove_file(staging);
-            }
-        }
-        return Err(cause);
-    }
-    for change in &changes {
-        if let Some(backup) = &change.backup
-            && let Err(cause) = fs::remove_file(backup)
-        {
-            warn!(path = %backup.display(), %cause, "could not remove prior output backup");
-        }
-    }
-    info!(output = %output.display(), artifacts = selected.len(), "published workspace output");
-    Ok(())
-}
-
 /// An OS file lock is released on process exit, including abrupt termination.
 pub struct BuildLock {
     _file: File,
 }
 
 impl BuildLock {
+    /// # Errors
+    /// Returns an error if the build publication guard cannot be created or is already held.
     pub fn acquire(build: &Path) -> Result<Self, OutputError> {
         let path = build.join(".publish.guard");
         if let Ok(metadata) = fs::symlink_metadata(&path)

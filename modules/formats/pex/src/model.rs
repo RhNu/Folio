@@ -1,16 +1,12 @@
-use super::*;
+use super::{HashMap, PexInstruction, PexTarget, PexValue, PexVersion, PexWriteError, ensure_u16};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PexStringId(u16);
 
 impl PexStringId {
-    pub const fn new(index: u16) -> Self {
-        Self(index)
-    }
+    pub const fn new(index: u16) -> Self { Self(index) }
 
-    pub const fn index(self) -> u16 {
-        self.0
-    }
+    pub const fn index(self) -> u16 { self.0 }
 }
 
 /// Header metadata written before the PEX string table.
@@ -76,29 +72,17 @@ impl PexHeader {
         }
     }
 
-    pub const fn target(&self) -> PexTarget {
-        self.target
-    }
+    pub const fn target(&self) -> PexTarget { self.target }
 
-    pub const fn pex_version(&self) -> PexVersion {
-        self.pex_version
-    }
+    pub const fn pex_version(&self) -> PexVersion { self.pex_version }
 
-    pub const fn compilation_time(&self) -> u64 {
-        self.compilation_time
-    }
+    pub const fn compilation_time(&self) -> u64 { self.compilation_time }
 
-    pub fn source_file_name(&self) -> &str {
-        &self.source_file_name
-    }
+    pub fn source_file_name(&self) -> &str { &self.source_file_name }
 
-    pub fn user_name(&self) -> &str {
-        &self.user_name
-    }
+    pub fn user_name(&self) -> &str { &self.user_name }
 
-    pub fn computer_name(&self) -> &str {
-        &self.computer_name
-    }
+    pub fn computer_name(&self) -> &str { &self.computer_name }
 }
 
 /// User flag table entry.
@@ -166,14 +150,12 @@ impl PexFile {
         }
     }
 
-    pub const fn target(&self) -> PexTarget {
-        self.header.target()
-    }
+    pub const fn target(&self) -> PexTarget { self.header.target() }
 
-    pub const fn header(&self) -> &PexHeader {
-        &self.header
-    }
+    pub const fn header(&self) -> &PexHeader { &self.header }
 
+    /// # Errors
+    /// Returns an error if the string or the resulting string table exceeds PEX limits.
     pub fn intern(&mut self, text: impl AsRef<str>) -> Result<PexStringId, PexWriteError> {
         let text = text.as_ref();
         if let Some(id) = self.string_lookup.get(text) {
@@ -189,16 +171,14 @@ impl PexFile {
         }
         ensure_u16("string length", text.len())?;
 
-        let id = PexStringId::new(self.strings.len() as u16);
+        let id = PexStringId::new(ensure_u16("string table", self.strings.len())?);
         self.strings.push(text.to_owned());
         self.string_lookup.insert(text.to_owned(), id);
         tracing::trace!(id = id.index(), len = text.len(), "interned PEX string");
         Ok(id)
     }
 
-    pub fn string_table(&self) -> &[String] {
-        &self.strings
-    }
+    pub fn string_table(&self) -> &[String] { &self.strings }
 
     /// Resolve a checked string-table identifier for inspect clients.
     pub fn resolve_string(&self, id: PexStringId) -> Option<&str> {
@@ -207,10 +187,9 @@ impl PexFile {
             .map(String::as_str)
     }
 }
+
 impl Default for PexFile {
-    fn default() -> Self {
-        Self::new(PexHeader::skyrim(0, "", "", ""))
-    }
+    fn default() -> Self { Self::new(PexHeader::skyrim(0, "", "", "")) }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,8 +1,14 @@
 //! Immutable declaration indexing and source-independent semantic preparation.
 
-use super::*;
-use folio_format_declarations::DeclarationBundle;
 use std::sync::Mutex;
+
+use folio_format_declarations::DeclarationBundle;
+
+use super::{
+    AnalysisCancelled, Arc, BTreeMap, Diagnostic, ExternalScript, ScriptInfo, World, key,
+    script_from_external, validate_external_defaults, validate_external_initializers,
+    validate_external_world,
+};
 
 #[derive(Default)]
 pub(crate) struct ExternalDeclarations {
@@ -80,7 +86,7 @@ impl ExternalDeclarations {
             let validation = self
                 .validation
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(cached) = validation.as_ref()
                 && cached.source_headers == source_headers
             {
@@ -93,7 +99,7 @@ impl ExternalDeclarations {
         *self
             .validation
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(ExternalValidation {
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ExternalValidation {
             source_headers,
             diagnostics: Arc::clone(&diagnostics),
         });

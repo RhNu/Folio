@@ -1,4 +1,4 @@
-use super::*;
+use super::{Endianness, PEX_MAGIC, PexReadError, PexStringId, PexWriteError, ensure_u16};
 
 pub(crate) struct BinaryWriter {
     pub(crate) endianness: Endianness,
@@ -13,13 +13,9 @@ impl BinaryWriter {
         }
     }
 
-    pub(crate) fn into_bytes(self) -> Vec<u8> {
-        self.bytes
-    }
+    pub(crate) fn into_bytes(self) -> Vec<u8> { self.bytes }
 
-    pub(crate) fn write_u8(&mut self, value: u8) {
-        self.bytes.push(value);
-    }
+    pub(crate) fn write_u8(&mut self, value: u8) { self.bytes.push(value); }
 
     pub(crate) fn write_u16(&mut self, value: u16) {
         match self.endianness {
@@ -61,8 +57,7 @@ impl BinaryWriter {
         what: &'static str,
         len: usize,
     ) -> Result<(), PexWriteError> {
-        ensure_u16(what, len)?;
-        self.write_u16(len as u16);
+        self.write_u16(ensure_u16(what, len)?);
         Ok(())
     }
 
@@ -78,7 +73,12 @@ impl BinaryWriter {
             });
         }
 
-        self.write_u16(value.len() as u16);
+        self.write_u16(u16::try_from(value.len()).map_err(|_cause| {
+            PexWriteError::StringTooLong {
+                what,
+                len: value.len(),
+            }
+        })?);
         self.bytes.extend(value.as_bytes());
         Ok(())
     }
@@ -96,9 +96,7 @@ impl BinaryWriter {
         Ok(())
     }
 
-    pub(crate) fn write_user_flags(&mut self, user_flags: u32) {
-        self.write_u32(user_flags);
-    }
+    pub(crate) fn write_user_flags(&mut self, user_flags: u32) { self.write_u32(user_flags); }
 }
 
 pub(crate) struct BinaryReader<'a> {
@@ -116,13 +114,9 @@ impl<'a> BinaryReader<'a> {
         }
     }
 
-    pub(crate) const fn offset(&self) -> usize {
-        self.offset
-    }
+    pub(crate) const fn offset(&self) -> usize { self.offset }
 
-    pub(crate) fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.offset)
-    }
+    pub(crate) fn remaining(&self) -> usize { self.bytes.len().saturating_sub(self.offset) }
 
     pub(crate) fn read_magic(&mut self) -> Result<u32, PexReadError> {
         let bytes = self.take(4, "magic")?;
@@ -189,7 +183,8 @@ impl<'a> BinaryReader<'a> {
         let len = usize::from(self.read_u16(what)?);
         let offset = self.offset;
         let bytes = self.take(len, what)?;
-        String::from_utf8(bytes.to_vec()).map_err(|_| PexReadError::InvalidUtf8 { offset, what })
+        String::from_utf8(bytes.to_vec())
+            .map_err(|_cause| PexReadError::InvalidUtf8 { offset, what })
     }
 
     pub(crate) fn read_string_id(

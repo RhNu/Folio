@@ -1,11 +1,12 @@
+use std::{cell::Cell, sync::Arc};
+
 use super::*;
-use std::cell::Cell;
 
 fn view(sources: &[&str]) -> AnalysisView {
     let mut host = crate::AnalysisHost::new();
     for (index, text) in sources.iter().enumerate() {
         host.upsert(
-            FileId(index as u32),
+            FileId(u32::try_from(index).expect("test fixture fits u32")),
             folio_source::Revision(1),
             Arc::from(*text),
             folio_papyrus::PapyrusDialect::Skyrim,
@@ -164,7 +165,7 @@ fn candidate_enumeration_cancels_after_warmup_and_can_retry() {
 #[test]
 fn ascii_prefix_matching_does_not_accept_unicode_case_folding() {
     assert!(matches_prefix("Kept", "kE"));
-    assert!(!matches_prefix("Kept", "ke"));
+    assert!(!matches_prefix("\u{212a}ept", "ke"));
     assert!(!matches_prefix("Äpfel", "ä"));
     assert!(matches_prefix("Äpfel", "Ä"));
 }
@@ -187,7 +188,7 @@ fn external_view(text: &str, declarations: &[u8]) -> AnalysisView {
 #[test]
 fn filtered_unicode_member_still_shadows_an_ascii_script_name() {
     let text = "ScriptName User Extends Api\nFunction Run()\nEndFunction\n";
-    let declarations = r#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Api","members":[{"name":"Kept","kind":"property","ty":"Int","access":{"kind":"auto"}}]},{"name":"Kept","members":[]}]}"#;
+    let declarations = r#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Api","members":[{"name":"\u212aept","kind":"property","ty":"Int","access":{"kind":"auto"}}]},{"name":"Kept","members":[]}]}"#;
     let view = external_view(text, declarations.as_bytes());
     let at = text.find("EndFunction").unwrap();
     let filtered = view
@@ -198,8 +199,9 @@ fn filtered_unicode_member_still_shadows_an_ascii_script_name() {
         .completion_candidates(FileId(0), at, None, false, "", &|| false)
         .unwrap();
     assert!(
-        all.iter()
-            .any(|item| matches!(&item.symbol, Symbol::Member { name, .. } if name == "Kept"))
+        all.iter().any(
+            |item| matches!(&item.symbol, Symbol::Member { name, .. } if name == "\u{212a}ept")
+        )
     );
     assert!(
         !all.iter()
@@ -210,7 +212,7 @@ fn filtered_unicode_member_still_shadows_an_ascii_script_name() {
 #[test]
 fn filtered_unicode_import_still_participates_in_ambiguity() {
     let text = "ScriptName User\nImport One\nImport Two\nFunction Run()\nEndFunction\n";
-    let declarations = r#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"One","members":[{"name":"Kept","kind":"function","return_type":"Int","global":true}]},{"name":"Two","members":[{"name":"Kept","kind":"function","return_type":"Int","global":true}]}]}"#;
+    let declarations = r#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"One","members":[{"name":"Kept","kind":"function","return_type":"Int","global":true}]},{"name":"Two","members":[{"name":"\u212aept","kind":"function","return_type":"Int","global":true}]}]}"#;
     let view = external_view(text, declarations.as_bytes());
     let filtered = view
         .completion_candidates(

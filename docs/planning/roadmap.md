@@ -4,6 +4,7 @@ This is the workspace's record of outstanding work and unresolved verification. 
 
 ## Distribution and compatibility
 
+- Verify the Rusteward quality workflow on GitHub's Ubuntu and Windows runners, including exact-revision prebuilt installation and installer cache reuse. Local quality checks do not establish hosted runner behavior.
 - Establish executable and VS Code client distribution channels, installation guidance, and version policy when release channels are selected.
 - Establish compatibility evidence with identified external environments and inputs before declaring supported game and tool combinations.
 

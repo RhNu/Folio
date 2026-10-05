@@ -10,7 +10,7 @@ fn trusted_markdown_treats_documentation_as_prose() {
 #[test]
 fn command_arguments_round_trip_unicode_and_reserved_characters() {
     let args = json!(["file:///D:/Mod%20API.psc", {"line":4,"character":2}, "说明"]);
-    let link = command_link("Declaration", "folio.openLocation", args.clone());
+    let link = command_link("Declaration", "folio.openLocation", &args);
     let encoded = link.split_once('?').unwrap().1.strip_suffix(')').unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&percent_decode(encoded).unwrap()).unwrap(),

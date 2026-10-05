@@ -1,5 +1,9 @@
 //! Validation and typed body extraction for one source file.
-use super::*;
+use super::{
+    AnalysisCancelled, AnalysisView, BTreeMap, Body, Declaration, FileAnalysis, FileId, MemberInfo,
+    MemberKind, ParameterDefault, PropertyForm, Scope, ScriptInfo, SourceSpan, Symbol, SyntaxKind,
+    SyntaxNode, Type, World, diagnostic, enclosing_name, key, lookup_member, span,
+};
 
 pub(super) fn analyze_file(
     view: &AnalysisView,
@@ -25,31 +29,7 @@ pub(super) fn analyze_file(
             ));
         }
     }
-    let mut imports = Vec::new();
-    if let Some(declarations) = view.located_declarations(file) {
-        for item in declarations.iter() {
-            if cancelled() {
-                return Err(AnalysisCancelled);
-            }
-            match &item.declaration {
-                Declaration::Import { name } => {
-                    if !world.scripts.contains_key(&key(name)) {
-                        result.diagnostics.push(diagnostic(
-                            "semantic.unknown-import",
-                            format!("unknown import {name}"),
-                            SourceSpan {
-                                file,
-                                range: item.range,
-                            },
-                        ));
-                    } else {
-                        imports.push(name.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
+    let imports = collect_imports(view, world, file, result, cancelled)?;
     for node in root.descendants().filter(|node| {
         matches!(
             node.kind(),
@@ -65,47 +45,7 @@ pub(super) fn analyze_file(
         let state = enclosing_name(&node, SyntaxKind::StateDecl, "state");
         let property = enclosing_name(&node, SyntaxKind::PropertyDecl, "property");
         let member = if let Some(property) = &property {
-            let property_type = script
-                .members
-                .get(&key(property))
-                .map(|member| member.ty.clone())
-                .unwrap_or(Type::Error);
-            let ty = if name.eq_ignore_ascii_case("get") {
-                property_type.clone()
-            } else {
-                Type::Void
-            };
-            let actual = folio_papyrus::FunctionAst::cast(node.clone());
-            let parameters: Vec<(String, Type, ParameterDefault)> = actual
-                .map(|ast| {
-                    ast.parameters()
-                        .into_iter()
-                        .map(|parameter| {
-                            (
-                                parameter.name,
-                                Type::from_spelling(&parameter.ty),
-                                parameter
-                                    .default
-                                    .clone()
-                                    .map(ParameterDefault::Literal)
-                                    .unwrap_or(ParameterDefault::Required),
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            Some(MemberInfo {
-                name: name.clone(),
-                ty,
-                kind: MemberKind::Function,
-                parameters,
-                global: false,
-                auto: false,
-                read_only: false,
-                readable: true,
-                writable: true,
-                definition: Some(span(file, &node)),
-            })
+            Some(accessor_member(script, file, &node, &name, property))
         } else if let Some(state) = &state {
             script
                 .states
@@ -168,6 +108,90 @@ pub(super) fn analyze_file(
     Ok(())
 }
 
+/// Validate imports while retaining every known import in declaration order.
+fn collect_imports(
+    view: &AnalysisView,
+    world: &World,
+    file: FileId,
+    result: &mut FileAnalysis,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<String>, AnalysisCancelled> {
+    let mut imports = Vec::new();
+    if let Some(declarations) = view.located_declarations(file) {
+        for item in declarations.iter() {
+            if cancelled() {
+                return Err(AnalysisCancelled);
+            }
+            if let Declaration::Import { name } = &item.declaration {
+                if world.scripts.contains_key(&key(name)) {
+                    imports.push(name.clone());
+                } else {
+                    result.diagnostics.push(diagnostic(
+                        "semantic.unknown-import",
+                        format!("unknown import {name}"),
+                        SourceSpan {
+                            file,
+                            range: item.range,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    Ok(imports)
+}
+
+/// Property accessors use the property type and their explicit parameter declarations.
+fn accessor_member(
+    script: &ScriptInfo,
+    file: FileId,
+    node: &SyntaxNode,
+    name: &str,
+    property: &str,
+) -> MemberInfo {
+    let property_type = script
+        .members
+        .get(&key(property))
+        .map_or(Type::Error, |member| member.ty.clone());
+    let ty = if name.eq_ignore_ascii_case("get") {
+        property_type
+    } else {
+        Type::Void
+    };
+    let actual = folio_papyrus::FunctionAst::cast(node.clone());
+    let parameters: Vec<(String, Type, ParameterDefault)> = actual
+        .map(|ast| {
+            ast.parameters()
+                .into_iter()
+                .map(|parameter| {
+                    (
+                        parameter.name,
+                        Type::from_spelling(&parameter.ty),
+                        parameter
+                            .default
+                            .clone()
+                            .map_or(ParameterDefault::Required, ParameterDefault::Literal),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    MemberInfo {
+        name: name.to_owned(),
+        ty,
+        kind: MemberKind::Function,
+        parameters,
+        global: false,
+        property: PropertyForm {
+            auto: false,
+            read_only: false,
+        },
+        readable: true,
+        writable: true,
+        definition: Some(span(file, node)),
+    }
+}
+
 pub(super) fn callable_name(node: &SyntaxNode) -> Option<String> {
     let keyword = if node.kind() == SyntaxKind::EventDecl {
         "event"
@@ -178,7 +202,7 @@ pub(super) fn callable_name(node: &SyntaxNode) -> Option<String> {
     for token in node
         .children_with_tokens()
         .take_while(|item| item.kind() != SyntaxKind::ParameterList)
-        .filter_map(|item| item.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
     {
         if token.kind() != SyntaxKind::Ident {
             continue;

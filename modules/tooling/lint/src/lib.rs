@@ -34,7 +34,7 @@ impl std::fmt::Display for ConfigError {
             Self::UnknownRule(rule) => write!(formatter, "unknown lint rule {rule}"),
             Self::InvalidLevel { rule, level } => {
                 write!(formatter, "invalid lint level {level} for {rule}")
-            }
+            },
         }
     }
 }
@@ -43,6 +43,9 @@ impl std::error::Error for ConfigError {}
 
 impl LintConfig {
     /// Validates the rule names and levels supplied by the project manifest.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown rule or an unsupported severity level.
     pub fn from_rules(rules: &BTreeMap<String, String>) -> Result<Self, ConfigError> {
         let mut config = Self::default();
         for (rule, level) in rules {
@@ -59,7 +62,7 @@ impl LintConfig {
                         rule: rule.clone(),
                         level: level.clone(),
                     });
-                }
+                },
             };
         }
         Ok(config)
@@ -106,7 +109,7 @@ fn visit_statement(statement: &Statement, config: &LintConfig, output: &mut Vec<
             for statement in else_branch {
                 visit_statement(statement, config, output);
             }
-        }
+        },
         Statement::While {
             condition, body, ..
         } => {
@@ -114,8 +117,8 @@ fn visit_statement(statement: &Statement, config: &LintConfig, output: &mut Vec<
             for statement in body {
                 visit_statement(statement, config, output);
             }
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -145,13 +148,13 @@ fn visit_condition(expression: &ExpressionFact, config: &LintConfig, output: &mu
             }
             visit_condition(left, config, output);
             visit_condition(right, config, output);
-        }
+        },
         ExpressionKind::Unary { operand, .. }
         | ExpressionKind::Parenthesized(operand)
         | ExpressionKind::Cast { value: operand, .. } => {
             visit_condition(operand, config, output);
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 

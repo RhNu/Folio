@@ -1,7 +1,8 @@
 //! Project identities and resolved decisions, independent of file loading.
 
-use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 /// Byte offsets in a named manifest or declaration carrier.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

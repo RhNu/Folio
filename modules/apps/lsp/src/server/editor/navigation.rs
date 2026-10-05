@@ -1,5 +1,8 @@
 //! Rich hover, definition locations, and project-wide navigation.
-use super::*;
+use super::{
+    QueryContext, QueryResult, Symbol, TextRange, Value, json, parse_position, path_to_uri,
+    presentation, range_json, requests,
+};
 
 impl QueryContext {
     pub(super) fn navigation(&self, method: &str, params: &Value) -> QueryResult {
@@ -24,7 +27,7 @@ impl QueryContext {
         let result = match method {
             "textDocument/definition" | "textDocument/declaration" => {
                 self.declaration_location(&symbol).unwrap_or(Value::Null)
-            }
+            },
             "textDocument/references" => json!(
                 self.locations(&folio_ide::references_of(
                     view,
@@ -43,7 +46,7 @@ impl QueryContext {
                 json!(folio_ide::document_highlights(view, file, byte).iter().filter_map(|span| {
                     Some(json!({"range":range_json(folio_ide::range(text, span.range, self.encoding)?),"kind":1}))
                 }).collect::<Vec<_>>())
-            }
+            },
             _ => Value::Null,
         };
         Ok(result)
@@ -146,7 +149,7 @@ impl QueryContext {
                 .as_ref()
                 .and_then(|metadata| requests::symbol_origin(metadata, owner))
         });
-        let links = if self.settings.details {
+        let links = if self.settings.hover.details {
             item.symbol
                 .as_ref()
                 .map_or_else(Vec::new, |symbol| self.hover_links(params, symbol))
@@ -167,7 +170,7 @@ impl QueryContext {
                 links.push(presentation::command_link(
                     "Go to declaration",
                     "folio.openLocation",
-                    json!([location["uri"], location["range"]]),
+                    &json!([location["uri"], location["range"]]),
                 ));
             } else if let (Some(uri), Some(line), Some(character)) = (
                 location["uri"].as_str(),
@@ -189,7 +192,7 @@ impl QueryContext {
             links.push(presentation::command_link(
                 "Owning script",
                 "folio.openLocation",
-                json!([location["uri"], location["range"]]),
+                &json!([location["uri"], location["range"]]),
             ));
         }
         if self.commands {
@@ -211,7 +214,7 @@ impl QueryContext {
                 links.push(presentation::command_link(
                     &format!("{} {label}", locations.len()),
                     command,
-                    json!([params["textDocument"]["uri"], params["position"], locations]),
+                    &json!([params["textDocument"]["uri"], params["position"], locations]),
                 ));
             }
         }
@@ -221,22 +224,38 @@ impl QueryContext {
 
 fn same_symbol(left: &Symbol, right: &Symbol) -> bool {
     match (left, right) {
-        (Symbol::Script(a), Symbol::Script(b)) => a.eq_ignore_ascii_case(b),
-        (Symbol::Member { script: a, name: c }, Symbol::Member { script: b, name: d }) => {
-            a.eq_ignore_ascii_case(b) && c.eq_ignore_ascii_case(d)
-        }
+        (Symbol::Script(left_script), Symbol::Script(right_script)) => {
+            left_script.eq_ignore_ascii_case(right_script)
+        },
+        (
+            Symbol::Member {
+                script: left_script,
+                name: left_scope,
+            },
+            Symbol::Member {
+                script: right_script,
+                name: right_scope,
+            },
+        ) => {
+            left_script.eq_ignore_ascii_case(right_script)
+                && left_scope.eq_ignore_ascii_case(right_scope)
+        },
         (
             Symbol::StateMember {
-                script: a,
-                state: c,
-                name: e,
+                script: left_script,
+                state: left_scope,
+                name: left_name,
             },
             Symbol::StateMember {
-                script: b,
-                state: d,
-                name: f,
+                script: right_script,
+                state: right_scope,
+                name: right_name,
             },
-        ) => a.eq_ignore_ascii_case(b) && c.eq_ignore_ascii_case(d) && e.eq_ignore_ascii_case(f),
+        ) => {
+            left_script.eq_ignore_ascii_case(right_script)
+                && left_scope.eq_ignore_ascii_case(right_scope)
+                && left_name.eq_ignore_ascii_case(right_name)
+        },
         _ => left == right,
     }
 }

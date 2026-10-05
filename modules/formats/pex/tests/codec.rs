@@ -4,7 +4,7 @@ use folio_format_pex::*;
 // Hand-assembled Skyrim PEX header and empty tables. This is deliberately
 // independent of the writer so a shared encoder/decoder bug cannot pass it.
 const EMPTY_SKYRIM_PEX: &[u8] = &[
-    0xfa, 0x57, 0xc0, 0xde, // magic
+    0xFA, 0x57, 0xC0, 0xDE, // magic
     3, 2, 0, 1, // version and game
     0, 0, 0, 0, 0, 0, 0, 0, // time
     0, 0, 0, 0, 0, 0, // source/user/computer strings

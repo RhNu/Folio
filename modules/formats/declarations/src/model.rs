@@ -180,6 +180,7 @@ impl Member {
             MemberData::Variable { .. } => MemberKind::Variable,
         }
     }
+
     pub fn ty(&self) -> Option<&str> {
         match &self.data {
             MemberData::Function { return_type, .. }
@@ -188,6 +189,7 @@ impl Member {
             MemberData::Event { .. } => None,
         }
     }
+
     pub fn parameters(&self) -> &[Parameter] {
         match &self.data {
             MemberData::Function { parameters, .. }
@@ -196,6 +198,7 @@ impl Member {
             _ => &[],
         }
     }
+
     pub fn is_global(&self) -> bool {
         matches!(
             self.data,
@@ -203,6 +206,7 @@ impl Member {
                 | MemberData::UnknownCallable { global: true, .. }
         )
     }
+
     pub fn is_native(&self) -> bool {
         matches!(
             self.data,
@@ -211,6 +215,7 @@ impl Member {
                 | MemberData::UnknownCallable { native: true, .. }
         )
     }
+
     pub fn is_auto(&self) -> bool {
         matches!(
             self.data,
@@ -220,6 +225,7 @@ impl Member {
             }
         )
     }
+
     pub fn is_read_only(&self) -> bool {
         matches!(
             self.data,
@@ -233,6 +239,7 @@ impl Member {
             }
         )
     }
+
     pub fn is_readable(&self) -> bool {
         matches!(
             self.data,
@@ -244,6 +251,7 @@ impl Member {
             }
         )
     }
+
     pub fn is_writable(&self) -> bool {
         matches!(
             self.data,
@@ -253,6 +261,7 @@ impl Member {
             }
         )
     }
+
     pub fn initial_literal(&self) -> Option<&str> {
         match &self.data {
             MemberData::Property {

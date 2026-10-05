@@ -27,6 +27,7 @@
 
 ## Repository conventions
 
+- Use Rusteward (`cargo dev`) for Rust formatting, Clippy, source layout, and effective code-line checks. Run `cargo dev format --locked`, then `cargo dev check --locked` after Rust changes. `rusteward.toml` preserves only the project's line thresholds; formatting and lint rules use Rusteward defaults.
 - Put every Rust unit test module in a separate child module file named `tests.rs`; do not define unit test modules inline or use alternative entry names. The parent declares `#[cfg(test)] mod tests;`. Use `src/tests.rs` for crate-root units and `<module>/tests.rs` for units of other modules. Split large suites into responsibility-based child files under the owning `tests/` module directory, with `tests.rs` as their entry.
 - Put comprehensive tests of a crate's public workflows in that crate's `tests/` directory beside `src/`, grouped by responsibility. Split mixed suites according to coverage: private implementation units remain in `tests.rs`, while complete public API flows use external Cargo test targets. Keep helpers in the test trees and do not widen production visibility solely for tests. Test placement does not establish or authorize external I/O, process, editor, or game verification.
 - Libraries emit structured `tracing` events; process entry points initialize subscribers. Build logs identify the package, target, revision, and stage. Reserve LSP stdout for protocol messages.

@@ -35,9 +35,7 @@ fn all_scopes() -> Vec<FlagScope> {
 }
 
 impl UserFlag {
-    pub fn applies_to(&self, scope: FlagScope) -> bool {
-        self.scopes.contains(&scope)
-    }
+    pub fn applies_to(&self, scope: FlagScope) -> bool { self.scopes.contains(&scope) }
 }
 
 impl From<String> for UserFlag {
@@ -51,12 +49,14 @@ impl From<String> for UserFlag {
 }
 
 impl From<&str> for UserFlag {
-    fn from(name: &str) -> Self {
-        name.to_owned().into()
-    }
+    fn from(name: &str) -> Self { name.to_owned().into() }
 }
 
 /// Validate names/scopes and allocate free bits, preserving explicitly selected indexes.
+///
+/// # Errors
+/// Returns an error for invalid or reserved names, duplicate names or bits, invalid scopes,
+/// out-of-range bit indexes, or exhausted target flag capacity.
 pub fn resolve_user_flags(flags: &[UserFlag], maximum_bit: u8) -> Result<Vec<UserFlag>, String> {
     let mut names = BTreeSet::new();
     let mut bits = BTreeSet::from([0, 1]);

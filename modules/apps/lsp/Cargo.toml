@@ -23,6 +23,3 @@ tracing.workspace = true
 
 [dev-dependencies]
 folio-analysis = { path = "../../compiler/analysis" }
-
-[lints]
-workspace = true

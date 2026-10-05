@@ -14,6 +14,7 @@ pub(crate) fn project(texts: &[(&str, &str)]) -> IdeSnapshot {
         .unwrap()
         .into()
 }
+
 pub(crate) fn file(view: &IdeSnapshot, name: &str) -> FileId {
     *view
         .sources

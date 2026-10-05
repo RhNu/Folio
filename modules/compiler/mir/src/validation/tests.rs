@@ -1,5 +1,5 @@
 use super::*;
-#[path = "../../tests/common/mod.rs"]
+#[path = "../../tests/common/support.rs"]
 mod common;
 use common::{function, source};
 

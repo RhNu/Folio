@@ -1,11 +1,10 @@
 //! Editor symbol views derived from the parser and the shared typed HIR.
 
-use crate::IdeSnapshot;
 use folio_hir::{ExpressionKind, MemberFact, MemberKind, Script, Symbol, Type};
 use folio_papyrus::{SyntaxKind, SyntaxNode};
 use folio_source::{FileId, SourceSpan, TextRange};
 
-use crate::display_type;
+use crate::{IdeSnapshot, display_type};
 
 fn contains(span: SourceSpan, byte: usize) -> bool {
     span.range.start <= byte && byte < span.range.end
@@ -41,8 +40,9 @@ pub(crate) fn owner_script(symbol: &Symbol) -> Option<String> {
 
 fn symbol_name(symbol: &Symbol) -> &str {
     match symbol {
-        Symbol::Script(name) | Symbol::ParentReceiver { script: name } => name,
-        Symbol::Intrinsic { name }
+        Symbol::Script(name)
+        | Symbol::ParentReceiver { script: name }
+        | Symbol::Intrinsic { name }
         | Symbol::Member { name, .. }
         | Symbol::StateMember { name, .. }
         | Symbol::PropertyAccessor { name, .. }
@@ -82,10 +82,10 @@ pub(crate) fn signature(member: &MemberFact) -> String {
         MemberKind::Function { event: true, .. } => format!("Event {name}({args})"),
         MemberKind::Function { .. } if member.ty == Type::Void => {
             format!("Function {name}({args})")
-        }
+        },
         MemberKind::Function { .. } => {
             format!("{} Function {name}({args})", display_type(&member.ty))
-        }
+        },
         MemberKind::Property { .. } => format!("{} Property {name}", display_type(&member.ty)),
         MemberKind::Variable => format!("{} {name}", display_type(&member.ty)),
     };
@@ -115,7 +115,7 @@ pub(crate) fn describe_symbol(script: &Script, symbol: &Symbol, ty: &Type) -> St
     match symbol {
         Symbol::Member { .. } | Symbol::StateMember { .. } | Symbol::PropertyAccessor { .. } => {
             format!("{}\nDeclared in {}", header, owner.unwrap_or_default())
-        }
+        },
         Symbol::Parameter { .. } => format!("parameter {header}"),
         Symbol::Local { .. } => format!("local {header}"),
         _ => header,
@@ -175,12 +175,12 @@ pub(crate) fn script_reference_token(
         name.to_string(),
         SourceSpan {
             file,
-            range: token_range(&token),
+            range: token_range(token),
         },
     ))
 }
 
-/// Navigates only to selected PSC source spans; external declaration carriers have no FileId.
+/// Navigates only to selected PSC source spans; external declaration carriers have no `FileId`.
 pub fn source_declaration(view: &IdeSnapshot, file: FileId, byte: usize) -> Option<SourceSpan> {
     if let Some(span) = view.analysis.definition(file, byte) {
         return Some(span);
@@ -229,8 +229,7 @@ fn member_kind(script: &Script, symbol: &Symbol) -> SemanticTokenKind {
         Some(MemberKind::Function { global: true, .. }) => SemanticTokenKind::Function,
         Some(MemberKind::Function { .. }) => SemanticTokenKind::Method,
         Some(MemberKind::Property { .. }) => SemanticTokenKind::Property,
-        Some(MemberKind::Variable) => SemanticTokenKind::Variable,
-        None => SemanticTokenKind::Variable,
+        Some(MemberKind::Variable) | None => SemanticTokenKind::Variable,
     }
 }
 
@@ -240,7 +239,7 @@ fn classify(script: &Script, symbol: &Symbol) -> SemanticTokenKind {
         Symbol::Intrinsic { .. } => SemanticTokenKind::Method,
         Symbol::Member { .. } | Symbol::StateMember { .. } | Symbol::PropertyAccessor { .. } => {
             member_kind(script, symbol)
-        }
+        },
         Symbol::Parameter { .. } => SemanticTokenKind::Parameter,
         Symbol::Local { .. } => SemanticTokenKind::Variable,
     }
@@ -270,7 +269,7 @@ pub fn semantic_tokens(view: &IdeSnapshot, file: FileId) -> Vec<SemanticToken> {
             if node.kind() == SyntaxKind::TypeRef || node.kind() == SyntaxKind::ImportDecl {
                 for token in node
                     .children_with_tokens()
-                    .filter_map(|item| item.into_token())
+                    .filter_map(folio_papyrus::SyntaxElement::into_token)
                 {
                     if token.kind() != SyntaxKind::Ident
                         || token.text().eq_ignore_ascii_case("import")
@@ -314,12 +313,11 @@ pub fn semantic_tokens(view: &IdeSnapshot, file: FileId) -> Vec<SemanticToken> {
         add(declaration.span.range, kind, true, readonly);
     }
     for expression in &script.expressions {
-        if let ExpressionKind::Member { owner, name } = &expression.kind {
-            if folio_analysis::intrinsic_signature(&name.text, Some(&owner.ty))
+        if let ExpressionKind::Member { owner, name } = &expression.kind
+            && folio_analysis::intrinsic_signature(&name.text, Some(&owner.ty))
                 .is_some_and(|signature| !signature.callable)
-            {
-                add(name.span.range, SemanticTokenKind::Property, false, true);
-            }
+        {
+            add(name.span.range, SemanticTokenKind::Property, false, true);
         }
         if let Some(binding) = &expression.binding {
             let kind = classify(&script, &binding.symbol);
@@ -356,14 +354,14 @@ pub struct DocumentSymbol {
     pub kind: u32,
     pub range: TextRange,
     pub selection_range: TextRange,
-    pub children: Vec<DocumentSymbol>,
+    pub children: Vec<Self>,
 }
 
 fn declaration_name(node: &SyntaxNode, keyword: &str) -> Option<(String, TextRange)> {
     let mut after = false;
     for token in node
         .children_with_tokens()
-        .filter_map(|item| item.into_token())
+        .filter_map(folio_papyrus::SyntaxElement::into_token)
     {
         if token.kind() != SyntaxKind::Ident {
             continue;
@@ -396,7 +394,7 @@ fn node_symbol(node: &SyntaxNode, script: &Script) -> Option<DocumentSymbol> {
     let (name, selection_range) = if keyword.is_empty() {
         let token = node
             .children_with_tokens()
-            .filter_map(|item| item.into_token())
+            .filter_map(folio_papyrus::SyntaxElement::into_token)
             .find(|token| token.kind() == SyntaxKind::Ident)?;
         let range = token.text_range();
         (

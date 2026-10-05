@@ -65,9 +65,7 @@ fn flag_and_call_policy_changes_invalidate_warmed_views() {
     assert_eq!(original.diagnostics(file).unwrap(), errors);
 }
 
-fn source(text: &str) -> Arc<str> {
-    Arc::from(text)
-}
+fn source(text: &str) -> Arc<str> { Arc::from(text) }
 
 #[test]
 fn repeated_hir_queries_share_the_completed_model_and_old_views_retain_it() {

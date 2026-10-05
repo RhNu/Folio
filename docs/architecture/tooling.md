@@ -112,25 +112,27 @@ Executable lookup checks the extension setting, then `PATH`, then the repository
 
 ## Repository maintenance
 
-`modules/apps/xtask` provides repository maintenance commands, separately from the `folio` commands for Papyrus projects. The root Cargo alias runs the line checker:
+[Rusteward](https://github.com/RhNu/Rusteward) provides Rust formatting, Clippy, source-layout policies, and effective code-line checks across the Cargo workspace. These contributor commands are separate from Folio's Papyrus `fmt` and `lint` operations. The repository's `rust-toolchain.toml` selects Rust and the rustfmt/Clippy components.
+
+Install Rusteward once with `cargo install --git https://github.com/RhNu/Rusteward.git --locked rusteward`. Run these commands from the workspace or any member directory:
 
 ```powershell
-cargo xtask check-lines
-cargo xtask check-lines --all
-cargo xtask check-lines --manifest-path <Cargo.toml>
+cargo dev format --locked
+cargo dev format --check --diff --locked
+cargo dev lint --locked
+cargo dev check --locked
+cargo dev config show --locked
 ```
 
-Command handling, pure counting logic, and workspace scanning have separate responsibilities. Cargo metadata identifies the workspace root and configured build directory, independently of the invocation directory or crate depth.
+`format` applies rustfmt followed by declaration spacing. `format --check --diff` shows the final differences without modifying source. `lint` runs source policies and the managed Clippy profile; `check` verifies formatting and collects lint findings. Add `--manifest-path <Cargo.toml>` to select another workspace, or `--json` for structured diagnostics. `--locked` preserves Cargo.lock during workspace discovery and Clippy.
 
-The scanner covers workspace `.rs` files, including tests, inactive feature code, and xtask itself. It excludes Cargo's configured build directory and any `.git`, `target`, `node_modules`, or `.folio` directory. It does not follow symbolic links. File read or metadata failures return status 1 rather than treating a partial scan as success.
+`rusteward.toml` specifies only the inherited line policy: warn above 650 effective code lines and error above 1,200, with nonfatal line warnings. Formatting and lint use Rusteward defaults, including the managed `all`/`pedantic` Clippy profile, declaration spacing, `mod-rs`, and external unit-test modules. Keep this configuration free of project-specific formatting and lint overrides. User-level Rusteward configuration participates in normal layering; use `config show` to confirm that a local profile has not overridden these defaults.
 
-Counting uses the `ra-ap-rustc_lexer` crate through Cargo. It is derived from `rust-lang/rust` and licensed under MIT or Apache-2.0. The root workspace fixes a compatible `unicode-ident` version to match the lexer's Unicode tables; repository dependency configuration is authoritative for versions.
+Effective code lines contain Rust token content: blank lines, comment-only lines, BOM, and shebang are excluded; nonblank contents of multiline literals count. The same thresholds apply to production code, tests, and shared test helpers. Split files that exceed the hard limit by responsibility. Rusteward scans authored workspace Rust sources, including tests and inactive feature code, and skips symlinks, Cargo output, generated files, and its default excluded directories. See the [Rusteward reference](https://github.com/RhNu/Rusteward/blob/main/docs/features.md) for scan boundaries and the authoritative default profiles.
 
-A physical line counts once if it contains non-whitespace, non-comment token content. Blank lines, comment-only lines, a UTF-8 BOM, and a shebang do not count. A trailing comment does not exclude the code before it. The lexer handles nested block comments, characters, lifetimes, and ordinary, raw, byte, and C strings. Nonblank contents of multiline literals count; blank lines inside them do not. Counting does not require valid Rust syntax.
+Rusteward returns status 0 for passing checks, 1 for formatting or lint failures, and 2 for operational errors. Clippy warnings fail the check; custom rule warnings remain nonfatal under the default policy.
 
-Files above 650 code lines produce warnings; files above 1,200 produce errors and status 2. Warnings do not change the exit status. By default, output lists only files over a threshold; `--all` lists every file. Results are sorted by path and summarize the file count, maximum code line count, warnings, and errors.
-
-Split files that exceed the hard limit by responsibility. The same line thresholds apply to production code, test entries, child test modules, and shared test helpers.
+The Rust quality workflow installs the repository-selected Rust toolchain and Rusteward through `RhNu/Rusteward@main`, then runs `cargo dev check --locked` on Ubuntu and Windows. Hosted installation and cache verification remain tracked in the roadmap until verified on GitHub runners.
 
 ## Rust test organization
 
@@ -140,4 +142,4 @@ When a unit suite grows too large, keep `tests.rs` as its entry and declare resp
 
 Comprehensive tests that cover a crate's complete public workflow belong in its `tests/` directory beside `src/`. Each entry is a Cargo test target named for its responsibility and imports the crate's public API. Public parser and codec contracts, semantic analysis, HIR-to-MIR lowering, PEX emission, and project resolution and planning are tested this way with in-memory inputs. Private function and boundary units remain inside their owning source modules. Mixed suites are split according to what each case exercises, without dropping assertions or exposing private production APIs solely for testing.
 
-Shared fixtures and independent test evaluators live under the test trees, normally `tests/common/mod.rs`. An internal unit suite can reference a shared fixture through a test-only helper module. Helpers are not standalone Cargo test entries or production APIs. Unit and comprehensive suites can both test pure logic; their placement alone does not imply real filesystem, process, protocol, editor, or game coverage. External verification still requires the separately authorized workflow and any unresolved results remain in the roadmap.
+Shared fixtures and independent test evaluators live under the test trees, normally `tests/common/support.rs`. An internal unit suite can reference a shared fixture through a test-only helper module. Helpers are not standalone Cargo test entries or production APIs. Unit and comprehensive suites can both test pure logic; their placement alone does not imply real filesystem, process, protocol, editor, or game coverage. External verification still requires the separately authorized workflow and any unresolved results remain in the roadmap.

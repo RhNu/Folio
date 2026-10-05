@@ -69,7 +69,7 @@ fn checks_flag_scopes_owner_and_duplicate_modifiers() {
     assert!(
         codes(
             "ScriptName A Conditional\nInt Property P Auto Tag Conditional\n",
-            &[flag.clone()]
+            std::slice::from_ref(&flag)
         )
         .is_empty()
     );

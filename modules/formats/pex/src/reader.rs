@@ -1,6 +1,13 @@
-use super::*;
+use super::{
+    BinaryReader, HashMap, PEX_MAGIC, PexDebugFunctionInfo, PexDebugFunctionType, PexDebugInfo,
+    PexFile, PexFunction, PexHeader, PexInstruction, PexLocal, PexObject, PexOpcode, PexParameter,
+    PexProperty, PexReadError, PexState, PexStringId, PexTarget, PexUserFlag, PexValue,
+    PexVariable, PexVersion, validate_for_write,
+};
 
 impl PexFile {
+    /// # Errors
+    /// Returns an error for unsupported headers, truncated or malformed data, invalid references, or trailing bytes.
     pub fn read_from_slice(bytes: &[u8]) -> Result<Self, PexReadError> {
         let _span = tracing::debug_span!("read_pex", bytes = bytes.len()).entered();
         let mut reader = BinaryReader::new(bytes);
@@ -25,12 +32,12 @@ impl PexFile {
         let source_file_name = reader.read_counted_str("source file name")?;
         let user_name = reader.read_counted_str("user name")?;
         let computer_name = reader.read_counted_str("computer name")?;
-        let string_count = usize::from(reader.read_u16("string table count")?);
-        let mut strings = Vec::with_capacity(string_count);
+        let string_count = reader.read_u16("string table count")?;
+        let mut strings = Vec::with_capacity(usize::from(string_count));
         let mut string_lookup = HashMap::new();
-        for _ in 0..string_count {
+        for index in 0..string_count {
             let string = reader.read_counted_str("string table entry")?;
-            let id = PexStringId::new(strings.len() as u16);
+            let id = PexStringId::new(index);
             string_lookup.insert(string.clone(), id);
             strings.push(string);
         }
@@ -45,7 +52,7 @@ impl PexFile {
                     what: "debug info flag",
                     value,
                 });
-            }
+            },
         };
         let debug_info = has_debug_info
             .then(|| read_debug_info(&mut reader, strings.len()))
@@ -124,7 +131,7 @@ pub(crate) fn read_debug_info(
                     offset: function_type_offset,
                     tag,
                 });
-            }
+            },
         };
         let line_count = usize::from(reader.read_u16("debug line map count")?);
         let mut instruction_line_map = Vec::with_capacity(line_count);
@@ -366,10 +373,11 @@ pub(crate) fn read_instruction(
                 opcode,
             });
         };
-        let count = usize::try_from(count).map_err(|_| PexReadError::MalformedVariadicCount {
-            offset: count_offset,
-            opcode,
-        })?;
+        let count =
+            usize::try_from(count).map_err(|_cause| PexReadError::MalformedVariadicCount {
+                offset: count_offset,
+                opcode,
+            })?;
         if count > reader.remaining() {
             return Err(PexReadError::MalformedVariadicCount {
                 offset: count_offset,
@@ -413,7 +421,7 @@ pub(crate) fn read_value(
                     value,
                 }),
             }
-        }
+        },
         tag => Err(PexReadError::UnknownValueType {
             offset: tag_offset,
             tag,

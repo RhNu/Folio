@@ -1,7 +1,8 @@
 //! Offline, dialect-specific help for source language tokens and literal values.
-use crate::Hover;
 use folio_papyrus::{PapyrusDialect, SyntaxKind, SyntaxNode, SyntaxToken};
 use folio_source::TextRange;
+
+use crate::Hover;
 
 mod catalog;
 
@@ -73,7 +74,7 @@ pub(crate) fn at(
             } else {
                 catalog::operator(token.kind(), parent.kind() == SyntaxKind::UnaryExpr)?
             }
-        }
+        },
     };
     let mut range = crate::symbols::token_range(&token);
     let mut declaration = entry.title.to_owned();
@@ -89,23 +90,7 @@ pub(crate) fn at(
         if let Some(sign) = sign {
             range.start = sign.start;
         }
-        let value = match ty {
-            "string" => folio_hir::decode_string_literal(token.text()).map(|value| {
-                // Keep decoded control characters visible without turning them into layout.
-                format!("\"{}\"", value.escape_debug())
-            }),
-            "int" => integer_value(token.text(), negative).map(|value| value.to_string()),
-            "float" => token
-                .text()
-                .parse::<f32>()
-                .ok()
-                .filter(|value| value.is_finite())
-                .map(|value| if negative { -value } else { value })
-                .map(|value| value.to_string()),
-            "bool" => Some(if word == "true" { "True" } else { "False" }.into()),
-            "none" => Some("None".into()),
-            _ => None,
-        };
+        let value = literal_value(ty, token.text(), negative, &word);
         literal_valid = Some(value.is_some());
         details.push(value.map_or_else(
             || format!("Invalid {} literal; no value is available.", entry.title),
@@ -115,7 +100,7 @@ pub(crate) fn at(
         // A built-in array type still documents its element type, while keeping [] visible.
         if parent
             .children_with_tokens()
-            .filter_map(|item| item.into_token())
+            .filter_map(folio_papyrus::SyntaxElement::into_token)
             .any(|item| item.kind() == SyntaxKind::LBracket)
             && token.kind() == SyntaxKind::Ident
         {
@@ -154,6 +139,26 @@ pub(crate) fn at(
     ))
 }
 
+/// Preview decoded source values without evaluating arbitrary expressions.
+fn literal_value(ty: &str, text: &str, negative: bool, word: &str) -> Option<String> {
+    match ty {
+        "string" => folio_hir::decode_string_literal(text).map(|value| {
+            // Keep decoded control characters visible without turning them into layout.
+            format!("\"{}\"", value.escape_debug())
+        }),
+        "int" => integer_value(text, negative).map(|value| value.to_string()),
+        "float" => text
+            .parse::<f32>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .map(|value| if negative { -value } else { value })
+            .map(|value| value.to_string()),
+        "bool" => Some(if word == "true" { "True" } else { "False" }.into()),
+        "none" => Some("None".into()),
+        _ => None,
+    }
+}
+
 /// Only a direct unary minus belongs to a number; subtraction and ! do not.
 fn negative_literal(literal: &SyntaxNode) -> Option<TextRange> {
     let parent = literal.parent()?;
@@ -162,7 +167,7 @@ fn negative_literal(literal: &SyntaxNode) -> Option<TextRange> {
     }
     let sign = parent
         .children_with_tokens()
-        .filter_map(|item| item.into_token())
+        .filter_map(folio_papyrus::SyntaxElement::into_token)
         .find(|token| {
             !matches!(
                 token.kind(),
@@ -206,7 +211,7 @@ fn standard_flag(token: &SyntaxToken) -> bool {
     }
     let words = parent
         .children_with_tokens()
-        .filter_map(|item| item.into_token())
+        .filter_map(folio_papyrus::SyntaxElement::into_token)
         .take_while(|item| item.kind() != SyntaxKind::Newline)
         .filter(|item| item.kind() == SyntaxKind::Ident)
         .collect::<Vec<_>>();
@@ -217,7 +222,7 @@ fn standard_flag(token: &SyntaxToken) -> bool {
                 .is_some_and(|item| item.text().eq_ignore_ascii_case("extends")) =>
         {
             4
-        }
+        },
         SyntaxKind::ScriptDecl | SyntaxKind::PropertyDecl => 2,
         SyntaxKind::VariableDecl => 1,
         _ => return false,

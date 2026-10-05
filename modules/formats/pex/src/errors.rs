@@ -1,4 +1,4 @@
-use super::*;
+use super::{Error, PexDebugFunctionType, PexOpcode, PexStringId, fmt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PexWriteError {
@@ -69,13 +69,13 @@ impl fmt::Display for PexWriteError {
             Self::UnsupportedTarget { target } => write!(f, "unsupported PEX target {target}"),
             Self::UnsupportedVersion { major, minor } => {
                 write!(f, "unsupported Skyrim PEX version {major}.{minor}")
-            }
+            },
             Self::CountTooLarge { what, len } => {
                 write!(f, "{what} count {len} exceeds u16::MAX")
-            }
+            },
             Self::StringTooLong { what, len } => {
                 write!(f, "{what} length {len} exceeds u16::MAX")
-            }
+            },
             Self::StringIdOutOfRange { id, table_len } => write!(
                 f,
                 "string id {} is outside string table length {table_len}",
@@ -83,7 +83,7 @@ impl fmt::Display for PexWriteError {
             ),
             Self::ObjectTooLarge { len } => {
                 write!(f, "object body length {len} exceeds u32::MAX")
-            }
+            },
             Self::InvalidInstructionArity {
                 opcode,
                 expected,
@@ -94,13 +94,13 @@ impl fmt::Display for PexWriteError {
             ),
             Self::UnexpectedVariadicArguments { opcode } => {
                 write!(f, "opcode {opcode:?} does not accept variadic arguments")
-            }
+            },
             Self::VariadicArgumentCountTooLarge { len } => {
                 write!(f, "variadic argument count {len} exceeds i32::MAX")
-            }
+            },
             Self::InvalidUserFlagBit { bit_index } => {
                 write!(f, "user flag bit {bit_index} is outside a 32-bit mask")
-            }
+            },
             Self::InvalidPropertyModel { property, reason } => write!(
                 f,
                 "property {} has an invalid PEX model: {reason}",
@@ -138,13 +138,13 @@ impl fmt::Display for PexWriteError {
             ),
             Self::AutoPropertyMissingAutoVar => {
                 f.write_str("auto property has no backing variable")
-            }
+            },
             Self::ReadablePropertyMissingGetter => {
                 f.write_str("property is readable but has no getter function")
-            }
+            },
             Self::WritablePropertyMissingSetter => {
                 f.write_str("property is writable but has no setter function")
-            }
+            },
         }
     }
 }
@@ -219,10 +219,10 @@ impl fmt::Display for PexReadError {
             Self::InvalidMagic { value } => write!(f, "invalid PEX magic 0x{value:08x}"),
             Self::UnsupportedVersion { major, minor } => {
                 write!(f, "unsupported Skyrim PEX version {major}.{minor}")
-            }
+            },
             Self::UnsupportedGame { game_id } => {
                 write!(f, "unsupported PEX game id {game_id}")
-            }
+            },
             Self::Truncated {
                 offset,
                 needed,
@@ -234,7 +234,7 @@ impl fmt::Display for PexReadError {
             ),
             Self::InvalidUtf8 { offset, what } => {
                 write!(f, "invalid UTF-8 in {what} at offset {offset}")
-            }
+            },
             Self::StringIdOutOfRange {
                 id,
                 table_len,
@@ -246,20 +246,20 @@ impl fmt::Display for PexReadError {
             ),
             Self::UnknownOpcode { offset, opcode } => {
                 write!(f, "unknown PEX opcode {opcode} at offset {offset}")
-            }
+            },
             Self::UnknownValueType { offset, tag } => {
                 write!(f, "unknown PEX value type {tag} at offset {offset}")
-            }
+            },
             Self::InvalidDebugFunctionType { offset, tag } => {
                 write!(f, "invalid debug function type {tag} at offset {offset}")
-            }
+            },
             Self::InvalidField {
                 offset,
                 what,
                 value,
             } => {
                 write!(f, "invalid {what} value {value} at offset {offset}")
-            }
+            },
             Self::InvalidStructure { reason } => write!(f, "invalid PEX structure: {reason}"),
             Self::MalformedVariadicCount { offset, opcode } => write!(
                 f,
@@ -278,7 +278,7 @@ impl fmt::Display for PexReadError {
                     f,
                     "trailing bytes after PEX body at offset {offset} of {len}"
                 )
-            }
+            },
         }
     }
 }

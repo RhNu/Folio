@@ -1,8 +1,69 @@
 //! Coalesced loading and publication of immutable project snapshots.
-use super::*;
+use super::{
+    Arc, BTreeSet, Instant, LspError, Ordering, Path, Server, Value, json, loading, send,
+    uri_to_path,
+};
 use crate::protocol::path_to_uri;
 
 impl Server {
+    /// Publish a completed worker result only for the current live session.
+    fn finish_loading(
+        &mut self,
+        generation: u64,
+        result: Result<Option<loading::Prepared>, String>,
+    ) -> Result<(), LspError> {
+        self.reload.finish(false);
+        if generation != self.generation.load(Ordering::SeqCst) || self.session.shutdown {
+            return Ok(());
+        }
+        match result {
+            Ok(Some(prepared)) => {
+                let disk_paths = prepared
+                    .disk_sources
+                    .iter()
+                    .map(|source| source.canonical_path.clone())
+                    .collect();
+                for source in prepared.disk_sources {
+                    self.documents
+                        .disk_update(source.canonical_path, source.text);
+                }
+                self.documents.retain_disk_paths(&disk_paths);
+                self.paths = prepared
+                    .view
+                    .sources
+                    .iter()
+                    .map(|(&file, source)| (source.canonical_path.clone(), file))
+                    .collect();
+                self.publish(&prepared.view, generation, prepared.diagnostics)?;
+                self.ide = Some(folio_ide::IdeSnapshot::new(Arc::clone(&prepared.view)));
+                self.view = Some(prepared.view);
+                self.metadata = Some(prepared.metadata);
+                self.projected_inputs = Some(prepared.loaded);
+                self.loading = false;
+                self.reload.finish(true);
+                self.last_error = None;
+                tracing::info!(generation, files = self.paths.len(), "LSP project ready");
+                self.status("ready", "ready", "Ready", None)?;
+                self.refresh_editor()?;
+            },
+            Ok(None) => {},
+            Err(message) => {
+                self.loading = false;
+                self.clear_view()?;
+                tracing::error!(generation, %message, "LSP project analysis unavailable");
+                self.status("error", "failed", &message, None)?;
+                if self.last_error.as_ref() != Some(&message) {
+                    send(
+                        &self.output,
+                        &json!({"jsonrpc":"2.0","method":"window/showMessage","params":{"type":1,"message":message}}),
+                    )?;
+                    self.last_error = Some(message);
+                }
+            },
+        }
+        Ok(())
+    }
+
     /// Broad client watchers may report unrelated project JSON and generated output.
     pub(super) fn file_event_relevant(&self, uri: &Value) -> bool {
         let Some(path) = uri.as_str().and_then(uri_to_path) else {
@@ -19,9 +80,10 @@ impl Server {
         };
         relevant_path(&path, &loaded.watch_plan)
     }
+
     /// Coalesce bursts while invalidating obsolete workers immediately.
     pub(super) fn reload_report(&mut self, refresh_disk: bool) -> Result<(), LspError> {
-        if !self.initialized || self.shutdown {
+        if !self.session.initialized || self.session.shutdown {
             return Ok(());
         }
         self.advance_generation()?;
@@ -64,7 +126,7 @@ impl Server {
         message: &str,
         progress: Option<(usize, usize)>,
     ) -> Result<(), LspError> {
-        if self.status_supported {
+        if self.client.status {
             let mut params = json!({"state":state,"phase":phase,"message":message,"generation":self.generation.load(Ordering::SeqCst)});
             if let Some((completed, total)) = progress {
                 params["completed"] = json!(completed);
@@ -87,79 +149,24 @@ impl Server {
         {
             match event {
                 loading::Event::Watches(generation, plan)
-                    if generation == self.generation.load(Ordering::SeqCst) && !self.shutdown =>
+                    if generation == self.generation.load(Ordering::SeqCst)
+                        && !self.session.shutdown =>
                 {
                     self.register_file_watches(generation, &plan)?;
-                }
+                },
                 loading::Event::Progress(generation, phase, message, done, total)
-                    if generation == self.generation.load(Ordering::SeqCst) && !self.shutdown =>
+                    if generation == self.generation.load(Ordering::SeqCst)
+                        && !self.session.shutdown =>
                 {
                     self.status("loading", phase, &message, Some((done, total)))?;
-                }
+                },
                 loading::Event::Finished(generation, result) => {
-                    self.reload.finish(false);
-                    if generation != self.generation.load(Ordering::SeqCst) || self.shutdown {
-                        continue;
-                    }
-                    match result {
-                        Ok(Some(prepared)) => {
-                            let disk_paths = prepared
-                                .disk_sources
-                                .iter()
-                                .map(|source| source.canonical_path.clone())
-                                .collect();
-                            for source in prepared.disk_sources {
-                                self.documents
-                                    .disk_update(source.canonical_path, source.text);
-                            }
-                            self.documents.retain_disk_paths(&disk_paths);
-                            self.paths = prepared
-                                .view
-                                .sources
-                                .iter()
-                                .map(|(&file, source)| (source.canonical_path.clone(), file))
-                                .collect();
-                            self.publish(
-                                Arc::clone(&prepared.view),
-                                generation,
-                                prepared.diagnostics,
-                            )?;
-                            self.ide =
-                                Some(folio_ide::IdeSnapshot::new(Arc::clone(&prepared.view)));
-                            self.view = Some(prepared.view);
-                            self.metadata = Some(prepared.metadata);
-                            self.projected_inputs = Some(prepared.loaded);
-                            self.loading = false;
-                            self.reload.finish(true);
-                            self.last_error = None;
-                            tracing::info!(
-                                generation,
-                                files = self.paths.len(),
-                                "LSP project ready"
-                            );
-                            self.status("ready", "ready", "Ready", None)?;
-                            self.refresh_editor()?;
-                        }
-                        Ok(None) => {}
-                        Err(message) => {
-                            self.loading = false;
-                            self.clear_view()?;
-                            tracing::error!(generation, %message, "LSP project analysis unavailable");
-                            self.status("error", "failed", &message, None)?;
-                            if self.last_error.as_ref() != Some(&message) {
-                                send(
-                                    &self.output,
-                                    &json!({"jsonrpc":"2.0","method":"window/showMessage","params":{"type":1,"message":message}}),
-                                )?;
-                                self.last_error = Some(message);
-                            }
-                        }
-                    }
-                }
-                _ => {}
+                    self.finish_loading(generation, result)?;
+                },
+                _ => {},
             }
         }
-        if !self.shutdown
+        if !self.session.shutdown
             && let Some(refresh_disk) = self.reload.take_due(Instant::now())
         {
             if self.loader.is_none() {
@@ -179,7 +186,10 @@ impl Server {
                     .map(|(path, text)| (path.clone(), Arc::from(text)))
                     .collect(),
             };
-            self.loader.as_ref().unwrap().submit(job)?;
+            self.loader
+                .as_ref()
+                .expect("loader initialized before submitting a job")
+                .submit(job)?;
         }
         self.poll_deferred()?;
         Ok(())
@@ -187,20 +197,20 @@ impl Server {
 
     /// Refresh optional client UI only after its backing snapshot has been published.
     pub(super) fn refresh_editor(&self) -> Result<(), LspError> {
-        if !self.client_ready {
+        if !self.session.ready {
             return Ok(());
         }
         let generation = self.generation.load(Ordering::SeqCst);
-        if self.declaration_documents {
+        if self.client.presentation.declaration_documents {
             send(
                 &self.output,
                 &json!({"jsonrpc":"2.0","method":"folio/projectChanged","params":{"generation":generation}}),
             )?;
         }
         for (supported, feature) in [
-            (self.semantic_tokens_refresh, "semanticTokens"),
-            (self.code_lens_refresh, "codeLens"),
-            (self.inlay_hint_refresh, "inlayHint"),
+            (self.client.refresh.semantic_tokens, "semanticTokens"),
+            (self.client.refresh.code_lens, "codeLens"),
+            (self.client.refresh.inlay_hint, "inlayHint"),
         ] {
             if supported {
                 send(
@@ -219,7 +229,7 @@ impl Server {
         plan: &folio_project_resolve::io::WatchPlan,
     ) -> Result<(), LspError> {
         // Capability registration is allowed only after the initialized notification.
-        if !self.dynamic_watches || !self.client_ready {
+        if !self.client.dynamic_watches || !self.session.ready {
             return Ok(());
         }
         let mut patterns = BTreeSet::new();

@@ -1,8 +1,12 @@
 //! Publish diagnostics from one coherent project generation.
-use super::*;
-use crate::protocol::{path_to_uri, range_json};
 use folio_diagnostics::Severity;
 use folio_ide::PositionIndex;
+
+use super::{
+    BTreeMap, BTreeSet, Instant, LspError, Ordering, ProjectAnalysisView, Server, Value, json,
+    send, uri_to_path,
+};
+use crate::protocol::{path_to_uri, range_json};
 
 impl Server {
     pub(super) fn clear_view(&mut self) -> Result<(), LspError> {
@@ -26,7 +30,7 @@ impl Server {
 
     pub(super) fn publish(
         &mut self,
-        view: Arc<ProjectAnalysisView>,
+        view: &ProjectAnalysisView,
         generation: u64,
         diagnostics: Vec<folio_diagnostics::Diagnostic>,
     ) -> Result<(), LspError> {
@@ -74,7 +78,7 @@ impl Server {
         for old in &self.published {
             grouped.entry(old.clone()).or_default();
         }
-        for (uri, diagnostics) in grouped.iter() {
+        for (uri, diagnostics) in &grouped {
             if self.generation.load(Ordering::SeqCst) != generation {
                 return Ok(());
             }

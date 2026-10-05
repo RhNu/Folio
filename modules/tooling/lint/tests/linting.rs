@@ -1,10 +1,9 @@
 //! Public crate behavior over in-memory inputs.
-use folio_diagnostics::Severity;
-use folio_hir::{ExpressionFact, ExpressionKind, Script, Statement, Type};
-use folio_lint::{LintConfig, PREFER_TRUTHY_NONE_CHECK, lint_script};
 use std::collections::BTreeMap;
 
-use folio_hir::Body;
+use folio_diagnostics::Severity;
+use folio_hir::{Body, ExpressionFact, ExpressionKind, Script, Statement, Type};
+use folio_lint::{LintConfig, PREFER_TRUTHY_NONE_CHECK, lint_script};
 use folio_source::{FileId, SourceSpan, TextRange};
 
 fn at(start: usize) -> SourceSpan {

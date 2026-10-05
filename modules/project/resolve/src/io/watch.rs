@@ -1,6 +1,8 @@
 //! Watch inputs are planned before decoding any dependency carrier.
 
-use super::*;
+use super::{
+    BTreeSet, DependencyKind, FolioHome, MANIFEST_FILE, Path, PathBuf, discover, fs, manifest, repo,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct WatchPlan {
@@ -46,7 +48,7 @@ fn plan(start: &Path, explicit: Option<&Path>, home: Option<&FolioHome>) -> Watc
                     let path = base.join(dependency.path.value);
                     add_file(&path, &mut files, &mut directories);
                     add_directory(&path, &mut directories);
-                }
+                },
                 DependencyKind::Decl => add_file(
                     &base.join(dependency.path.value),
                     &mut files,
@@ -59,7 +61,7 @@ fn plan(start: &Path, explicit: Option<&Path>, home: Option<&FolioHome>) -> Watc
                             add_file(&candidate, &mut files, &mut directories);
                         }
                     }
-                }
+                },
             }
         }
     }

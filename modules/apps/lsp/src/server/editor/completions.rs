@@ -1,6 +1,7 @@
 //! A bounded session cache resolves the selected candidate without rebuilding its list.
-use super::*;
 use std::collections::VecDeque;
+
+use super::{Arc, Mutex};
 
 #[derive(Clone, Default)]
 pub(in crate::server) struct CompletionCache(Arc<Mutex<State>>);

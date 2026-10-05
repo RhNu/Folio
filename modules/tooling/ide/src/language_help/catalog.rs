@@ -1,4 +1,9 @@
 //! Original summaries of Skyrim language constructs; reference revisions live in tooling.md.
+use SyntaxKind::{
+    AndAnd, Bang, Comma, Dot, EqEq, Equals, Greater, GreaterEq, LBracket, LParen, Less, LessEq,
+    Minus, MinusEq, NotEq, OrOr, Percent, PercentEq, Plus, PlusEq, RBracket, RParen, Slash,
+    SlashEq, Star, StarEq,
+};
 use folio_papyrus::SyntaxKind;
 
 pub(super) struct Entry {
@@ -35,6 +40,14 @@ fn entry(
 
 /// Select by dialect and syntactic use, rather than importing another game's keyword set.
 pub(super) fn skyrim(word: &str, context: SyntaxKind) -> Option<Entry> {
+    literal_entry(word)
+        .or_else(|| callable_entry(word))
+        .or_else(|| member_entry(word, context))
+        .or_else(|| statement_entry(word))
+}
+
+/// Describe primitive values, literal spelling, and absent references.
+fn literal_entry(word: &str) -> Option<Entry> {
     Some(match word {
         "int" => entry(
             "Int",
@@ -78,6 +91,13 @@ pub(super) fn skyrim(word: &str, context: SyntaxKind) -> Option<Entry> {
             Some("If target != None\n    target.Activate(Self)\nEndIf"),
             LITERALS,
         ),
+        _ => return None,
+    })
+}
+
+/// Describe script headers, imports, and callable declaration forms.
+fn callable_entry(word: &str) -> Option<Entry> {
+    Some(match word {
         "scriptname" => entry(
             "ScriptName",
             "Begins the script header and declares its name. The script name must match its PSC filename. Optional Extends and flags follow the name.",
@@ -132,6 +152,13 @@ pub(super) fn skyrim(word: &str, context: SyntaxKind) -> Option<Entry> {
             Some("Function Wait(Float seconds) Global Native"),
             FUNCTIONS,
         ),
+        _ => return None,
+    })
+}
+
+/// Describe property, flag, state, and instance declaration concepts.
+fn member_entry(word: &str, context: SyntaxKind) -> Option<Entry> {
+    Some(match word {
         "property" => entry(
             "Property",
             "Declares a member that other scripts can read or write through accessors. A full property defines Get and/or Set functions; Auto and AutoReadOnly provide generated accessors.",
@@ -198,6 +225,13 @@ pub(super) fn skyrim(word: &str, context: SyntaxKind) -> Option<Entry> {
             Some("Parent.OnInit()"),
             FUNCTIONS,
         ),
+        _ => return None,
+    })
+}
+
+/// Describe control flow, array operations, and explicit casts.
+fn statement_entry(word: &str) -> Option<Entry> {
+    Some(match word {
         "return" => entry(
             "Return",
             "Stops the current function or event immediately. A function with a return type supplies a compatible value; a function or event without one uses bare Return.",
@@ -264,8 +298,16 @@ pub(super) fn skyrim(word: &str, context: SyntaxKind) -> Option<Entry> {
 
 /// Operators have token-local help even when surrounding code is incomplete.
 pub(super) fn operator(kind: SyntaxKind, unary: bool) -> Option<Entry> {
-    use SyntaxKind::*;
-    let (title, description, example) = match kind {
+    let (title, description, example) =
+        arithmetic_operator(kind, unary).or_else(|| structural_operator(kind))?;
+    Some(entry(title, description, example, OPERATORS))
+}
+
+fn arithmetic_operator(
+    kind: SyntaxKind,
+    unary: bool,
+) -> Option<(&'static str, &'static str, Option<&'static str>)> {
+    Some(match kind {
         Equals => (
             "=",
             "Assigns the value on the right to the destination on the left. In a declaration it introduces an initializer or parameter default; in a call it labels a named argument. Equality uses ==.",
@@ -327,6 +369,14 @@ pub(super) fn operator(kind: SyntaxKind, unary: bool) -> Option<Entry> {
             "Assigns the integer division remainder back to the destination. Float operands are not supported.",
             None,
         ),
+        _ => return None,
+    })
+}
+
+fn structural_operator(
+    kind: SyntaxKind,
+) -> Option<(&'static str, &'static str, Option<&'static str>)> {
+    Some(match kind {
         EqEq => (
             "==",
             "Tests whether two values are equal and returns Bool. Skyrim String comparisons ignore case. Assignment uses =.",
@@ -393,6 +443,5 @@ pub(super) fn operator(kind: SyntaxKind, unary: bool) -> Option<Entry> {
             Some("Utility.Wait(1.0)"),
         ),
         _ => return None,
-    };
-    Some(entry(title, description, example, OPERATORS))
+    })
 }

@@ -14,7 +14,7 @@ pub fn intrinsic_signature(name: &str, receiver: Option<&Type>) -> Option<Intrin
     let (canonical, result, parameters, callable) = match receiver {
         Some(Type::Array(_)) if name.eq_ignore_ascii_case("Length") => {
             ("Length", Type::Int, Vec::new(), false)
-        }
+        },
         Some(Type::Array(element))
             if name.eq_ignore_ascii_case("Find") || name.eq_ignore_ascii_case("RFind") =>
         {
@@ -32,10 +32,10 @@ pub fn intrinsic_signature(name: &str, receiver: Option<&Type>) -> Option<Intrin
                 ],
                 true,
             )
-        }
+        },
         None | Some(Type::Script(_)) if name.eq_ignore_ascii_case("GetState") => {
             ("GetState", Type::String, Vec::new(), true)
-        }
+        },
         None | Some(Type::Script(_)) if name.eq_ignore_ascii_case("GotoState") => (
             "GotoState",
             Type::Void,

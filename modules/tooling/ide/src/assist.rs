@@ -1,11 +1,12 @@
 //! Completion edits and argument hints derived from shared semantic facts.
-use crate::{navigation::name, symbols};
+use std::{cmp::Ordering, collections::HashMap};
+
 use folio_build::ProjectAnalysisView;
 use folio_hir::{ExpressionKind, Symbol, Type};
 use folio_papyrus::SyntaxKind;
 use folio_source::{FileId, TextRange};
-use std::cmp::Ordering;
-use std::collections::HashMap;
+
+use crate::{navigation::name, symbols};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompletionItem {
@@ -32,6 +33,8 @@ pub fn completion_hover(view: &crate::IdeSnapshot, item: &CompletionItem) -> Opt
 }
 
 /// Offers selected semantic names; the checker owns scope and member precedence.
+/// # Errors
+/// Returns an analysis cancellation error when the supplied predicate cancels the query.
 pub fn completion(
     view: &ProjectAnalysisView,
     file: FileId,
@@ -45,7 +48,9 @@ pub fn completion(
     if byte > text.len() || !text.is_char_boundary(byte) {
         return Ok(Vec::new());
     }
-    let parse = view.analysis.parse(file).unwrap();
+    let Some(parse) = view.analysis.parse(file) else {
+        return Ok(Vec::new());
+    };
     let Some(offset) = byte.try_into().ok() else {
         return Ok(Vec::new());
     };
@@ -59,22 +64,14 @@ pub fn completion(
         }
     }
     let mut cancellation = Cancellation::new(cancelled);
-    let mut start = byte;
-    while start > 0 && text.as_bytes()[start - 1].is_ascii_alphanumeric()
-        || start > 0 && text.as_bytes()[start - 1] == b'_'
-    {
-        start -= 1;
-    }
-    let mut end = byte;
-    while end < text.len()
-        && (text.as_bytes()[end].is_ascii_alphanumeric() || text.as_bytes()[end] == b'_')
-    {
-        end += 1;
-    }
+    let replacement = identifier_range(text, byte);
+    let TextRange { start, .. } = replacement;
     let prefix = &text[start..byte];
     let before = text[..start].trim_end();
     view.analysis.try_warm_semantics(cancelled)?;
-    let script = view.analysis.hir(file).unwrap();
+    let Some(script) = view.analysis.hir(file) else {
+        return Ok(Vec::new());
+    };
     let mut receiver = None;
     let mut global = false;
     if let Some(before_dot) = before.strip_suffix('.') {
@@ -91,23 +88,80 @@ pub fn completion(
                 selected = Some(fact);
             }
         }
-        if let Some(fact) = selected {
-            if matches!(fact.ty, Type::Script(_) | Type::Array(_)) {
-                receiver = Some(&fact.ty);
-                global = matches!(
-                    fact.binding.as_ref().map(|binding| &binding.symbol),
-                    Some(Symbol::Script(_))
-                ) && !text[fact.span.range.start..fact.span.range.end]
-                    .eq_ignore_ascii_case("self")
-                    && !text[fact.span.range.start..fact.span.range.end]
-                        .eq_ignore_ascii_case("parent");
-            }
+        if let Some(fact) = selected
+            && matches!(fact.ty, Type::Script(_) | Type::Array(_))
+        {
+            receiver = Some(&fact.ty);
+            global = matches!(
+                fact.binding.as_ref().map(|binding| &binding.symbol),
+                Some(Symbol::Script(_))
+            ) && !text[fact.span.range.start..fact.span.range.end]
+                .eq_ignore_ascii_case("self")
+                && !text[fact.span.range.start..fact.span.range.end].eq_ignore_ascii_case("parent");
         }
         if receiver.is_none() {
             return Ok(Vec::new());
         }
     }
-    let replacement = TextRange { start, end };
+    let candidates = view
+        .analysis
+        .completion_candidates(file, byte, receiver, global, prefix, cancelled)?;
+    let mut result = present_candidates(
+        view,
+        &script,
+        candidates,
+        receiver,
+        prefix,
+        replacement,
+        &mut cancellation,
+    )?;
+    // Checker maps already order ASCII identifiers; preserve legacy ordering for
+    // declaration carriers with Unicode names using an allocation-free comparator.
+    if result.iter().any(|item| !item.label.is_ascii()) {
+        result.sort_by(|a, b| compare_labels(&a.label, &b.label));
+    }
+    if receiver.is_none() {
+        result = merge_keywords(result, prefix, replacement, &mut cancellation)?;
+    }
+    result.dedup_by(|a, b| a.label.eq_ignore_ascii_case(&b.label));
+    checkpoint(cancelled)?;
+    tracing::debug!(
+        ?file,
+        byte,
+        candidates = result.len(),
+        "completion candidates collected"
+    );
+    Ok(result)
+}
+
+/// Replace the whole ASCII identifier around a valid UTF-8 cursor position.
+fn identifier_range(text: &str, byte: usize) -> TextRange {
+    let mut start = byte;
+    while start > 0
+        && (text.as_bytes()[start - 1].is_ascii_alphanumeric()
+            || text.as_bytes()[start - 1] == b'_')
+    {
+        start -= 1;
+    }
+    let mut end = byte;
+    while end < text.len()
+        && (text.as_bytes()[end].is_ascii_alphanumeric() || text.as_bytes()[end] == b'_')
+    {
+        end += 1;
+    }
+    TextRange { start, end }
+}
+
+/// Render only filtered semantic candidates, reusing per-owner kind indices.
+fn present_candidates(
+    view: &ProjectAnalysisView,
+    script: &folio_hir::Script,
+    candidates: Vec<folio_analysis::CompletionCandidate>,
+    receiver: Option<&Type>,
+    prefix: &str,
+    replacement: TextRange,
+    cancellation: &mut Cancellation<'_>,
+) -> Result<Vec<CompletionItem>, folio_analysis::AnalysisCancelled> {
     let mut members = HashMap::new();
     for member in script
         .members
@@ -125,9 +179,7 @@ pub fn completion(
         members.entry(&member.symbol).or_insert(member);
     }
     let mut external_kinds = HashMap::new();
-    let mut result = view
-        .analysis
-        .completion_candidates(file, byte, receiver, global, prefix, cancelled)?
+    candidates
         .into_iter()
         .map(|candidate| {
             cancellation.check()?;
@@ -143,7 +195,7 @@ pub fn completion(
                     } else {
                         10
                     }
-                }
+                },
                 _ => {
                     let member = members.get(&candidate.symbol);
                     match member.map(|item| &item.kind) {
@@ -154,10 +206,10 @@ pub fn completion(
                             &candidate.symbol,
                             &mut external_kinds,
                             prefix,
-                            &mut cancellation,
+                            cancellation,
                         )?,
                     }
-                }
+                },
             };
             Ok(CompletionItem {
                 label: label.clone(),
@@ -172,93 +224,87 @@ pub fn completion(
                 replacement,
             })
         })
-        .collect::<Result<Vec<_>, folio_analysis::AnalysisCancelled>>()?;
-    // Checker maps already order ASCII identifiers; preserve legacy ordering for
-    // declaration carriers with Unicode names using an allocation-free comparator.
-    if result.iter().any(|item| !item.label.is_ascii()) {
-        result.sort_by(|a, b| compare_labels(&a.label, &b.label));
-    }
-    if receiver.is_none() {
-        let mut keywords = Vec::new();
-        for keyword in [
-            "As",
-            "Auto",
-            "Auto State",
-            "AutoReadOnly",
-            "Bool",
-            "Conditional",
-            "Else",
-            "ElseIf",
-            "EndEvent",
-            "EndFunction",
-            "EndIf",
-            "EndProperty",
-            "EndState",
-            "EndWhile",
-            "Event",
-            "False",
-            "Float",
-            "Function",
-            "Global",
-            "Hidden",
-            "If",
-            "Import",
-            "Int",
-            "Native",
-            "New",
-            "None",
-            "Parent",
-            "Property",
-            "Return",
-            "Self",
-            "State",
-            "String",
-            "True",
-            "While",
-        ] {
-            cancellation.check()?;
-            if keyword
-                .get(..prefix.len())
-                .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
-            {
-                keywords.push(CompletionItem {
-                    label: keyword.into(),
-                    detail: "Papyrus keyword".into(),
-                    kind: 14,
-                    symbol: None,
-                    replacement,
-                    insert_text: keyword.into(),
-                    documentation: None,
-                    receiver: None,
-                });
-            }
+        .collect::<Result<Vec<_>, folio_analysis::AnalysisCancelled>>()
+}
+
+/// Merge ordered keywords with semantic names, preferring semantic entries on collisions.
+fn merge_keywords(
+    result: Vec<CompletionItem>,
+    prefix: &str,
+    replacement: TextRange,
+    cancellation: &mut Cancellation<'_>,
+) -> Result<Vec<CompletionItem>, folio_analysis::AnalysisCancelled> {
+    let mut keywords = Vec::new();
+    for keyword in [
+        "As",
+        "Auto",
+        "Auto State",
+        "AutoReadOnly",
+        "Bool",
+        "Conditional",
+        "Else",
+        "ElseIf",
+        "EndEvent",
+        "EndFunction",
+        "EndIf",
+        "EndProperty",
+        "EndState",
+        "EndWhile",
+        "Event",
+        "False",
+        "Float",
+        "Function",
+        "Global",
+        "Hidden",
+        "If",
+        "Import",
+        "Int",
+        "Native",
+        "New",
+        "None",
+        "Parent",
+        "Property",
+        "Return",
+        "Self",
+        "State",
+        "String",
+        "True",
+        "While",
+    ] {
+        cancellation.check()?;
+        if keyword
+            .get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+        {
+            keywords.push(CompletionItem {
+                label: keyword.into(),
+                detail: "Papyrus keyword".into(),
+                kind: 14,
+                symbol: None,
+                replacement,
+                insert_text: keyword.into(),
+                documentation: None,
+                receiver: None,
+            });
         }
-        // Merge already ordered inputs, retaining the semantic item on keyword collisions.
-        let mut candidates = result.into_iter().peekable();
-        let mut keywords = keywords.into_iter().peekable();
-        result = Vec::with_capacity(candidates.len() + keywords.len());
-        while let (Some(candidate), Some(keyword)) = (candidates.peek(), keywords.peek()) {
-            cancellation.check()?;
-            match compare_labels(&candidate.label, &keyword.label) {
-                Ordering::Less => result.push(candidates.next().unwrap()),
-                Ordering::Greater => result.push(keywords.next().unwrap()),
-                Ordering::Equal => {
-                    result.push(candidates.next().unwrap());
-                    keywords.next();
-                }
-            }
-        }
-        result.extend(candidates);
-        result.extend(keywords);
     }
-    result.dedup_by(|a, b| a.label.eq_ignore_ascii_case(&b.label));
-    checkpoint(cancelled)?;
-    tracing::debug!(
-        ?file,
-        byte,
-        candidates = result.len(),
-        "completion candidates collected"
-    );
+    // Merge already ordered inputs, retaining the semantic item on keyword collisions.
+    let mut candidates = result.into_iter().peekable();
+    let mut keywords = keywords.into_iter().peekable();
+    let mut result = Vec::with_capacity(candidates.len() + keywords.len());
+    while let (Some(candidate), Some(keyword)) = (candidates.peek(), keywords.peek()) {
+        cancellation.check()?;
+        match compare_labels(&candidate.label, &keyword.label) {
+            Ordering::Less => result.push(candidates.next().expect("peeked completion item")),
+            Ordering::Greater => result.push(keywords.next().expect("peeked completion item")),
+            Ordering::Equal => {
+                result.push(candidates.next().expect("peeked completion item"));
+                keywords.next();
+            },
+        }
+    }
+    result.extend(candidates);
+    result.extend(keywords);
     Ok(result)
 }
 
@@ -345,7 +391,7 @@ fn external_completion_kind(
                     | folio_format_declarations::MemberKind::Event
                     | folio_format_declarations::MemberKind::UnknownCallable => 3,
                     folio_format_declarations::MemberKind::Property => 10,
-                    _ => 6,
+                    folio_format_declarations::MemberKind::Variable => 6,
                 };
                 result
                     .entry((
@@ -375,8 +421,12 @@ pub fn inlay_hints(view: &ProjectAnalysisView, file: FileId, range: TextRange) -
     let Some(script) = view.analysis.hir(file) else {
         return Vec::new();
     };
-    let text = view.analysis.text(file).unwrap();
-    let parse = view.analysis.parse(file).unwrap();
+    let Some(text) = view.analysis.text(file) else {
+        return Vec::new();
+    };
+    let Some(parse) = view.analysis.parse(file) else {
+        return Vec::new();
+    };
     let named = parse
         .syntax()
         .descendants()
@@ -410,8 +460,7 @@ pub fn inlay_hints(view: &ProjectAnalysisView, file: FileId, range: TextRange) -
         };
         for (source_index, argument) in arguments.iter().enumerate() {
             let at = argument.span.range;
-            if at.start < range.start
-                || at.start > range.end
+            if !(range.start..=range.end).contains(&at.start)
                 || named
                     .iter()
                     .any(|range| range.start <= at.start && at.end <= range.end)

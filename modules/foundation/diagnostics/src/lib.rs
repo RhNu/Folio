@@ -40,6 +40,7 @@ impl Diagnostic {
     }
 
     /// Attaches the source range responsible for the problem.
+    #[must_use]
     pub fn at(mut self, span: SourceSpan) -> Self {
         self.primary = Some(span);
         self

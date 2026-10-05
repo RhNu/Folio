@@ -1,9 +1,10 @@
 //! Unsaved PSC dependency APIs remain declarations; their bodies never enter root analysis.
-use super::*;
 use folio_declaration_tools::{GenerationOptions, SourceInput, generate};
 use folio_format_declarations::semantic_digest;
 use folio_project_model::{DeclarationLocation, DeclaredScript, DependencyKind, SourceId};
 use folio_project_resolve::io::{InputSnapshot, decode_source};
+
+use super::{Arc, BTreeMap, LoadedProject, LspError, PathBuf};
 
 /// Reproject existing dependency files from explicit buffers and verified disk snapshots.
 pub(super) fn apply_dependency_overlays(
@@ -59,8 +60,7 @@ pub(super) fn apply_dependency_overlays(
                     .ok_or_else(|| {
                         LspError::Project("PSC dependency source snapshot is missing".into())
                     })?;
-                decode_source(bytes, encoding)
-                    .map_err(|error| LspError::Project(error.to_string()))?
+                decode_source(bytes, encoding).map_err(LspError::Project)?
             };
             sources.push((source.path.clone(), text));
         }

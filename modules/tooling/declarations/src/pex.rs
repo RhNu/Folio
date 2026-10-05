@@ -19,6 +19,8 @@ pub struct ExtractedPex {
 }
 
 /// Decode every object as one script, preserving PEX's callable ambiguity.
+/// # Errors
+/// Returns an error for malformed or unsupported PEX, empty inputs, or invalid recovered declarations.
 pub fn extract_pex(source: &str, inputs: &[PexInput<'_>]) -> Result<ExtractedPex, String> {
     let mut sorted = inputs.iter().collect::<Vec<_>>();
     sorted.sort_by(|left, right| left.path.cmp(right.path));
@@ -35,87 +37,7 @@ pub fn extract_pex(source: &str, inputs: &[PexInput<'_>]) -> Result<ExtractedPex
             return Err(format!("{}: PEX target is not Skyrim", input.path));
         }
         for object in &file.objects {
-            let name = string(&file, object.name).to_owned();
-            let parent = string(&file, object.parent_class_name);
-            let auto_state = string(&file, object.auto_state_name);
-            let mut members = Vec::new();
-            let mut states = Vec::new();
-            for variable in &object.variables {
-                let variable_name = string(&file, variable.name);
-                // Generated auto-property storage has no independent source API.
-                if variable_name.starts_with("::")
-                    || object
-                        .properties
-                        .iter()
-                        .any(|property| property.auto_var == Some(variable.name))
-                {
-                    continue;
-                }
-                members.push(Member {
-                    name: variable_name.into(),
-                    documentation: None,
-                    flags: Vec::new(),
-                    data: MemberData::Variable {
-                        ty: string(&file, variable.type_name).into(),
-                        initial_literal: None,
-                    },
-                });
-            }
-            for property in &object.properties {
-                members.push(Member {
-                    name: string(&file, property.name).into(),
-                    documentation: documentation(&file, property.documentation_string),
-                    flags: Vec::new(),
-                    data: MemberData::Property {
-                        ty: string(&file, property.type_name).into(),
-                        access: if property.is_auto && property.is_readable && property.is_writable
-                        {
-                            PropertyAccess::Auto
-                        } else if property.is_auto && property.is_readable && !property.is_writable
-                        {
-                            PropertyAccess::AutoReadOnly
-                        } else {
-                            PropertyAccess::Manual {
-                                readable: property.is_readable,
-                                writable: property.is_writable,
-                            }
-                        },
-                        initial_literal: None,
-                    },
-                });
-            }
-            for state in &object.states {
-                let state_name = string(&file, state.name);
-                let functions = state
-                    .functions
-                    .iter()
-                    .map(|function| callable(&file, function))
-                    .collect();
-                if state_name.is_empty() {
-                    members.extend(functions);
-                } else {
-                    states.push(State {
-                        name: state_name.into(),
-                        documentation: None,
-                        auto: state_name.eq_ignore_ascii_case(auto_state),
-                        members: functions,
-                    });
-                }
-            }
-            scripts.push((
-                Script {
-                    name,
-                    documentation: documentation(&file, object.documentation_string),
-                    parent: (!parent.is_empty()).then(|| parent.into()),
-                    is_native: false,
-                    flags: Vec::new(),
-                    imports: Vec::new(),
-                    members,
-                    states,
-                    source: None,
-                },
-                input.path.to_owned(),
-            ));
+            scripts.push((extract_object(&file, object), input.path.to_owned()));
         }
     }
     if scripts.is_empty() {
@@ -140,6 +62,86 @@ pub fn extract_pex(source: &str, inputs: &[PexInput<'_>]) -> Result<ExtractedPex
         "extracted PEX declarations"
     );
     Ok(ExtractedPex { bundle, paths })
+}
+
+/// Recover the API of one validated Skyrim PEX object.
+fn extract_object(file: &PexFile, object: &folio_format_pex::PexObject) -> Script {
+    let name = string(file, object.name).to_owned();
+    let parent = string(file, object.parent_class_name);
+    let auto_state = string(file, object.auto_state_name);
+    let mut members = Vec::new();
+    let mut states = Vec::new();
+    for variable in &object.variables {
+        let variable_name = string(file, variable.name);
+        // Generated auto-property storage has no independent source API.
+        if variable_name.starts_with("::")
+            || object
+                .properties
+                .iter()
+                .any(|property| property.auto_var == Some(variable.name))
+        {
+            continue;
+        }
+        members.push(Member {
+            name: variable_name.into(),
+            documentation: None,
+            flags: Vec::new(),
+            data: MemberData::Variable {
+                ty: string(file, variable.type_name).into(),
+                initial_literal: None,
+            },
+        });
+    }
+    for property in &object.properties {
+        members.push(Member {
+            name: string(file, property.name).into(),
+            documentation: documentation(file, property.documentation_string),
+            flags: Vec::new(),
+            data: MemberData::Property {
+                ty: string(file, property.type_name).into(),
+                access: if property.is_auto && property.is_readable && property.is_writable {
+                    PropertyAccess::Auto
+                } else if property.is_auto && property.is_readable && !property.is_writable {
+                    PropertyAccess::AutoReadOnly
+                } else {
+                    PropertyAccess::Manual {
+                        readable: property.is_readable,
+                        writable: property.is_writable,
+                    }
+                },
+                initial_literal: None,
+            },
+        });
+    }
+    for state in &object.states {
+        let state_name = string(file, state.name);
+        let functions = state
+            .functions
+            .iter()
+            .map(|function| callable(file, function))
+            .collect();
+        if state_name.is_empty() {
+            members.extend(functions);
+        } else {
+            states.push(State {
+                name: state_name.into(),
+                documentation: None,
+                auto: state_name.eq_ignore_ascii_case(auto_state),
+                members: functions,
+            });
+        }
+    }
+    Script {
+        name,
+        documentation: documentation(file, object.documentation_string),
+        parent: (!parent.is_empty()).then(|| parent.into()),
+        is_native: false,
+        flags: Vec::new(),
+        imports: Vec::new(),
+        members,
+        states,
+        source: None,
+    }
 }
 
 fn string(file: &PexFile, id: folio_format_pex::PexStringId) -> &str {

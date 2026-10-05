@@ -2,28 +2,33 @@
 use serde_json::Value;
 
 #[derive(Clone, Debug)]
-pub(super) struct EditorSettings {
+pub(super) struct HoverSettings {
     pub documentation: bool,
     pub details: bool,
-    pub lenses: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct LensKinds {
     pub references: bool,
     pub implementations: bool,
     pub source: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct LensSettings {
+    pub enabled: bool,
+    pub kinds: LensKinds,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct EditorSettings {
+    pub hover: HoverSettings,
+    pub lenses: LensSettings,
     pub parameter_names: bool,
 }
 
 impl Default for EditorSettings {
-    fn default() -> Self {
-        Self {
-            documentation: true,
-            details: true,
-            lenses: true,
-            references: true,
-            implementations: true,
-            source: true,
-            parameter_names: true,
-        }
-    }
+    fn default() -> Self { Self::read(&Value::Null) }
 }
 
 impl EditorSettings {
@@ -32,12 +37,18 @@ impl EditorSettings {
         let value = &value["folio"]["editor"];
         let read = |group: &str, name: &str| value[group][name].as_bool().unwrap_or(true);
         Self {
-            documentation: read("hover", "documentation"),
-            details: read("hover", "details"),
-            lenses: read("codeLens", "enabled"),
-            references: read("codeLens", "references"),
-            implementations: read("codeLens", "implementations"),
-            source: read("codeLens", "source"),
+            hover: HoverSettings {
+                documentation: read("hover", "documentation"),
+                details: read("hover", "details"),
+            },
+            lenses: LensSettings {
+                enabled: read("codeLens", "enabled"),
+                kinds: LensKinds {
+                    references: read("codeLens", "references"),
+                    implementations: read("codeLens", "implementations"),
+                    source: read("codeLens", "source"),
+                },
+            },
             parameter_names: read("inlayHints", "parameterNames"),
         }
     }

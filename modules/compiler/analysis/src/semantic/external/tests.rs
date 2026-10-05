@@ -1,7 +1,8 @@
+use folio_papyrus::PapyrusDialect;
+use folio_source::{FileId, Revision};
+
 use super::*;
 use crate::AnalysisHost;
-use folio_papyrus::PapyrusDialect;
-use folio_source::Revision;
 
 #[test]
 fn body_and_member_changes_reuse_external_validation_but_source_headers_invalidate_it() {

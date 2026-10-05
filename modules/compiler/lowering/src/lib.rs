@@ -30,10 +30,17 @@ fn type_name(ty: &Type) -> Option<String> {
             ) =>
         {
             Some(format!("{}[]", type_name(element)?))
-        }
+        },
         _ => None,
     }
 }
+
+/// Papyrus widens signed integers with the VM's single-precision rounding.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Papyrus Int-to-Float conversion uses VM single-precision rounding"
+)]
+fn papyrus_float(value: i32) -> f32 { value as f32 }
 
 fn literal(text: &str, ty: &Type) -> Option<Value> {
     let normalized = folio_hir::normalize_constant_literal_text(text)?;
@@ -46,13 +53,12 @@ fn literal(text: &str, ty: &Type) -> Option<Value> {
         Type::Float => text
             .parse::<f32>()
             .ok()
-            .or_else(|| folio_hir::decode_integer_literal(text).map(|value| value as f32))
+            .or_else(|| folio_hir::decode_integer_literal(text).map(papyrus_float))
             .filter(|n| n.is_finite())
             .map(Value::Float),
         Type::String if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 => {
             folio_hir::decode_string_literal(text).map(Value::String)
-        }
-        Type::Script(_) | Type::Array(_) if text.eq_ignore_ascii_case("none") => Some(Value::None),
+        },
         _ if text.eq_ignore_ascii_case("none") => Some(Value::None),
         _ => None,
     }
@@ -87,7 +93,10 @@ fn find_member<'a>(source: &'a folio_hir::Script, symbol: &Symbol) -> Option<&'a
 }
 
 /// Legalize one source script using the project's stable custom flag bit allocation.
-#[tracing::instrument(skip(source, user_flags), fields(script = source.name.as_ref().map(|name| name.text.as_str()).unwrap_or("<missing>"), target = target.id))]
+///
+/// # Errors
+/// Returns diagnostics for invalid declarations, unsupported target features, or invalid MIR.
+#[tracing::instrument(skip(source, user_flags), fields(script = source.name.as_ref().map_or("<missing>", |name| name.text.as_str()), target = target.id))]
 pub fn lower_script(
     source: &folio_hir::Script,
     target: TargetProfile,
@@ -110,31 +119,7 @@ pub fn lower_script(
         ));
         return Err(errors);
     };
-    let mut seen_flag_names = BTreeSet::new();
-    let mut seen_flag_bits = BTreeSet::new();
-    for definition in user_flags {
-        let flag = &definition.name;
-        let Some(bit) = definition.bit else {
-            errors.push(reject(
-                "target.flag-allocation",
-                "user flag lacks an allocated bit",
-                name.span,
-            ));
-            continue;
-        };
-        if flag.eq_ignore_ascii_case("hidden")
-            || flag.eq_ignore_ascii_case("conditional")
-            || !(2..32).contains(&bit)
-            || !seen_flag_names.insert(flag.to_lowercase())
-            || !seen_flag_bits.insert(bit)
-        {
-            errors.push(reject(
-                "target.flag-allocation",
-                format!("invalid or conflicting user flag allocation for {flag}"),
-                name.span,
-            ));
-        }
-    }
+    validate_flag_allocations(user_flags, name.span, &mut errors);
     let mut script = Script {
         target,
         name: name.text.clone(),
@@ -168,19 +153,7 @@ pub fn lower_script(
         source: name.span,
         decisions: Vec::new(),
     };
-    script.external_slots = source
-        .external_members
-        .iter()
-        .filter(|member| matches!(member.kind, MemberKind::Variable))
-        .map(|member| ExternalSlot {
-            owner: match &member.symbol {
-                Symbol::Member { script, .. } => script.clone(),
-                _ => String::new(),
-            },
-            name: member_name(&member.symbol).unwrap_or_default().into(),
-            ty: type_name(&member.ty).unwrap_or_else(|| "None".into()),
-        })
-        .collect();
+    script.external_slots = external_slots(source);
     if source.states.len() + 1 > target.max_states as usize {
         errors.push(reject(
             "target.state-capacity",
@@ -199,277 +172,9 @@ pub fn lower_script(
         ));
     }
     validate_function_shapes(source, &mut errors);
-    for member in &source.members {
-        let Some(ty) = type_name(&member.ty) else {
-            errors.push(reject(
-                "target.invalid-type",
-                "type cannot be represented in Skyrim PEX",
-                member.span,
-            ));
-            continue;
-        };
-        let Some(member_name) = member_name(&member.symbol) else {
-            continue;
-        };
-        if matches!(member.kind, MemberKind::Function { .. })
-            && (member_name.eq_ignore_ascii_case("GetState")
-                || member_name.eq_ignore_ascii_case("GotoState"))
-        {
-            errors.push(reject(
-                "target.reserved-state-method",
-                "GetState and GotoState are compiler-provided methods",
-                member.span,
-            ));
-            continue;
-        }
-        match &member.kind {
-            MemberKind::Variable => {
-                let initial = if let Some(text) = &member.initial_literal {
-                    match literal(text, &member.ty) {
-                        Some(value) => value,
-                        None => {
-                            errors.push(reject(
-                                "target.variable-initializer",
-                                "variable initial value must be a representable constant",
-                                member.span,
-                            ));
-                            continue;
-                        }
-                    }
-                } else {
-                    default_value(&member.ty)
-                };
-                script.variables.push(Variable {
-                    name: member_name.into(),
-                    ty,
-                    initial,
-                    flags: flag_bits(
-                        &member.flags,
-                        user_flags,
-                        FlagScope::Variable,
-                        member.span,
-                        &mut errors,
-                    ),
-                    source: member.span,
-                });
-            }
-            MemberKind::Property { auto, read_only } => {
-                if *read_only
-                    && member.flags.iter().any(|flag| {
-                        flag.eq_ignore_ascii_case("conditional")
-                            || user_flags.iter().any(|definition| {
-                                definition.name.eq_ignore_ascii_case(flag)
-                                    && definition.applies_to(FlagScope::Variable)
-                                    && !definition.applies_to(FlagScope::Property)
-                            })
-                    })
-                {
-                    errors.push(reject(
-                        "target.read-only-storage-flag",
-                        "AutoReadOnly has no variable storage for this flag",
-                        member.span,
-                    ));
-                    continue;
-                }
-                if *read_only && (!*auto || member.initial_literal.is_none()) {
-                    errors.push(reject(
-                        "target.property-initializer",
-                        "AutoReadOnly requires an initialized generated property",
-                        member.span,
-                    ));
-                    continue;
-                }
-                let auto_var = (*auto && !*read_only).then(|| format!("::{member_name}_var"));
-                let mut getter = None;
-                if *auto {
-                    let initial = if let Some(text) = &member.initial_literal {
-                        match literal(text, &member.ty) {
-                            Some(value) => value,
-                            None => {
-                                errors.push(reject(
-                                    "target.property-initializer",
-                                    "property initial value must be a representable constant",
-                                    member.span,
-                                ));
-                                continue;
-                            }
-                        }
-                    } else {
-                        default_value(&member.ty)
-                    };
-                    if *read_only {
-                        // A source constant is represented by executable getter
-                        // code rather than a mutable slot in the saved object.
-                        getter = Some(Function {
-                            name: "Get".into(),
-                            state: String::new(),
-                            return_type: ty.clone(),
-                            parameters: Vec::new(),
-                            locals: Vec::new(),
-                            instructions: vec![Instruction {
-                                op: Op::Return(initial),
-                                source: member.span,
-                            }],
-                            flags: 0,
-                            is_global: false,
-                            is_native: false,
-                            is_event: false,
-                            source: member.span,
-                        });
-                    } else {
-                        script.variables.push(Variable {
-                            name: auto_var.clone().expect("mutable auto property has storage"),
-                            ty: ty.clone(),
-                            initial,
-                            flags: flag_bits(
-                                &member.flags,
-                                user_flags,
-                                FlagScope::Variable,
-                                member.span,
-                                &mut errors,
-                            ),
-                            source: member.span,
-                        });
-                    }
-                }
-                script.properties.push(Property {
-                    name: member_name.into(),
-                    ty,
-                    auto_var,
-                    read_only: *read_only,
-                    getter,
-                    setter: None,
-                    flags: flag_bits(
-                        &member.flags,
-                        user_flags,
-                        FlagScope::Property,
-                        member.span,
-                        &mut errors,
-                    ),
-                    source: member.span,
-                });
-                if *read_only {
-                    script.decisions.push(Decision {
-                        feature: "read-only-property",
-                        outcome: Outcome::Lowered {
-                            rule: "constant-getter",
-                        },
-                        source: member.span,
-                    });
-                }
-            }
-            MemberKind::Function { .. } => {}
-        }
-    }
-    for body in &source.bodies {
-        let member = match find_member(source, &body.symbol) {
-            Some(member) => member,
-            None if matches!(body.symbol, Symbol::PropertyAccessor { .. }) => {
-                // Accessors are emitted as property functions, not script members.
-                let Symbol::PropertyAccessor { property, .. } = &body.symbol else {
-                    unreachable!()
-                };
-                let Some(property_member) = source.members.iter().find(|member| {
-                    member_name(&member.symbol)
-                        .is_some_and(|name| name.eq_ignore_ascii_case(property))
-                }) else {
-                    errors.push(reject(
-                        "lowering.missing-property",
-                        "property accessor lacks a property declaration",
-                        name.span,
-                    ));
-                    continue;
-                };
-                property_member
-            }
-            None => {
-                errors.push(reject(
-                    "lowering.missing-member",
-                    "body lacks a declaration",
-                    name.span,
-                ));
-                continue;
-            }
-        };
-        let mut function = FunctionLowerer::new(source, member, body, target, user_flags);
-        function.lower();
-        let (function, mut function_errors, decisions) = function.finish();
-        errors.append(&mut function_errors);
-        script.decisions.extend(decisions);
-        if let Some(function) = function {
-            if let Symbol::PropertyAccessor { property, name, .. } = &body.symbol {
-                if let Some(item) = script
-                    .properties
-                    .iter_mut()
-                    .find(|item| item.name.eq_ignore_ascii_case(property))
-                {
-                    if name.eq_ignore_ascii_case("get") {
-                        item.getter = Some(function);
-                    } else if name.eq_ignore_ascii_case("set") {
-                        item.setter = Some(function);
-                    }
-                }
-            } else {
-                script.functions.push(function);
-            }
-        }
-    }
-    // Native source declarations have no body but still need an ABI entry.
-    for member in &source.members {
-        let MemberKind::Function {
-            event,
-            global,
-            native,
-        } = &member.kind
-        else {
-            continue;
-        };
-        if !native
-            || source
-                .bodies
-                .iter()
-                .any(|body| body.symbol == member.symbol)
-        {
-            continue;
-        }
-        let Some(return_type) = type_name(&member.ty) else {
-            continue;
-        };
-        let Some(name) = member_name(&member.symbol) else {
-            continue;
-        };
-        script.functions.push(Function {
-            name: name.into(),
-            state: match &member.symbol {
-                Symbol::StateMember { state, .. } => state.clone(),
-                _ => String::new(),
-            },
-            return_type,
-            parameters: member
-                .parameters
-                .iter()
-                .filter_map(|item| {
-                    type_name(&item.ty).map(|ty| Local {
-                        name: item.name.clone(),
-                        ty,
-                    })
-                })
-                .collect(),
-            locals: Vec::new(),
-            instructions: Vec::new(),
-            flags: flag_bits(
-                &member.flags,
-                user_flags,
-                FlagScope::Function,
-                member.span,
-                &mut errors,
-            ),
-            is_global: *global,
-            is_native: true,
-            is_event: *event,
-            source: member.span,
-        });
-    }
+    lower_members(source, user_flags, &mut script, &mut errors);
+    lower_bodies(source, target, user_flags, &mut script, &mut errors);
+    lower_native_members(source, user_flags, &mut script, &mut errors);
     if let Err(spans) = folio_mir::validate(&script) {
         errors.extend(spans.into_iter().map(|error| {
             reject(
@@ -479,10 +184,7 @@ pub fn lower_script(
             )
         }));
     }
-    if !errors.is_empty() {
-        tracing::warn!(errors = errors.len(), "target legalization rejected script");
-        Err(errors)
-    } else {
+    if errors.is_empty() {
         tracing::debug!(
             functions = script.functions.len(),
             variables = script.variables.len(),
@@ -490,8 +192,31 @@ pub fn lower_script(
             "target legalization complete"
         );
         Ok(script)
+    } else {
+        tracing::warn!(errors = errors.len(), "target legalization rejected script");
+        Err(errors)
     }
 }
+
+/// Project inherited variable identities without emitting parent storage.
+fn external_slots(source: &folio_hir::Script) -> Vec<ExternalSlot> {
+    source
+        .external_members
+        .iter()
+        .filter(|member| matches!(member.kind, MemberKind::Variable))
+        .map(|member| ExternalSlot {
+            owner: match &member.symbol {
+                Symbol::Member { script, .. } => script.clone(),
+                _ => String::new(),
+            },
+            name: member_name(&member.symbol).unwrap_or_default().into(),
+            ty: type_name(&member.ty).unwrap_or_else(|| "None".into()),
+        })
+        .collect()
+}
+
+mod script;
+use script::{lower_bodies, lower_members, lower_native_members, validate_flag_allocations};
 
 fn validate_function_shapes(source: &folio_hir::Script, errors: &mut Vec<Diagnostic>) {
     let functions = source

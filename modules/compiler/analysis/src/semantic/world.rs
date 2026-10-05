@@ -1,5 +1,9 @@
 //! External and source script model, lookup, and type relations.
-use super::*;
+use super::{
+    AnalysisCancelled, BTreeMap, BTreeSet, Declaration, Diagnostic, ExternalScript, FileAnalysis,
+    FileId, HashSet, MemberInfo, MemberKind, ParameterDefault, PropertyForm, ScriptInfo, Severity,
+    SyntaxKind, SyntaxNode, Type, WorkingAnalysis, World, diagnostic, key, span, token_span,
+};
 
 pub(super) fn script_from_external(external: &ExternalScript) -> ScriptInfo {
     let collect = |items: &[folio_format_declarations::Member]| {
@@ -25,16 +29,21 @@ pub(super) fn script_from_external(external: &ExternalScript) -> ScriptInfo {
                 MemberKind::Function | MemberKind::Event | MemberKind::UnknownCallable,
             ) => {
                 callable_overloads.insert(name, info);
-            }
+            },
             (
                 Some(MemberKind::Function | MemberKind::Event | MemberKind::UnknownCallable),
                 MemberKind::Property,
             ) => {
-                callable_overloads.insert(name.clone(), members.insert(name, info).unwrap());
-            }
+                callable_overloads.insert(
+                    name.clone(),
+                    members
+                        .insert(name, info)
+                        .expect("matched existing callable is replaced by the property"),
+                );
+            },
             _ => {
                 members.insert(name, info);
-            }
+            },
         }
     }
     let variables = external
@@ -60,7 +69,7 @@ pub(super) fn script_from_external(external: &ExternalScript) -> ScriptInfo {
 }
 
 /// Check retained external constants before member lookup discards storage details.
-/// Missing values remain unknown, including PEX-derived AutoReadOnly properties.
+/// Missing values remain unknown, including PEX-derived `AutoReadOnly` properties.
 pub(super) fn validate_external_initializers(
     external: &ExternalScript,
     diagnostics: &mut Vec<Diagnostic>,
@@ -86,7 +95,7 @@ pub(super) fn validate_external_initializers(
 fn member_from_external(member: &folio_format_declarations::Member) -> MemberInfo {
     MemberInfo {
         name: member.name.clone(),
-        ty: member.ty().map(Type::from_spelling).unwrap_or(Type::Void),
+        ty: member.ty().map_or(Type::Void, Type::from_spelling),
         kind: member.kind(),
         parameters: member
             .parameters()
@@ -100,8 +109,10 @@ fn member_from_external(member: &folio_format_declarations::Member) -> MemberInf
             })
             .collect(),
         global: member.is_global(),
-        auto: member.is_auto(),
-        read_only: member.is_read_only(),
+        property: PropertyForm {
+            auto: member.is_auto(),
+            read_only: member.is_read_only(),
+        },
         readable: member.kind() != MemberKind::Property || member.is_readable(),
         writable: member.kind() != MemberKind::Property || member.is_writable(),
         definition: None,
@@ -123,8 +134,7 @@ pub(super) fn member_from_source(
             name,
             return_type
                 .as_deref()
-                .map(Type::from_spelling)
-                .unwrap_or(Type::Void),
+                .map_or(Type::Void, Type::from_spelling),
             MemberKind::Function,
             parameters
                 .iter()
@@ -135,8 +145,7 @@ pub(super) fn member_from_source(
                         parameter
                             .default
                             .clone()
-                            .map(ParameterDefault::Literal)
-                            .unwrap_or(ParameterDefault::Required),
+                            .map_or(ParameterDefault::Required, ParameterDefault::Literal),
                     )
                 })
                 .collect(),
@@ -173,8 +182,7 @@ pub(super) fn member_from_source(
                         parameter
                             .default
                             .clone()
-                            .map(ParameterDefault::Literal)
-                            .unwrap_or(ParameterDefault::Required),
+                            .map_or(ParameterDefault::Required, ParameterDefault::Literal),
                     )
                 })
                 .collect(),
@@ -184,7 +192,7 @@ pub(super) fn member_from_source(
     };
     let definition = node
         .children_with_tokens()
-        .filter_map(|item| item.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .find(|token| token.kind() == SyntaxKind::Ident && token.text().eq_ignore_ascii_case(name))
         .map(|token| token_span(file, &token))
         .or_else(|| Some(span(file, node)));
@@ -194,8 +202,10 @@ pub(super) fn member_from_source(
         kind,
         parameters,
         global,
-        auto: matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "auto" || flag == "autoreadonly")),
-        read_only: matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "autoreadonly")),
+        property: PropertyForm {
+            auto: matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "auto" || flag == "autoreadonly")),
+            read_only: matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "autoreadonly")),
+        },
         readable: !matches!(declaration, Declaration::Property { flags, .. } if !flags.iter().any(|flag| flag == "auto" || flag == "autoreadonly") && !node.descendants().any(|child| super::file::callable_name(&child).is_some_and(|name| name.eq_ignore_ascii_case("get")))),
         writable: !matches!(declaration, Declaration::Property { flags, .. } if flags.iter().any(|flag| flag == "autoreadonly") || (!flags.iter().any(|flag| flag == "auto") && !node.descendants().any(|child| super::file::callable_name(&child).is_some_and(|name| name.eq_ignore_ascii_case("set"))))),
         definition,
@@ -209,18 +219,13 @@ pub(super) fn validate_world(
 ) {
     for (&file, script_key) in file_scripts {
         let script = &world.scripts[script_key];
-        let file_analysis = analysis.files.get_mut(&file).unwrap();
+        let file_analysis = analysis
+            .files
+            .get_mut(&file)
+            .expect("source file script identities refer to initialized analysis files");
         validate_source_contracts(world, script, file_analysis);
         if let Some(parent) = &script.parent {
-            if !world.scripts.contains_key(&key(parent)) {
-                if let Some(parent_ref) = &file_analysis.script.parent {
-                    file_analysis.diagnostics.push(diagnostic(
-                        "semantic.unknown-parent",
-                        format!("unknown parent {parent}"),
-                        parent_ref.span,
-                    ));
-                }
-            } else {
+            if world.scripts.contains_key(&key(parent)) {
                 let mut visited = HashSet::new();
                 let mut current = Some(script_key.clone());
                 while let Some(name) = current {
@@ -240,6 +245,12 @@ pub(super) fn validate_world(
                         .and_then(|item| item.parent.as_ref())
                         .map(|parent| key(parent));
                 }
+            } else if let Some(parent_ref) = &file_analysis.script.parent {
+                file_analysis.diagnostics.push(diagnostic(
+                    "semantic.unknown-parent",
+                    format!("unknown parent {parent}"),
+                    parent_ref.span,
+                ));
             }
         }
         for member in script
@@ -278,9 +289,106 @@ pub(super) fn validate_external_world(
         if cancelled() {
             return Err(AnalysisCancelled);
         }
-        if let Some(parent) = &script.parent
-            && !world.scripts.contains_key(&key(parent))
-        {
+        validate_external_api(world, script, &mut diagnostics);
+    }
+    for script in world.scripts.values() {
+        if cancelled() {
+            return Err(AnalysisCancelled);
+        }
+        if script.definition.is_some() {
+            continue;
+        }
+        validate_external_storage(world, script, &mut diagnostics);
+    }
+    if cancelled() {
+        return Err(AnalysisCancelled);
+    }
+    Ok(diagnostics)
+}
+
+/// Validate external callable/state types and ancestry in the selected world.
+fn validate_external_api(world: &World, script: &ScriptInfo, diagnostics: &mut Vec<Diagnostic>) {
+    if let Some(parent) = &script.parent
+        && !world.scripts.contains_key(&key(parent))
+    {
+        diagnostics.push(Diagnostic::new(
+            "semantic.unknown-parent",
+            Severity::Error,
+            format!(
+                "external script {} has unknown parent {parent}",
+                script.name
+            ),
+        ));
+    }
+    let mut visited = HashSet::new();
+    let mut current = Some(key(&script.name));
+    while let Some(name) = current {
+        if !visited.insert(name.clone()) {
+            diagnostics.push(Diagnostic::new(
+                "semantic.inheritance-cycle",
+                Severity::Error,
+                format!(
+                    "external script {} participates in an inheritance cycle",
+                    script.name
+                ),
+            ));
+            break;
+        }
+        current = world
+            .scripts
+            .get(&name)
+            .and_then(|item| item.parent.as_ref())
+            .map(|parent| key(parent));
+    }
+    for member in script
+        .members
+        .values()
+        .chain(script.states.values().flat_map(|members| members.values()))
+    {
+        for ty in std::iter::once(&member.ty).chain(member.parameters.iter().map(|(_, ty, _)| ty)) {
+            if !known_type(world, ty) {
+                diagnostics.push(Diagnostic::new(
+                    "semantic.unknown-type",
+                    Severity::Error,
+                    format!(
+                        "external member {}.{} has unknown type {ty:?}",
+                        script.name, member.name
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// Validate carrier storage and overload types without requiring source locations.
+fn validate_external_storage(
+    world: &World,
+    script: &ScriptInfo,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let Some(parent) = &script.parent {
+        if world.scripts.contains_key(&key(parent)) {
+            let mut visited = HashSet::new();
+            let mut current = Some(key(&script.name));
+            while let Some(name) = current {
+                if !visited.insert(name.clone()) {
+                    diagnostics.push(Diagnostic::new(
+                        "semantic.inheritance-cycle",
+                        Severity::Error,
+                        format!(
+                            "external script {} participates in an inheritance cycle",
+                            script.name
+                        ),
+                    ));
+                    break;
+                }
+                current = world
+                    .scripts
+                    .get(&name)
+                    .and_then(|item| item.parent.as_ref())
+                    .map(|parent| key(parent));
+            }
+        } else {
             diagnostics.push(Diagnostic::new(
                 "semantic.unknown-parent",
                 Severity::Error,
@@ -290,113 +398,26 @@ pub(super) fn validate_external_world(
                 ),
             ));
         }
-        let mut visited = HashSet::new();
-        let mut current = Some(key(&script.name));
-        while let Some(name) = current {
-            if !visited.insert(name.clone()) {
+    }
+    for member in script
+        .members
+        .values()
+        .chain(script.variables.values())
+        .chain(script.callable_overloads.values())
+    {
+        for ty in std::iter::once(&member.ty).chain(member.parameters.iter().map(|(_, ty, _)| ty)) {
+            if !known_type(world, ty) {
                 diagnostics.push(Diagnostic::new(
-                    "semantic.inheritance-cycle",
+                    "semantic.unknown-type",
                     Severity::Error,
                     format!(
-                        "external script {} participates in an inheritance cycle",
-                        script.name
+                        "external script {} member {} refers to unknown type {ty:?}",
+                        script.name, member.name
                     ),
                 ));
-                break;
-            }
-            current = world
-                .scripts
-                .get(&name)
-                .and_then(|item| item.parent.as_ref())
-                .map(|parent| key(parent));
-        }
-        for member in script
-            .members
-            .values()
-            .chain(script.states.values().flat_map(|members| members.values()))
-        {
-            for ty in
-                std::iter::once(&member.ty).chain(member.parameters.iter().map(|(_, ty, _)| ty))
-            {
-                if !known_type(world, ty) {
-                    diagnostics.push(Diagnostic::new(
-                        "semantic.unknown-type",
-                        Severity::Error,
-                        format!(
-                            "external member {}.{} has unknown type {ty:?}",
-                            script.name, member.name
-                        ),
-                    ));
-                }
             }
         }
     }
-    for script in world.scripts.values() {
-        if cancelled() {
-            return Err(AnalysisCancelled);
-        }
-        if script.definition.is_some() {
-            continue;
-        }
-        if let Some(parent) = &script.parent {
-            if !world.scripts.contains_key(&key(parent)) {
-                diagnostics.push(Diagnostic::new(
-                    "semantic.unknown-parent",
-                    Severity::Error,
-                    format!(
-                        "external script {} has unknown parent {parent}",
-                        script.name
-                    ),
-                ));
-            } else {
-                let mut visited = HashSet::new();
-                let mut current = Some(key(&script.name));
-                while let Some(name) = current {
-                    if !visited.insert(name.clone()) {
-                        diagnostics.push(Diagnostic::new(
-                            "semantic.inheritance-cycle",
-                            Severity::Error,
-                            format!(
-                                "external script {} participates in an inheritance cycle",
-                                script.name
-                            ),
-                        ));
-                        break;
-                    }
-                    current = world
-                        .scripts
-                        .get(&name)
-                        .and_then(|item| item.parent.as_ref())
-                        .map(|parent| key(parent));
-                }
-            }
-        }
-        for member in script
-            .members
-            .values()
-            .chain(script.variables.values())
-            .chain(script.callable_overloads.values())
-        {
-            for ty in
-                std::iter::once(&member.ty).chain(member.parameters.iter().map(|(_, ty, _)| ty))
-            {
-                if !known_type(world, ty) {
-                    diagnostics.push(Diagnostic::new(
-                        "semantic.unknown-type",
-                        Severity::Error,
-                        format!(
-                            "external script {} member {} refers to unknown type {ty:?}",
-                            script.name, member.name
-                        ),
-                    ));
-                }
-            }
-        }
-    }
-    if cancelled() {
-        return Err(AnalysisCancelled);
-    }
-    Ok(diagnostics)
 }
 
 /// Literal defaults do not depend on the source-selected inheritance world.
@@ -436,7 +457,9 @@ fn validate_source_contracts(world: &World, script: &ScriptInfo, result: &mut Fi
             result.diagnostics.push(diagnostic(
                 "semantic.property-override",
                 "inherited properties cannot be redefined",
-                member.definition.unwrap(),
+                member
+                    .definition
+                    .expect("source property contracts retain declaration spans"),
             ));
         }
     }
@@ -607,8 +630,7 @@ pub(super) fn assignable(world: &World, actual: &Type, expected: &Type) -> bool 
         return true;
     }
     match (actual, expected) {
-        (Type::Int, Type::Float) => true,
-        (Type::None, Type::Script(_) | Type::Array(_)) => true,
+        (Type::Int, Type::Float) | (Type::None, Type::Script(_) | Type::Array(_)) => true,
         (Type::Script(child), Type::Script(parent)) => inherits(world, child, parent),
         _ => false,
     }
