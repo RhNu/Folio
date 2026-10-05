@@ -7,7 +7,7 @@ fn keeps_every_byte_while_recovering_later_declarations() {
     let source = "Scriptname Snow extends ObjectReference Hidden\r\nFunction Broken(\r\nReturn \"雪\"\r\nFunction Good(Int[] values, String label = \"🦊\") Global\r\nEndFunction\r\n";
     let parsed = parse(source, PapyrusDialect::Skyrim);
     assert_eq!(parsed.syntax().text().to_string(), source);
-    assert!(!parsed.errors.is_empty());
+    assert_ne!(parsed.errors, [] as [folio_papyrus::SyntaxError; 0]);
     let found = declarations(&parsed)
         .into_iter()
         .map(|item| item.declaration)
@@ -124,7 +124,7 @@ fn expression_operators_keep_assignment_distinct_from_comparison() {
         "Scriptname S\nFunction F()\nReturn a = b\nEndFunction\n",
         PapyrusDialect::Skyrim,
     );
-    assert!(!invalid.errors.is_empty());
+    assert_ne!(invalid.errors, [] as [folio_papyrus::SyntaxError; 0]);
     assert!(
         invalid
             .syntax()

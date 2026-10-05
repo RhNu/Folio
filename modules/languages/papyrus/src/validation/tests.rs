@@ -18,13 +18,19 @@ fn property_forms_and_accessors_are_validated_without_bodies() {
     ] {
         assert!(!codes(source, &[]).is_empty(), "{source}");
     }
-    assert!(codes("ScriptName A\nInt Property P = 1 AutoReadOnly\n", &[]).is_empty());
+    assert_eq!(
+        codes("ScriptName A\nInt Property P = 1 AutoReadOnly\n", &[]),
+        [] as [&str; 0]
+    );
 }
 
 #[test]
 fn declarations_require_literal_values() {
     assert!(codes("ScriptName A\nInt x = 1 + 2\n", &[]).contains(&"semantic.variable-initializer"));
-    assert!(codes("ScriptName A\nFunction F(Int x = -1) Native\n", &[]).is_empty());
+    assert_eq!(
+        codes("ScriptName A\nFunction F(Int x = -1) Native\n", &[]),
+        [] as [&str; 0]
+    );
 }
 
 #[test]
@@ -48,7 +54,13 @@ fn declaration_literals_are_checked_before_any_calls() {
     ] {
         assert!(!codes(source, &[]).is_empty(), "{source}");
     }
-    assert!(codes("ScriptName A\nFloat x = 0x10\nInt minimum = -2147483648\nFunction F(Actor actor = None, Int[] values = None) Native\n", &[]).is_empty());
+    assert_eq!(
+        codes(
+            "ScriptName A\nFloat x = 0x10\nInt minimum = -2147483648\nFunction F(Actor actor = None, Int[] values = None) Native\n",
+            &[]
+        ),
+        [] as [&str; 0]
+    );
 }
 
 #[test]
@@ -66,12 +78,12 @@ fn checks_flag_scopes_owner_and_duplicate_modifiers() {
         bit: Some(7),
         scopes: vec![FlagScope::Variable],
     };
-    assert!(
+    assert_eq!(
         codes(
             "ScriptName A Conditional\nInt Property P Auto Tag Conditional\n",
             std::slice::from_ref(&flag)
-        )
-        .is_empty()
+        ),
+        [] as [&str; 0]
     );
     assert!(codes("ScriptName A Tag\n", &[flag]).contains(&"semantic.flag-scope"));
 }

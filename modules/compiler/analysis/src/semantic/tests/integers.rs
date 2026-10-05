@@ -39,7 +39,10 @@ fn external_mask_initializers_and_defaults_preserve_their_declared_values() {
         "ScriptName UseMasks Extends Masks\nFunction Run()\nTake()\nInt value = HighBit\nEndFunction\n"
     ), folio_papyrus::PapyrusDialect::Skyrim).unwrap();
     let view = host.view();
-    assert!(view.project_diagnostics().is_empty());
+    assert_eq!(
+        view.project_diagnostics(),
+        [] as [folio_diagnostics::Diagnostic; 0]
+    );
     let issues = view.diagnostics(FileId(0)).unwrap();
     assert!(issues.is_empty(), "{issues:?}");
     let script = view.hir(FileId(0)).unwrap();

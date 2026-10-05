@@ -84,7 +84,7 @@ fn literal_getter_serializes_without_an_auto_or_saved_variable() {
     });
     let output = decoded(&input);
     let object = &output.objects[0];
-    assert!(object.variables.is_empty());
+    assert_eq!(object.variables, [] as [folio_format_pex::PexVariable; 0]);
     let property = &object.properties[0];
     assert!(property.is_readable);
     assert!(!property.is_writable);

@@ -36,11 +36,17 @@ fn nontrailing_defaults_bind_named_and_positional_calls_by_parameter_slot() {
             external,
         );
         let view = host.view();
-        assert!(view.project_diagnostics().is_empty());
+        assert_eq!(
+            view.project_diagnostics(),
+            [] as [folio_diagnostics::Diagnostic; 0]
+        );
         let issues = view.diagnostics(FileId(0)).unwrap();
         assert!(issues.is_empty(), "{issues:?}");
         if !external {
-            assert!(view.diagnostics(FileId(1)).unwrap().is_empty());
+            assert_eq!(
+                view.diagnostics(FileId(1)).unwrap(),
+                [] as [folio_diagnostics::Diagnostic; 0]
+            );
         }
         let script = view.hir(FileId(0)).unwrap();
         let calls = &script.bodies[0].statements;

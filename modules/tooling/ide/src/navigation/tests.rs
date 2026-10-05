@@ -157,15 +157,15 @@ fn selected_external_descendants_and_state_implementations_are_included() {
         2
     );
     for name in ["Count", "Utility"] {
-        assert!(
+        assert_eq!(
             implementation_symbols(
                 &view,
                 &Symbol::Member {
                     script: "Base".into(),
                     name: name.into()
                 }
-            )
-            .is_empty()
+            ),
+            [] as [folio_hir::Symbol; 0]
         );
     }
 }

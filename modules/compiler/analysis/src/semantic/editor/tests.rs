@@ -194,7 +194,7 @@ fn filtered_unicode_member_still_shadows_an_ascii_script_name() {
     let filtered = view
         .completion_candidates(FileId(0), at, None, false, "k", &|| false)
         .unwrap();
-    assert!(filtered.is_empty());
+    assert_eq!(filtered, [] as [crate::CompletionCandidate; 0]);
     let all = view
         .completion_candidates(FileId(0), at, None, false, "", &|| false)
         .unwrap();
@@ -224,7 +224,7 @@ fn filtered_unicode_import_still_participates_in_ambiguity() {
             &|| false,
         )
         .unwrap();
-    assert!(filtered.is_empty());
+    assert_eq!(filtered, [] as [crate::CompletionCandidate; 0]);
 }
 
 #[test]

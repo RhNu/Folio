@@ -57,10 +57,9 @@ fn completion_does_not_expose_other_callable_locals_or_comment_names() {
             .iter()
             .any(|item| item.label == "secret")
     );
-    assert!(
-        completion(&view, file, text.find("comment").unwrap() + 2, &|| false)
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        completion(&view, file, text.find("comment").unwrap() + 2, &|| false).unwrap(),
+        [] as [CompletionItem; 0]
     );
 }
 
@@ -254,10 +253,9 @@ fn completion_returns_cancellation_without_partial_results() {
         completion(&view, file, text.find("EndFunction").unwrap(), &cancelled),
         Err(folio_analysis::AnalysisCancelled)
     );
-    assert!(
-        !completion(&view, file, text.find("EndFunction").unwrap(), &|| false)
-            .unwrap()
-            .is_empty()
+    assert_ne!(
+        completion(&view, file, text.find("EndFunction").unwrap(), &|| false).unwrap(),
+        [] as [CompletionItem; 0]
     );
 }
 
@@ -269,15 +267,13 @@ fn completion_suppresses_token_contents_and_accepts_their_end_boundaries() {
     let file = file(&view, "Example");
     for content in ["\"value\"", "; marker "] {
         let start = text.find(content).unwrap();
-        assert!(
-            completion(&view, file, start, &|| false)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            completion(&view, file, start, &|| false).unwrap(),
+            [] as [CompletionItem; 0]
         );
-        assert!(
-            !completion(&view, file, start + content.len(), &|| false)
-                .unwrap()
-                .is_empty()
+        assert_ne!(
+            completion(&view, file, start + content.len(), &|| false).unwrap(),
+            [] as [CompletionItem; 0]
         );
     }
 }

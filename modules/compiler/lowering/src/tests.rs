@@ -135,7 +135,7 @@ fn read_only_property_has_a_literal_getter_without_persistent_storage() {
         }],
     });
     let output = lower_script(&source, TargetProfile::skyrim_se(), &[]).unwrap();
-    assert!(output.variables.is_empty());
+    assert_eq!(output.variables, [] as [folio_mir::Variable; 0]);
     assert!(output.properties[0].auto_var.is_none());
     assert_eq!(
         output.properties[0].getter.as_ref().unwrap().instructions[0].op,
@@ -172,7 +172,7 @@ fn read_only_property_rejects_flags_that_require_absent_storage() {
         scopes: vec![FlagScope::Property, FlagScope::Variable],
     }];
     let output = lower_script(&script(vec![member]), TargetProfile::skyrim_se(), &flags).unwrap();
-    assert!(output.variables.is_empty());
+    assert_eq!(output.variables, [] as [folio_mir::Variable; 0]);
     assert_eq!(output.properties[0].flags, 1 << 12);
 }
 

@@ -18,7 +18,7 @@ const EMPTY_SKYRIM_PEX: &[u8] = &[
 fn reads_independent_minimal_bytes() {
     let file = PexFile::read_from_slice(EMPTY_SKYRIM_PEX).unwrap();
     assert_eq!(file.header().pex_version(), PexVersion::new(3, 2));
-    assert!(file.objects.is_empty());
+    assert_eq!(file.objects, [] as [folio_format_pex::PexObject; 0]);
     assert_eq!(file.write_to_vec().unwrap(), EMPTY_SKYRIM_PEX);
 }
 

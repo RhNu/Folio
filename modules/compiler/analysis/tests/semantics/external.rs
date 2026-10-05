@@ -242,11 +242,11 @@ fn external_replacement_preserves_old_view_and_exposes_declaration_errors() {
     let bundle = decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Api","parent":"Absent","members":[{"name":"Fetch","kind":"function","return_type":"Int","global":true}]}]}"#).expect("synthetic test input is valid");
     host.set_external_declarations(vec![bundle]);
     let current = host.view();
-    assert!(
+    assert_eq!(
         current
             .diagnostics(FileId(9))
-            .expect("synthetic test input is valid")
-            .is_empty()
+            .expect("synthetic test input is valid"),
+        [] as [folio_diagnostics::Diagnostic; 0]
     );
     assert!(
         current

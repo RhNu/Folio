@@ -76,10 +76,9 @@ fn empty_line_maps_can_describe_multiple_instructions() {
         decoded.objects[0].states[0].functions[0].instructions.len(),
         2
     );
-    assert!(
-        decoded.debug_info.unwrap().functions[0]
-            .instruction_line_map
-            .is_empty()
+    assert_eq!(
+        decoded.debug_info.unwrap().functions[0].instruction_line_map,
+        [] as [u16; 0]
     );
 }
 

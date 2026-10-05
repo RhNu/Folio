@@ -32,7 +32,7 @@ fn selected_inputs_preserve_root_body_and_select_dependency_api() {
     );
     let mut service = ProjectAnalysis::new();
     let view = service.sync_project(&loaded, &metadata).unwrap();
-    assert!(view.diagnostics().is_empty());
+    assert_eq!(view.diagnostics(), [] as [folio_diagnostics::Diagnostic; 0]);
 }
 
 #[test]

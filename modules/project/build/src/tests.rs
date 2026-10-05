@@ -25,7 +25,7 @@ fn stable_file_identity_and_header_feedback_use_shared_analysis() {
         .sync_sources([source("Sky.psc", "Scriptname Sky\nFunction F() Native\n")])
         .unwrap();
     let file = first.file_for("package", Path::new("Sky.psc")).unwrap();
-    assert!(first.issues.is_empty());
+    assert_eq!(first.issues, [] as [SourceIssue; 0]);
     let second = project
         .sync_sources([source("Sky.psc", "Scriptname Other\nFunction F() Native\n")])
         .unwrap();
@@ -144,7 +144,10 @@ fn projection_refreshes_replaced_declaration_content_and_root_selection() {
             .flat_map(|bundle| &bundle.scripts)
             .all(|script| script.name != "Actor")
     );
-    assert!(selected.diagnostics().is_empty());
+    assert_eq!(
+        selected.diagnostics(),
+        [] as [folio_diagnostics::Diagnostic; 0]
+    );
 }
 
 #[test]
@@ -183,9 +186,12 @@ fn cached_projection_refreshes_changed_dependency_mapping_with_unchanged_metadat
         }
         // A fresh projection cannot associate the stale provider selection with this mapping.
         let fresh = selected_inputs(&loaded, &metadata).unwrap();
-        assert!(fresh.declarations.is_empty());
+        assert_eq!(
+            fresh.declarations,
+            [] as [folio_format_declarations::DeclarationBundle; 0]
+        );
         let changed = service.sync_project(&loaded, &metadata).unwrap();
-        assert!(changed.analysis.external_declarations().is_empty());
+        assert_eq!(changed.analysis.external_declarations(), []);
         assert!(first.analysis.external_script("Actor").is_some());
     }
 }

@@ -61,10 +61,10 @@ fn string_addition_accepts_numeric_operands_and_records_conversions() {
         "ScriptName Probe\nString Function Mix(Int count, Float ratio)\nReturn \"n=\" + count + ratio\nEndFunction\nString Function Reverse()\nReturn 1.5 + \"x\"\nEndFunction\nString Function Compound()\nString value = \"x\"\nvalue += 2\nReturn value\nEndFunction\n",
     );
     let view = host.view();
-    assert!(
+    assert_eq!(
         view.diagnostics(FileId(20))
-            .expect("synthetic test input is valid")
-            .is_empty()
+            .expect("synthetic test input is valid"),
+        [] as [folio_diagnostics::Diagnostic; 0]
     );
     let script = view.hir(FileId(20)).expect("synthetic test input is valid");
     let Statement::Return {
@@ -336,10 +336,10 @@ fn preserves_cross_script_member_kind_for_codegen() {
         "Scriptname Consumer\nProvider Property Ref Auto\nInt Function Use()\nReturn Ref.Value\nEndFunction\n",
     );
     let view = host.view();
-    assert!(
+    assert_eq!(
         view.diagnostics(FileId(11))
-            .expect("synthetic test input is valid")
-            .is_empty()
+            .expect("synthetic test input is valid"),
+        [] as [folio_diagnostics::Diagnostic; 0]
     );
     let script = view.hir(FileId(11)).expect("synthetic test input is valid");
     assert!(script.referenced_members.iter().any(|member| {

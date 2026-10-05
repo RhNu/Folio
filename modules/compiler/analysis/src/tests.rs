@@ -12,21 +12,39 @@ fn unchanged_external_inputs_preserve_generation_and_changes_invalidate_semantic
     )
     .unwrap();
     let unresolved = host.view();
-    assert!(!unresolved.diagnostics(file).unwrap().is_empty());
+    assert_ne!(
+        unresolved.diagnostics(file).unwrap(),
+        [] as [folio_diagnostics::Diagnostic; 0]
+    );
     let bundle = folio_format_declarations::decode(br#"{"format":"folio-declarations","schema":1,"profile":"papyrus-skyrim","origin":{"source":"fixture"},"scripts":[{"name":"Base","members":[]}]}"#).unwrap();
     host.set_external_declarations(vec![bundle.clone()]);
     let resolved = host.view();
-    assert!(resolved.diagnostics(file).unwrap().is_empty());
+    assert_eq!(
+        resolved.diagnostics(file).unwrap(),
+        [] as [folio_diagnostics::Diagnostic; 0]
+    );
     host.set_external_declarations(vec![bundle]);
     host.set_user_flags(vec![]);
     host.set_fill_missing_arguments(false);
     assert_eq!(host.view().generation(), resolved.generation());
-    assert!(host.view().diagnostics(file).unwrap().is_empty());
+    assert_eq!(
+        host.view().diagnostics(file).unwrap(),
+        [] as [folio_diagnostics::Diagnostic; 0]
+    );
     host.set_external_declarations(vec![]);
     assert!(host.view().generation() > resolved.generation());
-    assert!(!host.view().diagnostics(file).unwrap().is_empty());
-    assert!(resolved.diagnostics(file).unwrap().is_empty());
-    assert!(!unresolved.diagnostics(file).unwrap().is_empty());
+    assert_ne!(
+        host.view().diagnostics(file).unwrap(),
+        [] as [folio_diagnostics::Diagnostic; 0]
+    );
+    assert_eq!(
+        resolved.diagnostics(file).unwrap(),
+        [] as [folio_diagnostics::Diagnostic; 0]
+    );
+    assert_ne!(
+        unresolved.diagnostics(file).unwrap(),
+        [] as [folio_diagnostics::Diagnostic; 0]
+    );
 }
 
 #[test]
@@ -131,7 +149,10 @@ fn external_validation_tracks_source_type_visibility_and_inheritance() {
     )
     .unwrap();
     let valid = host.view();
-    assert!(valid.project_diagnostics().is_empty());
+    assert_eq!(
+        valid.project_diagnostics(),
+        [] as [folio_diagnostics::Diagnostic; 0]
+    );
     host.upsert(
         file,
         Revision(2),
@@ -139,7 +160,10 @@ fn external_validation_tracks_source_type_visibility_and_inheritance() {
         PapyrusDialect::Skyrim,
     )
     .unwrap();
-    assert!(host.view().project_diagnostics().is_empty());
+    assert_eq!(
+        host.view().project_diagnostics(),
+        [] as [folio_diagnostics::Diagnostic; 0]
+    );
     host.upsert(
         file,
         Revision(3),
@@ -153,7 +177,10 @@ fn external_validation_tracks_source_type_visibility_and_inheritance() {
             .iter()
             .any(|diagnostic| diagnostic.code == "semantic.inheritance-cycle")
     );
-    assert!(valid.project_diagnostics().is_empty());
+    assert_eq!(
+        valid.project_diagnostics(),
+        [] as [folio_diagnostics::Diagnostic; 0]
+    );
     assert!(
         absent
             .project_diagnostics()
@@ -309,6 +336,9 @@ fn cancelled_semantic_warmup_does_not_publish_partial_facts() {
     assert_eq!(view.try_warm_semantics(|| false), Ok(()));
     assert!(view.semantic.get().is_some());
     for id in 1..=3 {
-        assert!(view.diagnostics(FileId(id)).unwrap().is_empty());
+        assert_eq!(
+            view.diagnostics(FileId(id)).unwrap(),
+            [] as [folio_diagnostics::Diagnostic; 0]
+        );
     }
 }

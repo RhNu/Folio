@@ -96,7 +96,10 @@ fn config_disables_or_promotes_only_the_known_rule() {
         "off".into(),
     )]))
     .unwrap();
-    assert!(lint_script(&input, &disabled).is_empty());
+    assert_eq!(
+        lint_script(&input, &disabled),
+        [] as [folio_diagnostics::Diagnostic; 0]
+    );
     let promoted = LintConfig::from_rules(&BTreeMap::from([(
         PREFER_TRUTHY_NONE_CHECK.into(),
         "error".into(),

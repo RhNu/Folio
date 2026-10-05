@@ -17,7 +17,10 @@ fn cancellation_during_cold_reference_build_does_not_publish_partial_counts() {
     let cancelled = view.with_cancellation(Arc::new(move || {
         checks.fetch_add(1, Ordering::Relaxed) >= 6
     }));
-    assert!(crate::references_of(&cancelled, &count, true).is_empty());
+    assert_eq!(
+        crate::references_of(&cancelled, &count, true),
+        [] as [folio_source::SourceSpan; 0]
+    );
     assert_eq!(crate::references_of(&view, &count, true).len(), 3);
     assert_eq!(crate::references_of(&view, &count, false).len(), 2);
 }
@@ -73,7 +76,10 @@ fn cancelled_hierarchy_build_can_retry_and_preserves_transitive_overrides() {
     let cancelled = view.with_cancellation(Arc::new(move || {
         checks.fetch_add(1, Ordering::Relaxed) >= 2
     }));
-    assert!(crate::implementation_symbols(&cancelled, &Symbol::Script("BASE".into())).is_empty());
+    assert_eq!(
+        crate::implementation_symbols(&cancelled, &Symbol::Script("BASE".into())),
+        [] as [folio_hir::Symbol; 0]
+    );
     assert_eq!(
         crate::implementation_symbols(&view, &Symbol::Script("base".into())).len(),
         2

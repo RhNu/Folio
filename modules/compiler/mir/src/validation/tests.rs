@@ -22,7 +22,7 @@ fn accepts_closed_control_flow_and_declared_storage_case_insensitively() {
         Op::Return(Value::None),
         Op::Label(2), // Not reachable from entry.
     ]);
-    assert!(issues(&body).is_empty());
+    assert_eq!(issues(&body), [] as [ValidationError; 0]);
 }
 
 #[test]
@@ -70,7 +70,10 @@ fn distinguishes_missing_targets_duplicate_labels_and_reachable_fallthrough() {
             .iter()
             .any(|error| error.kind == ValidationErrorKind::ReachableFallthrough)
     );
-    assert!(issues(&function(vec![Op::Label(1), Op::Jump(1)])).is_empty());
+    assert_eq!(
+        issues(&function(vec![Op::Label(1), Op::Jump(1)])),
+        [] as [ValidationError; 0]
+    );
 }
 
 #[test]
@@ -89,7 +92,7 @@ fn rejects_instance_access_in_global_and_code_in_native_functions() {
             .any(|error| error.kind == ValidationErrorKind::NativeBody)
     );
     body.instructions.clear();
-    assert!(issues(&body).is_empty());
+    assert_eq!(issues(&body), [] as [ValidationError; 0]);
 }
 
 #[test]

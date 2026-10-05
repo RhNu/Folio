@@ -87,7 +87,10 @@ fn explicit_cancellation_and_generation_changes_only_remove_waiting_work() {
         assert!(queue.push(request(id, generation, true, None), id).is_ok());
     }
     assert_eq!(queue.pop(), Some("running"));
-    assert!(queue.remove_where(|meta| meta.id == "running").is_empty());
+    assert_eq!(
+        queue.remove_where(|meta| meta.id == "running"),
+        [] as [&str; 0]
+    );
     assert_eq!(queue.remove_where(|meta| meta.id == "cancel"), ["cancel"]);
     assert_eq!(queue.remove_where(|meta| meta.generation != 2), ["old"]);
     assert_eq!(queue.pop(), Some("current"));
